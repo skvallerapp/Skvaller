@@ -315,30 +315,33 @@ impl Db {
         self.meta(LAST_SYNC)
     }
 
-    /// Marks an article read or unread locally, and queues the change for the server.
-    pub fn set_read(&self, id: i64, read: bool) -> Result<()> {
-        self.set_flag(id, Flag::Read, read)
+    /// Marks articles read or unread locally, and queues the changes for the server.
+    pub fn set_read(&self, ids: &[i64], read: bool) -> Result<()> {
+        self.set_flag(ids, Flag::Read, read)
     }
 
-    /// Stars or unstars an article locally, and queues the change for the server.
-    pub fn set_starred(&self, id: i64, starred: bool) -> Result<()> {
-        self.set_flag(id, Flag::Starred, starred)
+    /// Stars or unstars articles locally, and queues the changes for the server.
+    pub fn set_starred(&self, ids: &[i64], starred: bool) -> Result<()> {
+        self.set_flag(ids, Flag::Starred, starred)
     }
 
-    fn set_flag(&self, id: i64, flag: Flag, value: bool) -> Result<()> {
+    fn set_flag(&self, ids: &[i64], flag: Flag, value: bool) -> Result<()> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
-        let col = flag.column();
-        let changed = tx.execute(
-            &format!("UPDATE articles SET {col} = ?2 WHERE id = ?1 AND {col} != ?2"),
-            params![id, value],
-        )?;
-        if changed > 0 {
-            tx.execute(
+        {
+            let col = flag.column();
+            let mut update = tx.prepare(&format!(
+                "UPDATE articles SET {col} = ?2 WHERE id = ?1 AND {col} != ?2"
+            ))?;
+            let mut queue = tx.prepare(
                 "INSERT INTO pending (article_id, flag, value) VALUES (?1, ?2, ?3)
                  ON CONFLICT DO UPDATE SET value = excluded.value",
-                params![id, col, value],
             )?;
+            for &id in ids {
+                if update.execute(params![id, value])? > 0 {
+                    queue.execute(params![id, col, value])?;
+                }
+            }
         }
         tx.commit()?;
         Ok(())
@@ -648,8 +651,8 @@ mod tests {
     #[test]
     fn local_change_is_queued() {
         let db = db_with_article();
-        db.set_read(1, true).unwrap();
-        db.set_starred(1, true).unwrap();
+        db.set_read(&[1], true).unwrap();
+        db.set_starred(&[1], true).unwrap();
         assert_eq!(flags(&db, 1), (true, true));
         let mut pending = db.pending().unwrap();
         pending.sort_by_key(|p| p.1.column());
@@ -657,16 +660,30 @@ mod tests {
     }
 
     #[test]
+    fn marking_many_queues_only_the_changed_ones() {
+        let db = db_with_article();
+        db.upsert_articles(&[
+            article(2, "feed/1", true, false),
+            article(3, "feed/1", false, false),
+        ])
+        .unwrap();
+        db.set_read(&[1, 2, 3, 9], true).unwrap();
+        let mut pending = db.pending().unwrap();
+        pending.sort_by_key(|p| p.0);
+        assert_eq!(pending, [(1, Flag::Read, true), (3, Flag::Read, true)]);
+    }
+
+    #[test]
     fn setting_the_current_value_queues_nothing() {
         let db = db_with_article();
-        db.set_read(1, false).unwrap();
+        db.set_read(&[1], false).unwrap();
         assert!(db.pending().unwrap().is_empty());
     }
 
     #[test]
     fn server_update_does_not_overwrite_a_queued_change() {
         let db = db_with_article();
-        db.set_read(1, true).unwrap();
+        db.set_read(&[1], true).unwrap();
         db.upsert_articles(&[article(1, "feed/1", false, true)])
             .unwrap();
         // Read keeps the queued local value; starred has no queued change and follows the server.
@@ -678,7 +695,7 @@ mod tests {
         let db = db_with_article();
         db.upsert_articles(&[article(2, "feed/1", false, false)])
             .unwrap();
-        db.set_read(1, true).unwrap();
+        db.set_read(&[1], true).unwrap();
         // The server still lists both as unread, and article 2 as starred.
         db.reconcile(Flag::Read, &[1, 2]).unwrap();
         db.reconcile(Flag::Starred, &[2]).unwrap();
@@ -692,8 +709,8 @@ mod tests {
     #[test]
     fn clear_pending_keeps_a_change_made_since() {
         let db = db_with_article();
-        db.set_read(1, true).unwrap();
-        db.set_read(1, false).unwrap();
+        db.set_read(&[1], true).unwrap();
+        db.set_read(&[1], false).unwrap();
         db.clear_pending(Flag::Read, true, &[1]).unwrap();
         assert_eq!(db.pending().unwrap(), [(1, Flag::Read, false)]);
         db.clear_pending(Flag::Read, false, &[1]).unwrap();
@@ -733,7 +750,7 @@ mod tests {
             article(2, "feed/1", false, false),
         ])
         .unwrap();
-        db.set_read(2, true).unwrap();
+        db.set_read(&[2], true).unwrap();
         db.replace_subscriptions(&[feed("feed/2", None)]).unwrap();
         assert_eq!(counts(&db), (0, 2, 2, 1));
         // Once the change is sent, the unstarred article goes.
@@ -780,7 +797,7 @@ mod tests {
             1
         );
         // A server change to a flag with a queued change is not a change.
-        db.set_starred(1, true).unwrap();
+        db.set_starred(&[1], true).unwrap();
         assert_eq!(
             db.upsert_articles(&[article(1, "feed/1", true, false)])
                 .unwrap(),
@@ -810,8 +827,8 @@ mod tests {
             article(50, "feed/1", true, false), // recent
         ])
         .unwrap();
-        db.set_read(4, false).unwrap();
-        db.set_read(4, true).unwrap();
+        db.set_read(&[4], false).unwrap();
+        db.set_read(&[4], true).unwrap();
         assert_eq!(db.prune(10_000).unwrap(), 1);
         assert_eq!(db.missing_ids(&[1, 2, 3, 4, 50]).unwrap(), [3]);
     }
@@ -836,7 +853,7 @@ mod tests {
             article(3, "feed/2", false, false),
         ])
         .unwrap();
-        db.set_read(3, true).unwrap();
+        db.set_read(&[3], true).unwrap();
 
         let smart = |view| Selection::Smart { view };
         assert_eq!(ids(&db, smart(SmartView::Unread)), ["1"]);
@@ -870,7 +887,7 @@ mod tests {
     #[test]
     fn clear_empties_everything() {
         let db = db_with_article();
-        db.set_read(1, true).unwrap();
+        db.set_read(&[1], true).unwrap();
         db.bump_newest_crawl(5).unwrap();
         db.clear().unwrap();
         assert_eq!(counts(&db), (0, 0, 0, 0));

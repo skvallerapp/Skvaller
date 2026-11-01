@@ -129,6 +129,22 @@ pub struct Session {
     account: Option<Account>,
     signed_in: bool,
     status: SyncStatus,
+    settings: Settings,
+}
+
+/// The settings the UI needs.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Settings {
+    confirm_mark_all_read: bool,
+}
+
+impl From<&Config> for Settings {
+    fn from(config: &Config) -> Self {
+        Self {
+            confirm_mark_all_read: config.confirm_mark_all_read,
+        }
+    }
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -146,8 +162,10 @@ pub struct SyncStatus {
 #[tauri::command]
 pub async fn session(state: State<'_, AppState>) -> CommandResult<Session> {
     let signed_in = ensure_client(&state).await?.is_some();
+    let config = state.config();
     Ok(Session {
-        account: state.config().account,
+        settings: Settings::from(&config),
+        account: config.account,
         signed_in,
         status: SyncStatus {
             syncing: state.is_syncing(),
@@ -195,6 +213,7 @@ pub async fn sign_in(
 
     tauri::async_runtime::spawn(async move { run_sync(&app).await });
     Ok(Session {
+        settings: Settings::from(&state.config()),
         account: Some(account),
         signed_in: true,
         status: SyncStatus {
@@ -244,17 +263,25 @@ pub async fn article_html(state: State<'_, AppState>, id: String) -> CommandResu
 }
 
 #[tauri::command]
-pub async fn set_read(state: State<'_, AppState>, id: String, read: bool) -> CommandResult<()> {
-    Ok(state.db.set_read(parse_id(&id)?, read)?)
+pub async fn set_read(
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+    read: bool,
+) -> CommandResult<()> {
+    Ok(state.db.set_read(&parse_ids(&ids)?, read)?)
 }
 
 #[tauri::command]
 pub async fn set_starred(
     state: State<'_, AppState>,
-    id: String,
+    ids: Vec<String>,
     starred: bool,
 ) -> CommandResult<()> {
-    Ok(state.db.set_starred(parse_id(&id)?, starred)?)
+    Ok(state.db.set_starred(&parse_ids(&ids)?, starred)?)
+}
+
+fn parse_ids(ids: &[String]) -> CommandResult<Vec<i64>> {
+    ids.iter().map(|id| parse_id(id)).collect()
 }
 
 fn parse_id(id: &str) -> CommandResult<i64> {

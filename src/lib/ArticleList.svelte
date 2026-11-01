@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CircleCheck from '@lucide/svelte/icons/circle-check'
   import PanelLeft from '@lucide/svelte/icons/panel-left'
   import Star from '@lucide/svelte/icons/star'
   import { formatTime } from './format'
@@ -26,13 +27,72 @@
     return store.folders.find((f) => f.id === sel.id)?.title ?? ''
   })
 
-  // Back to the top whenever the selection in the sidebar changes.
+  const unread = $derived(store.unreadInView)
+  const unreadLabel = $derived(
+    unread === 0
+      ? 'No Unread Items'
+      : `${unread.toLocaleString()} Unread ${unread === 1 ? 'Item' : 'Items'}`,
+  )
+
+  // "Mark all as read" asks first, unless the confirmMarkAllRead setting is off.
+  // The confirmation closes on Escape, Cancel, a click or focus elsewhere, leaving the
+  // window, or when nothing is left to mark.
+  let confirming = $state(false)
+  let markAll: HTMLDivElement
+  let trigger: HTMLButtonElement
+  let confirmButton = $state<HTMLButtonElement>()
+
+  function onMarkAll() {
+    if (store.settings.confirmMarkAllRead) confirming = !confirming
+    else store.markAllRead()
+  }
+
+  function cancel() {
+    confirming = false
+    trigger.focus()
+  }
+
+  function confirmMarkAll() {
+    confirming = false
+    store.markAllRead()
+    // The trigger is disabled now, so focus goes to the list.
+    viewport.focus()
+  }
+
+  $effect(() => {
+    if (confirming) confirmButton?.focus()
+  })
+
+  $effect(() => {
+    if (unread === 0) confirming = false
+  })
+
+  function onWindowKeydown(e: KeyboardEvent) {
+    if (confirming && e.key === 'Escape') cancel()
+  }
+
+  function onWindowPointerdown(e: PointerEvent) {
+    if (confirming && !markAll.contains(e.target as Node)) confirming = false
+  }
+
+  function onFocusout(e: FocusEvent) {
+    if (!markAll.contains(e.relatedTarget as Node | null)) confirming = false
+  }
+
+  // A new selection starts at the top, with no confirmation open.
   $effect(() => {
     void store.selection
+    confirming = false
     if (viewport) viewport.scrollTop = 0
     scrollTop = 0
   })
 </script>
+
+<svelte:window
+  onkeydown={onWindowKeydown}
+  onpointerdown={onWindowPointerdown}
+  onblur={() => (confirming = false)}
+/>
 
 <section class="list" aria-label="Articles">
   <div
@@ -48,12 +108,47 @@
     >
       <PanelLeft size={17} strokeWidth={1.75} />
     </button>
-    <h1>{title}</h1>
-    <span class="total">{items.length}</span>
+    <div class="heading">
+      <h1>{title}</h1>
+      <p>{unreadLabel}</p>
+    </div>
+    <div class="mark-all" bind:this={markAll} onfocusout={onFocusout}>
+      <button
+        class="icon-button"
+        bind:this={trigger}
+        aria-label="Mark All as Read"
+        title="Mark All as Read"
+        aria-haspopup={store.settings.confirmMarkAllRead ? 'dialog' : undefined}
+        aria-expanded={store.settings.confirmMarkAllRead ? confirming : undefined}
+        disabled={unread === 0}
+        onclick={onMarkAll}
+      >
+        <CircleCheck size={18} strokeWidth={1.75} />
+      </button>
+      {#if confirming}
+        <div
+          class="confirm"
+          role="dialog"
+          aria-labelledby="mark-all-question"
+          data-tauri-drag-region="false"
+        >
+          <p id="mark-all-question">
+            Mark {unread.toLocaleString()} {unread === 1 ? 'article' : 'articles'} as read?
+          </p>
+          <div class="actions">
+            <button class="secondary" onclick={cancel}>Cancel</button>
+            <button class="primary" bind:this={confirmButton} onclick={confirmMarkAll}>
+              Mark as Read
+            </button>
+          </div>
+        </div>
+      {/if}
+    </div>
   </div>
 
   <div
     class="viewport"
+    tabindex="-1"
     bind:this={viewport}
     bind:clientHeight={height}
     onscroll={() => (scrollTop = viewport.scrollTop)}
@@ -107,21 +202,79 @@
     border-bottom: 1px solid var(--separator);
   }
 
-  h1 {
+  .heading {
     flex: 1;
     min-width: 0;
-    margin: 0 0 0 4px;
-    font-size: 13px;
-    font-weight: 600;
+    margin-left: 6px;
+  }
+
+  h1,
+  .heading p {
+    margin: 0;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
   }
 
-  .total {
-    font-size: 11.5px;
+  h1 {
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+
+  .heading p {
+    font-size: 12px;
+    line-height: 1.3;
     font-variant-numeric: tabular-nums;
     color: var(--text-3);
+  }
+
+  .mark-all {
+    position: relative;
+  }
+
+  .icon-button:disabled {
+    opacity: 0.35;
+  }
+
+  .confirm {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 10;
+    width: 240px;
+    padding: 14px;
+    border: 1px solid var(--separator);
+    border-radius: 10px;
+    background: var(--reader-bg);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+  }
+
+  .confirm p {
+    margin: 0 0 12px;
+    font-weight: 600;
+  }
+
+  .actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .actions button {
+    height: 28px;
+    padding: 0 12px;
+    border-radius: 6px;
+    font-weight: 600;
+  }
+
+  .secondary {
+    background: var(--active);
+  }
+
+  .primary {
+    background: var(--accent);
+    color: var(--accent-text);
   }
 
   .viewport {

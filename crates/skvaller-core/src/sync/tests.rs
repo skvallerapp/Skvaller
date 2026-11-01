@@ -312,8 +312,8 @@ async fn queued_changes_are_sent_then_cleared() {
     sync(&fake.client, &fake.db, NOW, DEFAULT_KEEP_READ_DAYS)
         .await
         .unwrap();
-    fake.db.set_read(1, true).unwrap();
-    fake.db.set_starred(2, false).unwrap();
+    fake.db.set_read(&[1], true).unwrap();
+    fake.db.set_starred(&[2], false).unwrap();
 
     fake.server.reset().await;
     fake.serve(crawl - CRAWL_OVERLAP, vec![], &[], &[]).await;
@@ -377,7 +377,7 @@ async fn failed_push_keeps_the_queue_and_the_local_state() {
     sync(&fake.client, &fake.db, NOW, DEFAULT_KEEP_READ_DAYS)
         .await
         .unwrap();
-    fake.db.set_read(1, true).unwrap();
+    fake.db.set_read(&[1], true).unwrap();
 
     fake.server.reset().await;
     fake.serve(
@@ -485,8 +485,8 @@ async fn live_write() {
     };
     println!("article {id}");
 
-    db.set_read(id, true).unwrap();
-    db.set_starred(id, true).unwrap();
+    db.set_read(&[id], true).unwrap();
+    db.set_starred(&[id], true).unwrap();
     let report = sync(&client, &db, unix_now(), DEFAULT_KEEP_READ_DAYS)
         .await
         .unwrap();
@@ -497,8 +497,8 @@ async fn live_write() {
         "read and starred on the server"
     );
 
-    db.set_read(id, false).unwrap();
-    db.set_starred(id, false).unwrap();
+    db.set_read(&[id], false).unwrap();
+    db.set_starred(&[id], false).unwrap();
     let report = sync(&client, &db, unix_now(), DEFAULT_KEEP_READ_DAYS)
         .await
         .unwrap();
