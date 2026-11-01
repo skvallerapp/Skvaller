@@ -10,6 +10,9 @@ target.
 - `skvaller-core`: a Rust crate for sync, storage (SQLite via `rusqlite`) and the
   Google Reader API client. It contains no UI code.
 - Svelte 5 + TypeScript UI
+- Lucide icons (`@lucide/svelte`). Import each icon by path, such as
+  `import Rss from '@lucide/svelte/icons/rss'`. Importing from the package root makes
+  svelte-check load every icon.
 
 ## Architecture rules
 
