@@ -1,0 +1,41 @@
+# Rust
+target/
+**/*.rs.bk
+
+# Tauri
+src-tauri/gen/schemas/
+
+# Node / Svelte
+node_modules/
+dist/
+build/
+.svelte-kit/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Local databases
+*.sqlite
+*.sqlite3
+*.db
+
+# OS and editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# Private planning docs
+docs/REQUIREMENTS.md
