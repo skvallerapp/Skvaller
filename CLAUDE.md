@@ -17,7 +17,10 @@ target.
   SQLite cache. Sync runs in the background and updates the cache.
 - **Keep the Rust layer thin and testable.** UI behavior belongs in TypeScript.
   Rust exposes data and commands, and is tested in isolation from Tauri.
-- **Article HTML is untrusted.** It always renders with scripts disabled.
+- **Article HTML is untrusted.** It always renders with scripts disabled. The CSP in
+  `tauri.conf.json` applies only to built apps, not to `tauri dev`, so test CSP-related
+  changes with `bun run tauri build`. Keep inline `<style>` and `<script>` out of
+  `index.html`: Tauri adds nonces to them, and a nonce disables `'unsafe-inline'`.
 - **Never store the user's password.** Store only the access token, in the OS
   keychain.
 - **Queued offline changes win.** The server never overwrites a queued local
