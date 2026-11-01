@@ -4,7 +4,8 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result, api};
 
@@ -31,10 +32,13 @@ CREATE TABLE articles (
     published INTEGER NOT NULL, -- Unix milliseconds
     read      INTEGER NOT NULL,
     starred   INTEGER NOT NULL,
+    summary   TEXT NOT NULL,    -- plain text, for the article list
     html      TEXT NOT NULL     -- untrusted; last, so scans of the other columns skip it
 );
 CREATE INDEX articles_by_published ON articles (published DESC);
 CREATE INDEX articles_by_feed ON articles (feed_id, published DESC);
+CREATE INDEX articles_unread ON articles (published DESC) WHERE NOT read;
+CREATE INDEX articles_starred ON articles (published DESC) WHERE starred;
 -- Local changes not yet sent. One row per article and flag, holding the latest value.
 CREATE TABLE pending (
     article_id INTEGER NOT NULL REFERENCES articles (id) ON DELETE CASCADE,
@@ -50,6 +54,8 @@ CREATE TABLE meta (
 
 /// Newest crawl time seen from the server, in Unix milliseconds.
 const NEWEST_CRAWL: &str = "newest_crawl";
+/// When the last sync finished, in Unix milliseconds.
+const LAST_SYNC: &str = "last_sync";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Flag {
@@ -90,21 +96,90 @@ pub(crate) struct ArticleRow {
     pub author: String,
     pub url: String,
     pub published: i64,
+    pub read: bool,
+    pub starred: bool,
+    pub summary: String,
     pub html: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Folder {
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Feed {
+    pub id: String,
+    pub title: String,
+    pub folder_id: Option<String>,
+    /// False for a feed kept only for the starred articles of an old subscription.
+    pub subscribed: bool,
+}
+
+/// An article without its HTML, for the article list.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArticleSummary {
+    /// The item ID as a decimal string: it can exceed what a JavaScript number holds.
+    pub id: String,
+    pub feed_id: String,
+    pub title: String,
+    pub author: String,
+    pub url: String,
+    /// Unix milliseconds.
+    pub published: i64,
+    pub summary: String,
     pub read: bool,
     pub starred: bool,
 }
 
+/// Which articles to list. Serialized like the UI's `Selection` type.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Selection {
+    Smart { view: SmartView },
+    Folder { id: String },
+    Feed { id: String },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SmartView {
+    Unread,
+    Starred,
+    All,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Counts {
+    /// Unread articles per feed ID. Feeds without any are left out.
+    pub unread_by_feed: std::collections::HashMap<String, i64>,
+    pub starred: i64,
+}
+
 pub struct Db {
     conn: Mutex<Connection>,
+    /// A second connection for the UI's reads, so they don't wait behind a sync's
+    /// writes. WAL lets it read while the other one writes. In-memory caches have none.
+    reader: Option<Mutex<Connection>>,
 }
 
 impl Db {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        Self::init(conn)
+        let mut db = Self::init(conn)?;
+        let reader = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        db.reader = Some(Mutex::new(reader));
+        Ok(db)
     }
 
     pub fn open_in_memory() -> Result<Self> {
@@ -125,7 +200,119 @@ impl Db {
         }
         Ok(Self {
             conn: Mutex::new(conn),
+            reader: None,
         })
+    }
+
+    pub fn folders(&self) -> Result<Vec<Folder>> {
+        let conn = self.read();
+        let mut stmt =
+            conn.prepare("SELECT id, title FROM folders ORDER BY title COLLATE NOCASE")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Folder {
+                id: r.get(0)?,
+                title: r.get(1)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn feeds(&self) -> Result<Vec<Feed>> {
+        let conn = self.read();
+        let mut stmt = conn.prepare(
+            "SELECT id, title, folder_id, subscribed FROM feeds ORDER BY title COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Feed {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                folder_id: r.get(2)?,
+                subscribed: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Articles for `selection`, newest first.
+    pub fn articles(&self, selection: &Selection) -> Result<Vec<ArticleSummary>> {
+        let (filter, param) = match selection {
+            Selection::Smart {
+                view: SmartView::Unread,
+            } => ("NOT read", None),
+            Selection::Smart {
+                view: SmartView::Starred,
+            } => ("starred", None),
+            Selection::Smart {
+                view: SmartView::All,
+            } => ("1", None),
+            Selection::Feed { id } => ("feed_id = ?1", Some(id)),
+            Selection::Folder { id } => (
+                "feed_id IN (SELECT id FROM feeds WHERE folder_id = ?1)",
+                Some(id),
+            ),
+        };
+        let conn = self.read();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id, feed_id, title, author, url, published, summary, read, starred
+             FROM articles WHERE {filter} ORDER BY published DESC, id DESC"
+        ))?;
+        let params: Vec<&String> = param.into_iter().collect();
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
+            Ok(ArticleSummary {
+                id: r.get::<_, i64>(0)?.to_string(),
+                feed_id: r.get(1)?,
+                title: r.get(2)?,
+                author: r.get(3)?,
+                url: r.get(4)?,
+                published: r.get(5)?,
+                summary: r.get(6)?,
+                read: r.get(7)?,
+                starred: r.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The article's untrusted HTML, if it is cached.
+    pub fn article_html(&self, id: i64) -> Result<Option<String>> {
+        Ok(self
+            .read()
+            .query_row("SELECT html FROM articles WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+
+    pub fn counts(&self) -> Result<Counts> {
+        let conn = self.read();
+        let mut stmt =
+            conn.prepare("SELECT feed_id, count(*) FROM articles WHERE NOT read GROUP BY feed_id")?;
+        let unread_by_feed = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let starred = conn.query_row("SELECT count(*) FROM articles WHERE starred", [], |r| {
+            r.get(0)
+        })?;
+        Ok(Counts {
+            unread_by_feed,
+            starred,
+        })
+    }
+
+    /// Empties the cache, for a sign-in to a different account. Queued changes go too.
+    pub fn clear(&self) -> Result<()> {
+        self.lock().execute_batch(
+            "BEGIN;
+             DELETE FROM pending; DELETE FROM articles; DELETE FROM feeds;
+             DELETE FROM folders; DELETE FROM meta;
+             COMMIT;",
+        )?;
+        Ok(())
+    }
+
+    /// When the last sync finished, in Unix milliseconds.
+    pub fn last_sync(&self) -> Result<Option<i64>> {
+        self.meta(LAST_SYNC)
     }
 
     /// Marks an article read or unread locally, and queues the change for the server.
@@ -257,14 +444,15 @@ impl Db {
             // The WHERE skips the write, and the WAL growth, when nothing changed.
             let mut article = tx.prepare(
                 "INSERT INTO articles
-                     (id, feed_id, title, author, url, published, read, starred, html)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                     (id, feed_id, title, author, url, published, read, starred, summary, html)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT (id) DO UPDATE SET
                      feed_id = excluded.feed_id,
                      title = excluded.title,
                      author = excluded.author,
                      url = excluded.url,
                      published = excluded.published,
+                     summary = excluded.summary,
                      html = excluded.html,
                      read = IIF(EXISTS (SELECT 1 FROM pending
                                         WHERE article_id = ?1 AND flag = 'read'),
@@ -296,6 +484,7 @@ impl Db {
                     a.published,
                     a.read,
                     a.starred,
+                    a.summary,
                     a.html,
                 ])?;
             }
@@ -348,13 +537,22 @@ impl Db {
     }
 
     pub(crate) fn newest_crawl(&self) -> Result<Option<i64>> {
+        self.meta(NEWEST_CRAWL)
+    }
+
+    pub(crate) fn set_last_sync(&self, ms: i64) -> Result<()> {
+        self.lock().execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT DO UPDATE SET value = excluded.value",
+            params![LAST_SYNC, ms],
+        )?;
+        Ok(())
+    }
+
+    fn meta(&self, key: &str) -> Result<Option<i64>> {
         Ok(self
-            .lock()
-            .query_row(
-                "SELECT value FROM meta WHERE key = ?1",
-                [NEWEST_CRAWL],
-                |r| r.get(0),
-            )
+            .read()
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
             .optional()?)
     }
 
@@ -367,8 +565,17 @@ impl Db {
         Ok(())
     }
 
+    /// The connection for writes, and for reads that must see the sync's own writes.
     fn lock(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The connection for the UI's reads.
+    fn read(&self) -> MutexGuard<'_, Connection> {
+        match &self.reader {
+            Some(reader) => reader.lock().unwrap_or_else(PoisonError::into_inner),
+            None => self.lock(),
+        }
     }
 
     #[cfg(test)]
@@ -402,6 +609,7 @@ mod tests {
             author: String::new(),
             url: String::new(),
             published: id * 1000,
+            summary: String::new(),
             html: String::new(),
             read,
             starred,
@@ -606,6 +814,80 @@ mod tests {
         db.set_read(4, true).unwrap();
         assert_eq!(db.prune(10_000).unwrap(), 1);
         assert_eq!(db.missing_ids(&[1, 2, 3, 4, 50]).unwrap(), [3]);
+    }
+
+    fn ids(db: &Db, selection: Selection) -> Vec<String> {
+        db.articles(&selection)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.id)
+            .collect()
+    }
+
+    #[test]
+    fn lists_articles_and_counts_through_the_read_connection() {
+        let path = std::env::temp_dir().join(format!("skvaller-read-{}.db", std::process::id()));
+        let db = Db::open(&path).unwrap();
+        db.replace_subscriptions(&[feed("feed/1", Some("tech")), feed("feed/2", None)])
+            .unwrap();
+        db.upsert_articles(&[
+            article(1, "feed/1", false, false),
+            article(2, "feed/2", true, true),
+            article(3, "feed/2", false, false),
+        ])
+        .unwrap();
+        db.set_read(3, true).unwrap();
+
+        let smart = |view| Selection::Smart { view };
+        assert_eq!(ids(&db, smart(SmartView::Unread)), ["1"]);
+        assert_eq!(ids(&db, smart(SmartView::Starred)), ["2"]);
+        assert_eq!(ids(&db, smart(SmartView::All)), ["3", "2", "1"]);
+        assert_eq!(
+            ids(
+                &db,
+                Selection::Feed {
+                    id: "feed/2".into()
+                }
+            ),
+            ["3", "2"]
+        );
+        assert_eq!(ids(&db, Selection::Folder { id: "tech".into() }), ["1"]);
+        let counts = db.counts().unwrap();
+        assert_eq!(counts.unread_by_feed.get("feed/1"), Some(&1));
+        assert_eq!(counts.unread_by_feed.get("feed/2"), None);
+        assert_eq!(counts.starred, 1);
+        assert_eq!(db.article_html(1).unwrap(), Some(String::new()));
+        assert_eq!(db.article_html(9).unwrap(), None);
+        assert_eq!(db.folders().unwrap().len(), 1);
+        assert_eq!(db.feeds().unwrap().len(), 2);
+
+        drop(db);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    #[test]
+    fn clear_empties_everything() {
+        let db = db_with_article();
+        db.set_read(1, true).unwrap();
+        db.bump_newest_crawl(5).unwrap();
+        db.clear().unwrap();
+        assert_eq!(counts(&db), (0, 0, 0, 0));
+        assert_eq!(db.newest_crawl().unwrap(), None);
+    }
+
+    #[test]
+    fn selection_parses_the_ui_shape() {
+        let sel: Selection = serde_json::from_str(r#"{"kind":"smart","view":"starred"}"#).unwrap();
+        assert!(matches!(
+            sel,
+            Selection::Smart {
+                view: SmartView::Starred
+            }
+        ));
+        let sel: Selection = serde_json::from_str(r#"{"kind":"feed","id":"feed/1"}"#).unwrap();
+        assert!(matches!(sel, Selection::Feed { id } if id == "feed/1"));
     }
 
     #[test]

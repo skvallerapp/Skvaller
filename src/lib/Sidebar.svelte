@@ -3,9 +3,11 @@
   import CircleDot from '@lucide/svelte/icons/circle-dot'
   import Folder from '@lucide/svelte/icons/folder'
   import Layers from '@lucide/svelte/icons/layers'
+  import RotateCw from '@lucide/svelte/icons/rotate-cw'
   import Rss from '@lucide/svelte/icons/rss'
   import Star from '@lucide/svelte/icons/star'
   import { SvelteSet } from 'svelte/reactivity'
+  import { formatSynced, serviceTitle } from './format'
   import { store } from './store.svelte'
   import type { Selection, SmartView } from './types'
 
@@ -16,7 +18,14 @@
   ]
 
   const collapsed = new SvelteSet<string>()
-  const looseFeeds = store.feeds.filter((f) => f.folderId === null)
+  const looseFeeds = $derived(store.sidebarFeeds.filter((f) => f.folderId === null))
+  const title = $derived(store.account ? serviceTitle(store.account.server) : '')
+  const status = $derived.by(() => {
+    const s = store.status
+    if (s.syncing) return 'Syncing…'
+    if (s.error) return 'Sync failed'
+    return s.lastSync ? formatSynced(s.lastSync) : 'Not synced yet'
+  })
 
   function isSelected(sel: Selection): boolean {
     const cur = store.selection
@@ -43,14 +52,28 @@
 {/snippet}
 
 <nav class="sidebar" aria-label="Feeds">
-  <div class="toolbar"></div>
+  <div class="toolbar">
+    <button
+      class="icon-button sync"
+      class:spinning={store.status.syncing}
+      aria-label="Sync"
+      title="Sync"
+      onclick={() => store.sync()}
+    >
+      <RotateCw size={17} strokeWidth={2} />
+    </button>
+  </div>
+  <header class="account">
+    <h1>{title}</h1>
+    <p class:failed={store.status.error} title={store.status.error ?? undefined}>{status}</p>
+  </header>
   <div class="scroll">
     <section>
       {#each smartViews as v (v.view)}
         {@render row(
           { kind: 'smart', view: v.view },
           v.label,
-          v.view === 'unread' ? store.unreadTotal : v.view === 'starred' ? store.starred.size : 0,
+          v.view === 'unread' ? store.unreadTotal : v.view === 'starred' ? store.starredCount : 0,
           v.icon,
         )}
       {/each}
@@ -72,7 +95,7 @@
           {@render row({ kind: 'folder', id: folder.id }, folder.title, store.folderUnread(folder.id), Folder)}
         </div>
         {#if !collapsed.has(folder.id)}
-          {#each store.feeds.filter((f) => f.folderId === folder.id) as feed (feed.id)}
+          {#each store.sidebarFeeds.filter((f) => f.folderId === folder.id) as feed (feed.id)}
             {@render row({ kind: 'feed', id: feed.id }, feed.title, store.unreadByFeed.get(feed.id) ?? 0, Rss, true)}
           {/each}
         {/if}
@@ -90,6 +113,53 @@
     flex-direction: column;
     height: 100%;
     background: var(--sidebar-bg);
+  }
+
+  .toolbar {
+    justify-content: flex-end;
+  }
+
+  .sync.spinning :global(svg) {
+    animation: spin 0.9s linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sync.spinning :global(svg) {
+      animation: none;
+      opacity: 0.5;
+    }
+  }
+
+  .account {
+    padding: 6px 22px 18px;
+  }
+
+  .account h1 {
+    margin: 0;
+    font-size: 30px;
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .account p {
+    margin: 3px 0 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-3);
+  }
+
+  .account p.failed {
+    color: var(--error);
   }
 
   .scroll {

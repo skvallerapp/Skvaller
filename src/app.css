@@ -19,6 +19,7 @@
   --accent-text: #ffffff;
   --unread-dot: #2f6bd6;
   --star: #e0a21b;
+  --error: #c4352b;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -35,6 +36,7 @@
     --accent: #4a82e8;
     --unread-dot: #5b8ff0;
     --star: #f0b63a;
+    --error: #f0776c;
   }
 }
 

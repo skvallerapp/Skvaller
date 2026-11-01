@@ -39,7 +39,7 @@
         <h1>${escapeHtml(article.title)}</h1>
         <div class="source">${escapeHtml(article.author)}<br>${escapeHtml(feed)}</div>
       </header>
-      ${article.html}
+      ${store.html ?? ''}
     </article></body></html>`
   })
 </script>
