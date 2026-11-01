@@ -46,7 +46,7 @@
     class:selected={isSelected(sel)}
     onclick={() => store.select(sel)}
   >
-    <Icon size={15} strokeWidth={1.75} class="row-icon" />
+    <Icon size={18} strokeWidth={2} class="row-icon" />
     <span class="label">{label}</span>
     {#if count > 0}<span class="count">{count}</span>{/if}
   </button>
@@ -210,7 +210,7 @@
     align-items: center;
     gap: 8px;
     width: 100%;
-    height: 28px;
+    height: 32px;
     padding: 0 10px 0 14px;
     border-radius: 6px;
     text-align: left;
@@ -232,16 +232,15 @@
 
   .row :global(.row-icon) {
     flex: none;
-    color: var(--text-2);
   }
 
-  .row.selected :global(.row-icon),
   .row.selected .count {
     color: inherit;
   }
 
   .label {
     flex: 1;
+    font-weight: 500;
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;
