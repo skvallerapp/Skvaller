@@ -106,7 +106,7 @@
       aria-pressed={layout.sidebarOpen}
       onclick={toggleSidebar}
     >
-      <PanelLeft size={17} strokeWidth={2} />
+      <PanelLeft size={18} strokeWidth={2} />
     </button>
     <div class="heading">
       <h1>{title}</h1>

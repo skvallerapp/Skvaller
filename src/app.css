@@ -80,16 +80,20 @@ button {
   width: 28px;
   height: 28px;
   border-radius: 6px;
-  color: var(--text-2);
+  color: var(--text);
 }
 
 .icon-button:hover {
   background: var(--hover);
-  color: var(--text);
 }
 
 .icon-button:active {
   background: var(--active);
+}
+
+.icon-button:disabled {
+  background: none;
+  color: var(--text-3);
 }
 
 :focus-visible {

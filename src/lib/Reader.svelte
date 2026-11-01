@@ -55,9 +55,9 @@
         onclick={() => store.toggleRead(article.id)}
       >
         {#if store.read.has(article.id)}
-          <Circle size={16} strokeWidth={1.75} />
+          <Circle size={18} strokeWidth={2} />
         {:else}
-          <CircleDot size={16} strokeWidth={1.75} />
+          <CircleDot size={18} strokeWidth={2} />
         {/if}
       </button>
       <button
@@ -67,7 +67,7 @@
         aria-pressed={store.starred.has(article.id)}
         onclick={() => store.toggleStarred(article.id)}
       >
-        <Star size={16} strokeWidth={1.75} fill={store.starred.has(article.id) ? 'currentColor' : 'none'} />
+        <Star size={18} strokeWidth={2} fill={store.starred.has(article.id) ? 'currentColor' : 'none'} />
       </button>
     {/if}
   </div>
@@ -92,10 +92,6 @@
   }
 
   .starred {
-    color: var(--star);
-  }
-
-  .starred:hover {
     color: var(--star);
   }
 
