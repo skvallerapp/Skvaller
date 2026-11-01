@@ -1,9 +1,14 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
   import ArticleList from './lib/ArticleList.svelte'
   import { LIST, SIDEBAR, layout, saveLayout, toggleSidebar } from './lib/layout.svelte'
   import Reader from './lib/Reader.svelte'
   import Resizer from './lib/Resizer.svelte'
   import Sidebar from './lib/Sidebar.svelte'
+  import SignIn from './lib/SignIn.svelte'
+  import { store } from './lib/store.svelte'
+
+  onMount(() => void store.init())
 
   let resizing = $state(false)
 
@@ -18,46 +23,52 @@
 
 <svelte:window {onkeydown} />
 
-<div class="app" class:resizing>
-  <div
-    class="sidebar"
-    class:closed={!layout.sidebarOpen}
-    style:width="{layout.sidebarOpen ? layout.sidebarWidth : 0}px"
-    inert={!layout.sidebarOpen}
-  >
-    <div class="sidebar-inner" style:width="{layout.sidebarWidth}px">
-      <Sidebar />
+{#if !store.ready}
+  <!-- Blank until the session is known, so the sign-in screen doesn't flash. -->
+{:else if !store.signedIn}
+  <SignIn />
+{:else}
+  <div class="app" class:resizing>
+    <div
+      class="sidebar"
+      class:closed={!layout.sidebarOpen}
+      style:width="{layout.sidebarOpen ? layout.sidebarWidth : 0}px"
+      inert={!layout.sidebarOpen}
+    >
+      <div class="sidebar-inner" style:width="{layout.sidebarWidth}px">
+        <Sidebar />
+      </div>
     </div>
-  </div>
-  {#if layout.sidebarOpen}
+    {#if layout.sidebarOpen}
+      <Resizer
+        label="Resize sidebar"
+        value={layout.sidebarWidth}
+        min={SIDEBAR.min}
+        max={SIDEBAR.max}
+        onchange={(w) => (layout.sidebarWidth = w)}
+        onend={saveLayout}
+        ondragging={(d) => (resizing = d)}
+      />
+    {/if}
+
+    <div class="list" style:width="{layout.listWidth}px">
+      <ArticleList />
+    </div>
     <Resizer
-      label="Resize sidebar"
-      value={layout.sidebarWidth}
-      min={SIDEBAR.min}
-      max={SIDEBAR.max}
-      onchange={(w) => (layout.sidebarWidth = w)}
+      label="Resize article list"
+      value={layout.listWidth}
+      min={LIST.min}
+      max={LIST.max}
+      onchange={(w) => (layout.listWidth = w)}
       onend={saveLayout}
       ondragging={(d) => (resizing = d)}
     />
-  {/if}
 
-  <div class="list" style:width="{layout.listWidth}px">
-    <ArticleList />
+    <div class="reader">
+      <Reader />
+    </div>
   </div>
-  <Resizer
-    label="Resize article list"
-    value={layout.listWidth}
-    min={LIST.min}
-    max={LIST.max}
-    onchange={(w) => (layout.listWidth = w)}
-    onend={saveLayout}
-    ondragging={(d) => (resizing = d)}
-  />
-
-  <div class="reader">
-    <Reader />
-  </div>
-</div>
+{/if}
 
 <style>
   .app {

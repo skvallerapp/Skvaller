@@ -2,6 +2,7 @@
 
 use crate::api::{Item, READ, READING_LIST, STARRED, Subscription, next_page, parse_item_id};
 use crate::db::{ArticleRow, FeedRow, Flag};
+use crate::text::plain_text;
 use crate::{Client, Db, Result};
 
 const DAY: i64 = 24 * 60 * 60;
@@ -11,6 +12,8 @@ const CRAWL_OVERLAP: i64 = 60 * 60;
 /// How long read, unstarred articles stay cached unless the user changes the setting.
 /// The first sync fetches read articles from the same period (FR-5b, FR-5c).
 pub const DEFAULT_KEEP_READ_DAYS: u32 = 30;
+/// Length of the plain-text preview in the article list.
+const SUMMARY_CHARS: usize = 300;
 /// Item IDs per `edit-tag` or `stream/items/contents` request.
 const BATCH: usize = 250;
 
@@ -88,6 +91,7 @@ pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Re
         db.bump_newest_crawl(ms)?;
     }
     let pruned = db.prune(keep_read_since * 1000)?;
+    db.set_last_sync(now * 1000)?;
     Ok(SyncReport {
         pushed,
         fetched,
@@ -144,10 +148,17 @@ fn store(db: &Db, items: Vec<Item>) -> Result<(usize, Option<i64>)> {
     let rows: Vec<ArticleRow> = items
         .into_iter()
         .filter_map(|item| {
+            let id = parse_item_id(&item.id)?;
+            let (read, starred) = (item.has_state(READ), item.has_state(STARRED));
+            let html = item
+                .content
+                .or(item.summary)
+                .map(|c| c.content)
+                .unwrap_or_default();
             Some(ArticleRow {
-                id: parse_item_id(&item.id)?,
-                read: item.has_state(READ),
-                starred: item.has_state(STARRED),
+                id,
+                read,
+                starred,
                 url: item
                     .canonical
                     .into_iter()
@@ -155,11 +166,8 @@ fn store(db: &Db, items: Vec<Item>) -> Result<(usize, Option<i64>)> {
                     .next()
                     .map(|l| l.href)
                     .unwrap_or_default(),
-                html: item
-                    .content
-                    .or(item.summary)
-                    .map(|c| c.content)
-                    .unwrap_or_default(),
+                summary: plain_text(&html, SUMMARY_CHARS),
+                html,
                 feed_title: item
                     .origin
                     .title

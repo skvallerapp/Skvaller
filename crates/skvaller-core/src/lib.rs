@@ -5,9 +5,10 @@ mod db;
 mod error;
 mod keychain;
 mod sync;
+mod text;
 
 pub use api::Client;
-pub use db::Db;
+pub use db::{ArticleSummary, Counts, Db, Feed, Folder, Selection, SmartView};
 pub use error::{Error, Result};
 pub use keychain::{delete_token, load_token, save_token};
 pub use sync::{DEFAULT_KEEP_READ_DAYS, SyncReport, sync};
