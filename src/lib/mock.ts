@@ -9,17 +9,33 @@ const folders: Folder[] = [
 ]
 
 const feeds: Feed[] = [
-  { id: 'hn', title: 'Hacker News', folderId: 'f-tech', subscribed: true },
-  { id: 'lwn', title: 'LWN.net', folderId: 'f-tech', subscribed: true },
-  { id: 'rust', title: 'This Week in Rust', folderId: 'f-tech', subscribed: true },
-  { id: 'daring', title: 'Daring Fireball', folderId: 'f-design', subscribed: true },
-  { id: 'sidebar', title: 'Sidebar', folderId: 'f-design', subscribed: true },
-  { id: 'bbc', title: 'BBC News — World', folderId: 'f-news', subscribed: true },
-  { id: 'xkcd', title: 'xkcd', folderId: null, subscribed: true },
-  { id: 'kottke', title: 'kottke.org', folderId: null, subscribed: true },
+  { id: 'hn', title: 'Hacker News', folderId: 'f-tech', subscribed: true, icon: null },
+  { id: 'lwn', title: 'LWN.net', folderId: 'f-tech', subscribed: true, icon: null },
+  { id: 'rust', title: 'This Week in Rust', folderId: 'f-tech', subscribed: true, icon: null },
+  { id: 'daring', title: 'Daring Fireball', folderId: 'f-design', subscribed: true, icon: null },
+  { id: 'sidebar', title: 'Sidebar', folderId: 'f-design', subscribed: true, icon: null },
+  { id: 'bbc', title: 'BBC News — World', folderId: 'f-news', subscribed: true, icon: null },
+  { id: 'xkcd', title: 'xkcd', folderId: null, subscribed: true, icon: null },
+  { id: 'kottke', title: 'kottke.org', folderId: null, subscribed: true, icon: null },
 ]
 
 // 5,000 articles, to test scrolling. Deterministic, so reloads look the same.
+// Stand-in favicons: a coloured tile with a letter. Three feeds have none, for the fallback.
+const icon = (bg: string, letter: string) =>
+  'data:image/svg+xml,' +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" fill="${bg}"/>` +
+      `<text x="16" y="23" font-family="sans-serif" font-size="20" font-weight="700" fill="#fff" text-anchor="middle">${letter}</text></svg>`,
+  )
+const icons: Record<string, string> = {
+  hn: icon('#ff6600', 'Y'),
+  lwn: icon('#222', 'L'),
+  rust: icon('#b7410e', 'R'),
+  daring: icon('#4a525a', '★'),
+  bbc: icon('#bb1919', 'B'),
+}
+for (const f of feeds) f.icon = icons[f.id] ?? null
+
 const now = Date.now()
 const articles: Article[] = Array.from({ length: 5000 }, (_, i) => {
   const feed = feeds[i % feeds.length]

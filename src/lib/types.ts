@@ -9,6 +9,8 @@ export interface Feed {
   folderId: string | null
   /** False for a feed kept only for the starred articles of an old subscription. */
   subscribed: boolean
+  /** The favicon as a data: URL. */
+  icon: string | null
 }
 
 /** An article in the list. The HTML is loaded separately, when the article opens. */

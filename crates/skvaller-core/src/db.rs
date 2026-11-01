@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result, api};
 
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 const SCHEMA: &str = "
 CREATE TABLE folders (
@@ -21,7 +21,10 @@ CREATE TABLE feeds (
     title      TEXT NOT NULL,
     folder_id  TEXT REFERENCES folders (id),
     -- 0: no longer subscribed, or never listed. Kept only for its starred articles.
-    subscribed INTEGER NOT NULL
+    subscribed INTEGER NOT NULL,
+    icon_url   TEXT, -- the favicon URL the server lists
+    icon_from  TEXT, -- the URL `icon` was fetched from; NULL until a fetch finishes
+    icon       TEXT  -- a data: URL; NULL if there is none or the fetch failed
 );
 CREATE TABLE articles (
     id        INTEGER PRIMARY KEY,
@@ -50,6 +53,13 @@ CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
     value NOT NULL
 );
+";
+
+/// Schema version 1 to 2: feed icons.
+const MIGRATE_1: &str = "
+ALTER TABLE feeds ADD COLUMN icon_url TEXT;
+ALTER TABLE feeds ADD COLUMN icon_from TEXT;
+ALTER TABLE feeds ADD COLUMN icon TEXT;
 ";
 
 /// Newest crawl time seen from the server, in Unix milliseconds.
@@ -85,6 +95,7 @@ pub(crate) struct FeedRow {
     pub title: String,
     /// `(id, title)` of the folder, if any.
     pub folder: Option<(String, String)>,
+    pub icon_url: Option<String>,
 }
 
 pub(crate) struct ArticleRow {
@@ -116,6 +127,8 @@ pub struct Feed {
     pub folder_id: Option<String>,
     /// False for a feed kept only for the starred articles of an old subscription.
     pub subscribed: bool,
+    /// The favicon as a `data:` URL.
+    pub icon: Option<String>,
 }
 
 /// An article without its HTML, for the article list.
@@ -195,6 +208,11 @@ impl Db {
                     "BEGIN; {SCHEMA} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
                 ))?;
             }
+            1 => {
+                conn.execute_batch(&format!(
+                    "BEGIN; {MIGRATE_1} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+                ))?;
+            }
             SCHEMA_VERSION => {}
             _ => return Err(Error::CacheTooNew),
         }
@@ -220,7 +238,8 @@ impl Db {
     pub fn feeds(&self) -> Result<Vec<Feed>> {
         let conn = self.read();
         let mut stmt = conn.prepare(
-            "SELECT id, title, folder_id, subscribed FROM feeds ORDER BY title COLLATE NOCASE",
+            "SELECT id, title, folder_id, subscribed, icon FROM feeds
+             ORDER BY title COLLATE NOCASE",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(Feed {
@@ -228,6 +247,7 @@ impl Db {
                 title: r.get(1)?,
                 folder_id: r.get(2)?,
                 subscribed: r.get(3)?,
+                icon: r.get(4)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -394,15 +414,22 @@ impl Db {
                  ON CONFLICT DO UPDATE SET title = excluded.title",
             )?;
             let mut feed = tx.prepare(
-                "INSERT INTO feeds (id, title, folder_id, subscribed) VALUES (?1, ?2, ?3, 1)
+                "INSERT INTO feeds (id, title, folder_id, subscribed, icon_url)
+                 VALUES (?1, ?2, ?3, 1, ?4)
                  ON CONFLICT DO UPDATE SET
-                     title = excluded.title, folder_id = excluded.folder_id, subscribed = 1",
+                     title = excluded.title, folder_id = excluded.folder_id, subscribed = 1,
+                     icon_url = excluded.icon_url",
             )?;
             for f in feeds {
                 if let Some((id, title)) = &f.folder {
                     folder.execute(params![id, title])?;
                 }
-                feed.execute(params![f.id, f.title, f.folder.as_ref().map(|(id, _)| id)])?;
+                feed.execute(params![
+                    f.id,
+                    f.title,
+                    f.folder.as_ref().map(|(id, _)| id),
+                    f.icon_url
+                ])?;
             }
         }
         let ids: Vec<&str> = feeds.iter().map(|f| f.id.as_str()).collect();
@@ -428,6 +455,26 @@ impl Db {
             [],
         )?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Feeds whose icon was not fetched from their current icon URL, as `(id, URL)`.
+    pub(crate) fn stale_icons(&self) -> Result<Vec<(String, String)>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, icon_url FROM feeds
+             WHERE icon_url IS NOT NULL AND icon_from IS NOT icon_url",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Stores the icon fetched from `from`, or `None` if there was no usable image.
+    pub(crate) fn set_icon(&self, feed_id: &str, from: &str, icon: Option<&str>) -> Result<()> {
+        self.lock().execute(
+            "UPDATE feeds SET icon_from = ?2, icon = ?3 WHERE id = ?1",
+            params![feed_id, from, icon],
+        )?;
         Ok(())
     }
 
@@ -600,7 +647,31 @@ mod tests {
             id: id.into(),
             title: id.to_uppercase(),
             folder: folder.map(|f| (f.into(), f.to_uppercase())),
+            icon_url: None,
         }
+    }
+
+    #[test]
+    fn version_1_cache_gets_icon_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "{SCHEMA}
+             ALTER TABLE feeds DROP COLUMN icon_url;
+             ALTER TABLE feeds DROP COLUMN icon_from;
+             ALTER TABLE feeds DROP COLUMN icon;
+             INSERT INTO feeds (id, title, subscribed) VALUES ('feed/1', 'A', 1);
+             PRAGMA user_version = 1;"
+        ))
+        .unwrap();
+
+        let db = Db::init(conn).unwrap();
+
+        assert_eq!(db.feeds().unwrap()[0].icon, None);
+        let version: i32 = db.with_conn(|c| {
+            c.pragma_query_value(None, "user_version", |r| r.get(0))
+                .unwrap()
+        });
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     fn article(id: i64, feed_id: &str, read: bool, starred: bool) -> ArticleRow {
