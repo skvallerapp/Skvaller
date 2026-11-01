@@ -8,18 +8,17 @@
   // Styles for the article frame. The frame has its own document, so app.css
   // doesn't reach it.
   const frameCss = `
-    :root { color-scheme: light dark; --text: #1c1c1e; --text-2: #6b6b70; --rule: rgb(0 0 0 / .1); --link: #2f6bd6; }
+    :root { color-scheme: light dark; --text: #1c1c1e; --text-2: #6b6b70; --text-3: #8e8e93; --rule: rgb(0 0 0 / .1); --link: #2f6bd6; }
     @media (prefers-color-scheme: dark) {
-      :root { --text: #e6e6e8; --text-2: #a0a0a6; --rule: rgb(255 255 255 / .1); --link: #6c9cf2; }
+      :root { --text: #e6e6e8; --text-2: #a0a0a6; --text-3: #8a8580; --rule: rgb(255 255 255 / .1); --link: #6c9cf2; }
     }
     html { background: transparent; }
     body { margin: 0; padding: 36px 40px 64px; color: var(--text);
       font: 16px/1.65 system-ui, -apple-system, 'Segoe UI', sans-serif; -webkit-font-smoothing: antialiased; }
     article { max-width: 38em; margin: 0 auto; }
-    header { margin-bottom: 28px; padding-bottom: 18px; border-bottom: 1px solid var(--rule); }
-    .feed { font-size: 12px; font-weight: 600; color: var(--text-2); }
-    h1 { margin: 6px 0 8px; font-size: 26px; line-height: 1.25; font-weight: 700; }
-    .byline { font-size: 13px; color: var(--text-2); }
+    header { margin-bottom: 32px; }
+    .date, .source { font-size: 12px; font-weight: 600; line-height: 1.3; text-transform: uppercase; color: var(--text-3); }
+    h1 { margin: 2px 0 6px; font-size: 36px; line-height: 1.12; font-weight: 800; letter-spacing: -0.015em; }
     a { color: var(--link); text-decoration: none; }
     blockquote { margin: 1.4em 0; padding-left: 1em; border-left: 3px solid var(--rule); color: var(--text-2); }
     img, video { max-width: 100%; height: auto; }
@@ -36,9 +35,9 @@
     const feed = store.feed(article.feedId)?.title ?? ''
     return `<!doctype html><html><head><meta charset="utf-8"><style>${frameCss}</style></head><body><article>
       <header>
-        <div class="feed">${escapeHtml(feed)}</div>
+        <div class="date">${escapeHtml(formatFull(article.published))}</div>
         <h1>${escapeHtml(article.title)}</h1>
-        <div class="byline">${escapeHtml(article.author)} · ${escapeHtml(formatFull(article.published))}</div>
+        <div class="source">${escapeHtml(article.author)}<br>${escapeHtml(feed)}</div>
       </header>
       ${article.html}
     </article></body></html>`

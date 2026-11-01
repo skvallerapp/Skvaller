@@ -1,6 +1,6 @@
 const time = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' })
 const day = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' })
-const full = new Intl.DateTimeFormat(undefined, { dateStyle: 'long', timeStyle: 'short' })
+const full = new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeStyle: 'short' })
 
 /** Time for today, a short date otherwise. */
 export function formatTime(ms: number): string {
