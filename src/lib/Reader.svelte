@@ -73,7 +73,11 @@
   </div>
 
   {#if article}
-    <iframe title={article.title} sandbox="" {srcdoc}></iframe>
+    <!-- Create the frame only once the HTML is in, so it loads once. Chromium leaves
+         a sandboxed frame blank when its srcdoc changes during the first load. -->
+    {#if store.html !== null}
+      <iframe title={article.title} sandbox="" {srcdoc}></iframe>
+    {/if}
   {:else}
     <p class="empty">No article selected</p>
   {/if}
