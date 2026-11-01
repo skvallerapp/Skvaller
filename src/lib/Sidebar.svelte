@@ -1,7 +1,6 @@
 <script lang="ts">
   import ChevronRight from '@lucide/svelte/icons/chevron-right'
   import CircleDot from '@lucide/svelte/icons/circle-dot'
-  import Folder from '@lucide/svelte/icons/folder'
   import Layers from '@lucide/svelte/icons/layers'
   import RotateCw from '@lucide/svelte/icons/rotate-cw'
   import Rss from '@lucide/svelte/icons/rss'
@@ -10,7 +9,7 @@
   import { formatSynced, serviceTitle } from './format'
   import { dragRegion } from './platform'
   import { store } from './store.svelte'
-  import type { Selection, SmartView } from './types'
+  import type { Feed, Selection, SmartView } from './types'
 
   const smartViews: { view: SmartView; label: string; icon: typeof Star }[] = [
     { view: 'unread', label: 'Unread', icon: CircleDot },
@@ -39,14 +38,29 @@
   }
 </script>
 
-{#snippet row(sel: Selection, label: string, count: number, Icon: typeof Star, indent = false)}
+{#snippet row(
+  sel: Selection,
+  label: string,
+  count: number,
+  Icon: typeof Star | null,
+  indent = false,
+  feed?: Feed,
+)}
   <button
     class="row"
     class:indent
     class:selected={isSelected(sel)}
     onclick={() => store.select(sel)}
   >
-    <Icon size={18} strokeWidth={2} class="row-icon" />
+    {#if feed}
+      <span class="row-icon thumb">
+        {#if feed.icon}<img src={feed.icon} alt="" />{:else}<Rss size={12} strokeWidth={2.5} />{/if}
+      </span>
+    {:else if Icon}
+      <Icon size={18} strokeWidth={2} class="row-icon" />
+    {:else}
+      <span class="row-icon"></span>
+    {/if}
     <span class="label">{label}</span>
     {#if count > 0}<span class="count">{count}</span>{/if}
   </button>
@@ -91,18 +105,18 @@
             aria-expanded={!collapsed.has(folder.id)}
             onclick={() => toggleFolder(folder.id)}
           >
-            <ChevronRight size={12} strokeWidth={2.25} />
+            <ChevronRight size={16} strokeWidth={2} />
           </button>
-          {@render row({ kind: 'folder', id: folder.id }, folder.title, store.folderUnread(folder.id), Folder)}
+          {@render row({ kind: 'folder', id: folder.id }, folder.title, store.folderUnread(folder.id), null)}
         </div>
         {#if !collapsed.has(folder.id)}
           {#each store.sidebarFeeds.filter((f) => f.folderId === folder.id) as feed (feed.id)}
-            {@render row({ kind: 'feed', id: feed.id }, feed.title, store.unreadByFeed.get(feed.id) ?? 0, Rss, true)}
+            {@render row({ kind: 'feed', id: feed.id }, feed.title, store.unreadByFeed.get(feed.id) ?? 0, null, true, feed)}
           {/each}
         {/if}
       {/each}
       {#each looseFeeds as feed (feed.id)}
-        {@render row({ kind: 'feed', id: feed.id }, feed.title, store.unreadByFeed.get(feed.id) ?? 0, Rss)}
+        {@render row({ kind: 'feed', id: feed.id }, feed.title, store.unreadByFeed.get(feed.id) ?? 0, null, false, feed)}
       {/each}
     </section>
   </div>
@@ -185,16 +199,21 @@
     position: relative;
   }
 
+  /* Sits over the folder row's icon slot. */
   .disclosure {
     position: absolute;
-    left: -2px;
+    left: 6px;
     top: 0;
     bottom: 0;
     z-index: 1;
     display: grid;
     place-items: center;
-    width: 14px;
-    color: var(--text-3);
+    width: 34px;
+    color: inherit;
+  }
+
+  .folder:has(.row.selected) .disclosure {
+    color: var(--accent-text);
   }
 
   .disclosure :global(svg) {
@@ -217,8 +236,9 @@
     color: var(--text);
   }
 
+  /* Lines the feed's icon up with its folder's title. */
   .row.indent {
-    padding-left: 30px;
+    padding-left: 40px;
   }
 
   .row:hover {
@@ -232,10 +252,29 @@
 
   .row :global(.row-icon) {
     flex: none;
+    width: 18px;
+    height: 18px;
   }
 
   .row.selected .count {
     color: inherit;
+  }
+
+  /* A feed's favicon, or the RSS icon, on a tile. */
+  .thumb {
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    border-radius: 4px;
+    background: var(--thumb-bg);
+    box-shadow: 0 0 0 0.5px var(--thumb-edge);
+    color: var(--text-2);
+  }
+
+  .thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
   }
 
   .label {

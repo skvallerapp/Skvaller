@@ -47,9 +47,10 @@ impl Fake {
     /// for the given `ot`.
     async fn serve(&self, ot: i64, contents: Vec<Value>, unread: &[i64], starred: &[i64]) {
         let subs = json!({ "subscriptions": [
-            { "id": "feed/1", "title": "Kernel Notes",
+            { "id": "feed/1", "title": "Kernel Notes", "iconUrl": "/f.php?h=1",
               "categories": [{ "id": "user/-/label/Tech", "label": "Tech" }] },
-            { "id": "feed/2", "title": "Slow Mornings", "categories": [] },
+            { "id": "feed/2", "title": "Slow Mornings", "iconUrl": "/f.php?h=2",
+              "categories": [] },
         ]});
         self.mount(self.get("subscription/list").respond_with(ok_json(subs)))
             .await;
@@ -620,4 +621,71 @@ async fn old_read_articles_are_pruned() {
     assert_eq!(report.pruned, 1);
     assert_eq!(fake.flags(1), None);
     assert_eq!(fake.flags(2), Some((true, false)));
+}
+
+#[tokio::test]
+async fn feed_icons_are_fetched_once() {
+    let fake = Fake::new().await;
+    fake.serve(NOW - 30 * DAY, vec![], &[], &[]).await;
+    let png = b"\x89PNG fake".to_vec();
+    fake.mount(
+        Mock::given(path("/f.php"))
+            .and(query_param("h", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(png, "image/png"))
+            .expect(1),
+    )
+    .await;
+    // Not an image: stored as no icon, and not asked for again.
+    fake.mount(
+        Mock::given(path("/f.php"))
+            .and(query_param("h", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw("<html>", "text/html"))
+            .expect(1),
+    )
+    .await;
+
+    sync(&fake.client, &fake.db, NOW, DEFAULT_KEEP_READ_DAYS)
+        .await
+        .unwrap();
+    sync(&fake.client, &fake.db, NOW, DEFAULT_KEEP_READ_DAYS)
+        .await
+        .unwrap();
+
+    let icons: Vec<_> = fake
+        .db
+        .feeds()
+        .unwrap()
+        .into_iter()
+        .map(|f| (f.id, f.icon))
+        .collect();
+    assert_eq!(
+        icons,
+        [
+            (
+                "feed/1".to_owned(),
+                Some("data:image/png;base64,iVBORyBmYWtl".to_owned())
+            ),
+            ("feed/2".to_owned(), None),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn failed_icon_fetch_is_retried() {
+    let fake = Fake::new().await;
+    fake.serve(NOW - 30 * DAY, vec![], &[], &[]).await;
+    fake.mount(
+        Mock::given(path("/f.php"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(4),
+    )
+    .await;
+
+    for _ in 0..2 {
+        sync(&fake.client, &fake.db, NOW, DEFAULT_KEEP_READ_DAYS)
+            .await
+            .unwrap();
+    }
+
+    assert!(fake.db.feeds().unwrap().iter().all(|f| f.icon.is_none()));
 }

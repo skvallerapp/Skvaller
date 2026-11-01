@@ -177,6 +177,15 @@ impl Client {
         Ok(())
     }
 
+    /// Resolves a URL the server sent, which may be relative to the API URL.
+    pub(crate) fn resolve(&self, url: &str) -> Option<Url> {
+        Url::parse(&format!("{}/", self.base))
+            .ok()?
+            .join(url)
+            .ok()
+            .filter(|u| matches!(u.scheme(), "http" | "https"))
+    }
+
     fn get(&self, path: &str) -> RequestBuilder {
         self.authed(self.http.get(self.url(path)))
             .query(&[("output", "json")])
@@ -238,6 +247,9 @@ pub(crate) struct Subscription {
     /// only on its own.
     #[serde(rename = "frss:priority")]
     pub priority: Option<String>,
+    /// The feed's favicon. FreshRSS and Miniflux send it.
+    #[serde(rename = "iconUrl")]
+    pub icon_url: Option<String>,
 }
 
 #[derive(Deserialize)]

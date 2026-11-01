@@ -1,5 +1,10 @@
 //! Two-way sync between the server and the local cache.
 
+use std::time::Duration;
+
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+
 use crate::api::{Item, READ, READING_LIST, STARRED, Subscription, next_page, parse_item_id};
 use crate::db::{ArticleRow, FeedRow, Flag};
 use crate::text::plain_text;
@@ -16,6 +21,9 @@ pub const DEFAULT_KEEP_READ_DAYS: u32 = 30;
 const SUMMARY_CHARS: usize = 300;
 /// Item IDs per `edit-tag` or `stream/items/contents` request.
 const BATCH: usize = 250;
+/// Larger icons are skipped. Favicons are a few kilobytes.
+const MAX_ICON_BYTES: usize = 100 * 1024;
+const ICON_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SyncReport {
@@ -91,6 +99,7 @@ pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Re
         db.bump_newest_crawl(ms)?;
     }
     let pruned = db.prune(keep_read_since * 1000)?;
+    fetch_icons(client, db).await?;
     db.set_last_sync(now * 1000)?;
     Ok(SyncReport {
         pushed,
@@ -122,6 +131,47 @@ async fn push(client: &Client, db: &Db) -> Result<usize> {
     Ok(pending.len())
 }
 
+/// Fetches the icons of feeds that are new or whose icon URL changed. An icon that
+/// can't be fetched now is tried again next sync; one that isn't an image is not.
+async fn fetch_icons(client: &Client, db: &Db) -> Result<()> {
+    let stale = db.stale_icons()?;
+    if stale.is_empty() {
+        return Ok(());
+    }
+    // Not the API client: icons may redirect, and they get no access token.
+    let http = reqwest::Client::builder().timeout(ICON_TIMEOUT).build()?;
+    for (feed_id, url) in stale {
+        let Some(resolved) = client.resolve(&url) else {
+            db.set_icon(&feed_id, &url, None)?;
+            continue;
+        };
+        let Ok(res) = http.get(resolved).send().await else {
+            continue;
+        };
+        if res.status().is_server_error() {
+            continue;
+        }
+        let mime = res
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.split(';').next().unwrap_or(v).trim().to_owned())
+            .filter(|m| m.starts_with("image/"));
+        let icon = match (res.status().is_success(), mime) {
+            (true, Some(mime)) => match res.bytes().await {
+                Ok(b) if !b.is_empty() && b.len() <= MAX_ICON_BYTES => {
+                    Some(format!("data:{mime};base64,{}", BASE64.encode(&b)))
+                }
+                Ok(_) => None,
+                Err(_) => continue,
+            },
+            _ => None,
+        };
+        db.set_icon(&feed_id, &url, icon.as_deref())?;
+    }
+    Ok(())
+}
+
 /// Skvaller shows each feed in one folder: the first one the server lists.
 fn feed_row(sub: Subscription) -> FeedRow {
     let folder = sub.categories.into_iter().next().map(|c| {
@@ -134,6 +184,7 @@ fn feed_row(sub: Subscription) -> FeedRow {
         id: sub.id,
         title: sub.title,
         folder,
+        icon_url: sub.icon_url,
     }
 }
 
