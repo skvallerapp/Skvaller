@@ -8,6 +8,7 @@
   import Star from '@lucide/svelte/icons/star'
   import { SvelteSet } from 'svelte/reactivity'
   import { formatSynced, serviceTitle } from './format'
+  import { dragRegion } from './platform'
   import { store } from './store.svelte'
   import type { Selection, SmartView } from './types'
 
@@ -52,7 +53,7 @@
 {/snippet}
 
 <nav class="sidebar" aria-label="Feeds">
-  <div class="toolbar">
+  <div class="toolbar" data-tauri-drag-region={dragRegion}>
     <button
       class="icon-button sync"
       class:spinning={store.status.syncing}
@@ -63,7 +64,7 @@
       <RotateCw size={17} strokeWidth={2} />
     </button>
   </div>
-  <header class="account">
+  <header class="account" data-tauri-drag-region={dragRegion}>
     <h1>{title}</h1>
     <p class:failed={store.status.error} title={store.status.error ?? undefined}>{status}</p>
   </header>
