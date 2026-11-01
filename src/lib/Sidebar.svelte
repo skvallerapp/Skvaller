@@ -61,7 +61,7 @@
       title="Sync"
       onclick={() => store.sync()}
     >
-      <RotateCw size={17} strokeWidth={2} />
+      <RotateCw size={18} strokeWidth={2} />
     </button>
   </div>
   <header class="account" data-tauri-drag-region={dragRegion}>
