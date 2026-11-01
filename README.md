@@ -24,6 +24,18 @@ service it targets.
 - Svelte 5 + TypeScript UI
 - SQLite local cache
 
+## Development
+
+Requires [Rust](https://rustup.rs), [Bun](https://bun.sh) and the
+[Tauri system dependencies](https://v2.tauri.app/start/prerequisites/).
+
+```sh
+bun install
+bun run tauri dev      # run the app
+cargo test --workspace # Rust tests
+bun run check          # type-check the UI
+```
+
 ## License
 
 [GPL-3.0](LICENSE)

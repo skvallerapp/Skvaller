@@ -1,0 +1,10 @@
+[package]
+name = "skvaller-core"
+description = "Sync, storage and Google Reader API client for Skvaller"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
