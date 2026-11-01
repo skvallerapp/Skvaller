@@ -3,6 +3,7 @@
   import CircleDot from '@lucide/svelte/icons/circle-dot'
   import Star from '@lucide/svelte/icons/star'
   import { escapeHtml, formatFull } from './format'
+  import { dragRegion } from './platform'
   import { store } from './store.svelte'
 
   // Styles for the article frame. The frame has its own document, so app.css
@@ -45,7 +46,7 @@
 </script>
 
 <section class="reader" aria-label="Article">
-  <div class="toolbar">
+  <div class="toolbar" data-tauri-drag-region={dragRegion}>
     {#if article}
       <div class="spacer"></div>
       <button

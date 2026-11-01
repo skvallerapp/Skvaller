@@ -3,6 +3,7 @@
   import Star from '@lucide/svelte/icons/star'
   import { formatTime } from './format'
   import { layout, toggleSidebar } from './layout.svelte'
+  import { dragRegion, isMac } from './platform'
   import { store } from './store.svelte'
 
   // Fixed row height keeps the list virtualized and cheap at 5,000+ rows.
@@ -34,7 +35,11 @@
 </script>
 
 <section class="list" aria-label="Articles">
-  <div class="toolbar">
+  <div
+    class="toolbar"
+    class:window-buttons={isMac && !layout.sidebarOpen}
+    data-tauri-drag-region={dragRegion}
+  >
     <button
       class="icon-button"
       aria-label={layout.sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
@@ -91,7 +96,14 @@
     background: var(--list-bg);
   }
 
+  /* Room for the macOS window buttons while the sidebar is hidden. */
+  .toolbar.window-buttons {
+    padding-left: 84px;
+  }
+
   .toolbar {
+    /* Same timing as the sidebar, so the toggle never slides under the window buttons. */
+    transition: padding-left 180ms ease;
     border-bottom: 1px solid var(--separator);
   }
 
