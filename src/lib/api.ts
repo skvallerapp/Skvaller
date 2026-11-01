@@ -3,24 +3,33 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { Article, Library, Selection, Session, SyncStatus } from './types'
 
-export const session = () => invoke<Session>('session')
+// Outside Tauri (a plain browser during `bun run dev`), use mock data instead.
+const mock =
+  import.meta.env.DEV && !('__TAURI_INTERNALS__' in window) ? import('./mock') : null
+
+const call = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
+  mock ? mock.then((m) => m.invoke<T>(cmd, args)) : invoke<T>(cmd, args)
+
+export const session = () => call<Session>('session')
 
 export const signIn = (server: string, username: string, password: string) =>
-  invoke<Session>('sign_in', { server, username, password })
+  call<Session>('sign_in', { server, username, password })
 
 /** Starts a sync. The outcome arrives through `onSyncStatus`. */
-export const syncNow = () => invoke<void>('sync_now')
+export const syncNow = () => call<void>('sync_now')
 
-export const library = () => invoke<Library>('library')
+export const library = () => call<Library>('library')
 
-export const articles = (selection: Selection) => invoke<Article[]>('articles', { selection })
+export const articles = (selection: Selection) => call<Article[]>('articles', { selection })
 
-export const articleHtml = (id: string) => invoke<string | null>('article_html', { id })
+export const articleHtml = (id: string) => call<string | null>('article_html', { id })
 
-export const setRead = (ids: string[], read: boolean) => invoke<void>('set_read', { ids, read })
+export const setRead = (ids: string[], read: boolean) => call<void>('set_read', { ids, read })
 
 export const setStarred = (ids: string[], starred: boolean) =>
-  invoke<void>('set_starred', { ids, starred })
+  call<void>('set_starred', { ids, starred })
 
 export const onSyncStatus = (handler: (status: SyncStatus) => void): Promise<UnlistenFn> =>
-  listen<SyncStatus>('sync-status', (e) => handler(e.payload))
+  mock
+    ? mock.then((m) => m.onSyncStatus(handler))
+    : listen<SyncStatus>('sync-status', (e) => handler(e.payload))

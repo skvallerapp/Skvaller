@@ -39,3 +39,4 @@ Thumbs.db
 
 # Private planning docs
 docs/REQUIREMENTS.md
+.playwright-mcp/
