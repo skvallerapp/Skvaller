@@ -14,6 +14,8 @@ pub struct Config {
     pub sync_interval_minutes: u32,
     /// FR-5c.
     pub keep_read_days: u32,
+    /// Ask before marking every article in a view as read.
+    pub confirm_mark_all_read: bool,
 }
 
 impl Default for Config {
@@ -22,6 +24,7 @@ impl Default for Config {
             account: None,
             sync_interval_minutes: 15,
             keep_read_days: DEFAULT_KEEP_READ_DAYS,
+            confirm_mark_all_read: true,
         }
     }
 }

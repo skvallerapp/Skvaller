@@ -17,10 +17,10 @@ export const articles = (selection: Selection) => invoke<Article[]>('articles', 
 
 export const articleHtml = (id: string) => invoke<string | null>('article_html', { id })
 
-export const setRead = (id: string, read: boolean) => invoke<void>('set_read', { id, read })
+export const setRead = (ids: string[], read: boolean) => invoke<void>('set_read', { ids, read })
 
-export const setStarred = (id: string, starred: boolean) =>
-  invoke<void>('set_starred', { id, starred })
+export const setStarred = (ids: string[], starred: boolean) =>
+  invoke<void>('set_starred', { ids, starred })
 
 export const onSyncStatus = (handler: (status: SyncStatus) => void): Promise<UnlistenFn> =>
   listen<SyncStatus>('sync-status', (e) => handler(e.payload))

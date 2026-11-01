@@ -1,6 +1,15 @@
 import { SvelteSet } from 'svelte/reactivity'
 import * as api from './api'
-import type { Account, Article, CommandError, Feed, Folder, Selection, SyncStatus } from './types'
+import type {
+  Account,
+  Article,
+  CommandError,
+  Feed,
+  Folder,
+  Selection,
+  Settings,
+  SyncStatus,
+} from './types'
 
 /** All UI state. Everything comes from the local cache through `api`; nothing here
  * waits for the network. */
@@ -10,6 +19,7 @@ class Store {
   signedIn = $state(false)
   account = $state<Account | null>(null)
   status = $state<SyncStatus>({ syncing: false, lastSync: null, error: null, unauthorized: false })
+  settings = $state<Settings>({ confirmMarkAllRead: true })
 
   folders = $state.raw<Folder[]>([])
   feeds = $state.raw<Feed[]>([])
@@ -30,14 +40,20 @@ class Store {
   // Responses to older requests are dropped when a newer one was made.
   #listRequest = 0
   #htmlRequest = 0
-  // Reads wait for queued writes, so they never see the cache from before a change.
-  #writes: Promise<unknown> = Promise.resolve()
+  // Local changes, saved one after another. Reads wait for it, so they never see the
+  // cache from before a change.
+  #writes: Promise<void> = Promise.resolve()
 
   /** Feeds to show in the sidebar. Unsubscribed ones exist only for old starred articles. */
   readonly sidebarFeeds: Feed[] = $derived(this.feeds.filter((f) => f.subscribed))
 
   readonly unreadTotal: number = $derived(
     [...this.unreadByFeed.values()].reduce((sum, n) => sum + n, 0),
+  )
+
+  /** Unread articles in the current list. */
+  readonly unreadInView: number = $derived(
+    this.visible.reduce((n, a) => (this.read.has(a.id) ? n : n + 1), 0),
   )
 
   readonly article: Article | null = $derived(
@@ -51,6 +67,7 @@ class Store {
       const session = await api.session()
       this.account = session.account
       this.status = session.status
+      this.settings = session.settings
       this.signedIn = session.signedIn
       if (this.signedIn) await this.#reload()
     } catch (e) {
@@ -64,6 +81,7 @@ class Store {
     const session = await api.signIn(server, username, password)
     this.account = session.account
     this.status = session.status
+    this.settings = session.settings
     this.signedIn = true
     await this.#reload()
   }
@@ -86,7 +104,7 @@ class Store {
     this.selection = selection
     this.articleId = null
     this.html = null
-    void this.#loadList(false)
+    void this.#loadList()
   }
 
   open(id: string) {
@@ -100,16 +118,37 @@ class Store {
   }
 
   toggleRead(id: string) {
+    const article = this.visible.find((a) => a.id === id)
     const read = !this.read.has(id)
     if (read) this.read.add(id)
     else this.read.delete(id)
-    const feedId = this.visible.find((a) => a.id === id)?.feedId
-    if (feedId) {
-      const counts = new Map(this.unreadByFeed)
-      counts.set(feedId, Math.max(0, (counts.get(feedId) ?? 0) + (read ? -1 : 1)))
-      this.unreadByFeed = counts
-    }
-    this.#write(api.setRead(id, read))
+    if (article) this.#adjustUnread([article], read ? -1 : 1)
+    this.#write(() => api.setRead([id], read))
+  }
+
+  /** Marks every article in the current list read. Unlike reading one by one, the
+   * Unread view then empties at once, except for the article being read. */
+  markAllRead() {
+    const unread = this.visible.filter((a) => !this.read.has(a.id))
+    if (unread.length === 0) return
+    for (const a of unread) this.read.add(a.id)
+    this.#adjustUnread(unread, -1)
+    this.#write(() => api.setRead(unread.map((a) => a.id), true))
+    const open = this.articleId
+    const keepOpen = (a: Article) => a.id === open
+    if (this.#isUnreadView) this.visible = this.visible.filter(keepOpen)
+    void this.#loadList(keepOpen)
+  }
+
+  get #isUnreadView(): boolean {
+    return this.selection.kind === 'smart' && this.selection.view === 'unread'
+  }
+
+  /** Adjusts the sidebar counts right away; the next load from the cache corrects them. */
+  #adjustUnread(articles: Article[], delta: number) {
+    const counts = new Map(this.unreadByFeed)
+    for (const a of articles) counts.set(a.feedId, Math.max(0, (counts.get(a.feedId) ?? 0) + delta))
+    this.unreadByFeed = counts
   }
 
   toggleStarred(id: string) {
@@ -117,25 +156,29 @@ class Store {
     if (starred) this.starred.add(id)
     else this.starred.delete(id)
     this.starredCount += starred ? 1 : -1
-    this.#write(api.setStarred(id, starred))
+    this.#write(() => api.setStarred([id], starred))
   }
 
-  /** Runs a local change, then reloads the counts from the cache to stay exact. */
-  #write(change: Promise<void>) {
-    this.#writes = this.#writes
-      .then(() => change)
-      .then(() => this.#loadLibrary())
-      .catch((e) => console.error('Saving a change failed', e))
+  /**
+   * Saves a local change after the ones before it, so they reach the cache in order.
+   * Then reloads the counts from the cache, also after a failure, so the optimistic
+   * counts never stay wrong. The reload is not part of `#writes`: it waits for it.
+   */
+  #write(save: () => Promise<void>) {
+    const saved = this.#writes.then(save).catch((e) => console.error('Saving a change failed', e))
+    this.#writes = saved
+    void saved.then(() => this.#loadLibrary())
   }
 
   #onStatus(status: SyncStatus) {
     this.status = status
     if (status.unauthorized) this.signedIn = false
-    else if (!status.syncing && !status.error) void this.#reload(true)
+    // After a sync, the Unread view keeps what was read since it opened (FR-7a).
+    else if (!status.syncing && !status.error) void this.#reload((a) => this.read.has(a.id))
   }
 
-  async #reload(keepRead = false) {
-    await Promise.all([this.#loadLibrary(), this.#loadList(keepRead)])
+  async #reload(keep?: (a: Article) => boolean) {
+    await Promise.all([this.#loadLibrary(), this.#loadList(keep)])
   }
 
   async #loadLibrary() {
@@ -148,23 +191,22 @@ class Store {
   }
 
   /**
-   * Loads the list for the current selection. With `keepRead`, as after a sync, the
-   * Unread view keeps the articles read since it was opened (FR-7a), so the list
-   * doesn't jump while you read.
+   * Loads the list for the current selection. In the Unread view, listed articles that
+   * are no longer unread stay if `keep` says so, so the list doesn't jump while you read.
    */
-  async #loadList(keepRead: boolean) {
+  async #loadList(keep: (a: Article) => boolean = () => false) {
     const request = ++this.#listRequest
     const selection = $state.snapshot(this.selection)
+    const unreadView = this.#isUnreadView
     await this.#writes
     let list = await api.articles(selection)
     if (request !== this.#listRequest) return
 
-    const unreadView = selection.kind === 'smart' && selection.view === 'unread'
-    if (keepRead && unreadView) {
+    if (unreadView) {
       const ids = new Set(list.map((a) => a.id))
-      const kept = this.visible.filter((a) => !ids.has(a.id) && this.read.has(a.id))
+      const kept = this.visible.filter((a) => !ids.has(a.id) && keep(a))
       if (kept.length > 0) {
-        list = [...list, ...kept.map((a) => ({ ...a, read: true }))]
+        list = [...list, ...kept.map((a) => ({ ...a, read: this.read.has(a.id) }))]
         list.sort((a, b) => b.published - a.published)
       }
     }

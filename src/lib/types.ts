@@ -59,6 +59,13 @@ export interface Session {
   account: Account | null
   signedIn: boolean
   status: SyncStatus
+  settings: Settings
+}
+
+/** Settings from config.json that the UI needs. */
+export interface Settings {
+  /** Ask before marking every article in a view as read. */
+  confirmMarkAllRead: boolean
 }
 
 /** An error from a command. */
