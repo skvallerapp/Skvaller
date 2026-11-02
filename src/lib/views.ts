@@ -1,7 +1,11 @@
-import CircleDot from '@lucide/svelte/icons/circle-dot'
 import Layers from '@lucide/svelte/icons/layers'
 import Star from '@lucide/svelte/icons/star'
+import type { Component } from 'svelte'
 import type { View } from './types'
+import UnreadIcon from './UnreadIcon.svelte'
+
+/** A Lucide icon, or one drawn to the same size. */
+export type ViewIcon = Component<{ size?: number; strokeWidth?: number; class?: string }>
 
 export interface ViewInfo {
   view: View
@@ -10,12 +14,12 @@ export interface ViewInfo {
   allLabel: string
   /** What an empty list says. */
   empty: string
-  icon: typeof Star
+  icon: ViewIcon
 }
 
 /** In the order of the sidebar's button group. */
 export const views: ViewInfo[] = [
-  { view: 'unread', label: 'Unread', allLabel: 'All Unread', empty: 'No Unread Articles', icon: CircleDot },
+  { view: 'unread', label: 'Unread', allLabel: 'All Unread', empty: 'No Unread Articles', icon: UnreadIcon },
   { view: 'starred', label: 'Starred', allLabel: 'All Starred', empty: 'No Starred Articles', icon: Star },
   { view: 'all', label: 'All Articles', allLabel: 'All Articles', empty: 'No Articles', icon: Layers },
 ]

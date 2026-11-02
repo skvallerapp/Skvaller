@@ -1,7 +1,5 @@
 <script lang="ts">
   import BookOpenText from '@lucide/svelte/icons/book-open-text'
-  import Circle from '@lucide/svelte/icons/circle'
-  import CircleDot from '@lucide/svelte/icons/circle-dot'
   import Compass from '@lucide/svelte/icons/compass'
   import Star from '@lucide/svelte/icons/star'
   import { fontStacks, interFontFaces } from './fonts'
@@ -9,6 +7,7 @@
   import { dragRegion } from './platform'
   import { openInBrowser } from './api'
   import { store } from './store.svelte'
+  import UnreadIcon from './UnreadIcon.svelte'
   import { palette } from './theme'
   import { untrack } from 'svelte'
 
@@ -122,11 +121,7 @@
         aria-label={store.read.has(article.id) ? 'Mark as unread' : 'Mark as read'}
         onclick={() => store.toggleRead(article.id)}
       >
-        {#if store.read.has(article.id)}
-          <Circle size={18} strokeWidth={2} />
-        {:else}
-          <CircleDot size={18} strokeWidth={2} />
-        {/if}
+        <UnreadIcon size={18} read={store.read.has(article.id)} />
       </button>
       <button
         class="icon-button"

@@ -3,7 +3,6 @@
   import RotateCw from '@lucide/svelte/icons/rotate-cw'
   import SettingsIcon from '@lucide/svelte/icons/settings'
   import Rss from '@lucide/svelte/icons/rss'
-  import Star from '@lucide/svelte/icons/star'
   import { CheckMenuItem, Menu } from '@tauri-apps/api/menu'
   import { untrack } from 'svelte'
   import { SvelteSet } from 'svelte/reactivity'
@@ -12,7 +11,7 @@
   import { dragRegion, inTauri, isMac } from './platform'
   import { store } from './store.svelte'
   import type { Feed, Scope } from './types'
-  import { viewInfo, views } from './views'
+  import { type ViewIcon, viewInfo, views } from './views'
 
   const current = $derived(viewInfo(store.view))
 
@@ -129,7 +128,7 @@
   scope: Scope,
   label: string,
   count: number,
-  Icon: typeof Star | null,
+  Icon: ViewIcon | null,
   indent = false,
   feed?: Feed,
 )}
