@@ -117,6 +117,14 @@ class Store {
     if (!this.read.has(id)) this.toggleRead(id)
   }
 
+  /** Opens the next (1) or previous (-1) article in the list. With none open, opens the
+   * first. */
+  step(delta: 1 | -1) {
+    const i = this.visible.findIndex((a) => a.id === this.articleId)
+    const next = this.visible[i === -1 ? 0 : i + delta]
+    if (next) this.open(next.id)
+  }
+
   toggleRead(id: string) {
     const article = this.visible.find((a) => a.id === id)
     const read = !this.read.has(id)

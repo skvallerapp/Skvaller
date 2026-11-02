@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import ArticleList from './lib/ArticleList.svelte'
   import { fontStacks } from './lib/fonts'
+  import { openInBrowser } from './lib/api'
   import { LIST, SIDEBAR, layout, saveLayout, toggleSidebar } from './lib/layout.svelte'
   import Reader from './lib/Reader.svelte'
   import Resizer from './lib/Resizer.svelte'
@@ -17,12 +18,50 @@
 
   let resizing = $state(false)
 
+  let list = $state<ArticleList>()
+  let reader = $state<Reader>()
+
+  // Single-key shortcuts (FR-10). Keys the reader frame receives come here too.
+  const shortcuts: Record<string, () => void> = {
+    j: () => store.step(1),
+    k: () => store.step(-1),
+    ArrowDown: () => store.step(1),
+    ArrowUp: () => store.step(-1),
+    ' ': () => reader?.readOn(1),
+    'Shift+ ': () => reader?.readOn(-1),
+    m: () => store.article && store.toggleRead(store.article.id),
+    s: () => store.article && store.toggleStarred(store.article.id),
+    b: () => store.article && openInBrowser(store.article.url),
+    r: () => store.sync(),
+    a: () => list?.markAllRead(),
+  }
+  /** Keys that act again while held down. The others act once per press. */
+  const repeating = new Set(['j', 'k', 'ArrowDown', 'ArrowUp', ' ', 'Shift+ '])
+
+  /** True when the key belongs to the focused element: a text field, a dialog, a
+   * resizer, or arrow keys while reading, which scroll the article. */
+  function ownsKey(e: KeyboardEvent): boolean {
+    const target = e.target as Element
+    if (target.closest?.('input, textarea, select, [contenteditable], [role=dialog], [role=separator]'))
+      return true
+    return e.key.startsWith('Arrow') && target.ownerDocument !== document
+  }
+
   function onkeydown(e: KeyboardEvent) {
     // Cmd+Shift+S on macOS, Ctrl+Shift+S elsewhere.
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === 'KeyS') {
       e.preventDefault()
       toggleSidebar()
+      return
     }
+    if (!store.signedIn || e.metaKey || e.ctrlKey || e.altKey || ownsKey(e)) return
+    // Letters match with Caps Lock on too.
+    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key
+    const name = e.shiftKey ? `Shift+${key}` : key
+    const action = shortcuts[name]
+    if (!action) return
+    e.preventDefault()
+    if (!e.repeat || repeating.has(name)) action()
   }
 </script>
 
@@ -57,7 +96,7 @@
     {/if}
 
     <div class="list" style:width="{layout.listWidth}px">
-      <ArticleList />
+      <ArticleList bind:this={list} />
     </div>
     <Resizer
       label="Resize article list"
@@ -70,7 +109,7 @@
     />
 
     <div class="reader">
-      <Reader />
+      <Reader bind:this={reader} {onkeydown} />
     </div>
   </div>
 {/if}

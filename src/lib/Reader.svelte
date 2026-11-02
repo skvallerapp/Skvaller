@@ -49,15 +49,18 @@
     </article></body></html>`
   })
 
+  let { onkeydown }: { onkeydown: (e: KeyboardEvent) => void } = $props()
   let frame = $state<HTMLIFrameElement>()
 
   // Links in the article open in the system browser, never in the frame. The frame is
   // same-origin, so the app can listen to its events while its own scripts stay off.
   // Relative links resolve against the article's URL, since the frame has no base.
+  // Keys pressed while reading go to the app's shortcuts.
   function onFrameLoad() {
     const doc = frame?.contentDocument
     doc?.addEventListener('click', onLinkClick)
     doc?.addEventListener('auxclick', onLinkClick)
+    doc?.addEventListener('keydown', onkeydown)
   }
 
   function onLinkClick(e: MouseEvent) {
@@ -71,6 +74,21 @@
     if (href.startsWith('#')) return
     e.preventDefault()
     if (href) openInBrowser(href, article?.url)
+  }
+
+  /** Scrolls the article a page down (1) or up (-1). At its end, opens the next one. */
+  export function readOn(direction: 1 | -1) {
+    const page = frame?.contentDocument?.scrollingElement
+    if (!page) {
+      if (direction === 1 && !article) store.step(1)
+      return
+    }
+    if (direction === 1 && page.scrollTop + page.clientHeight >= page.scrollHeight - 1) {
+      store.step(1)
+      return
+    }
+    const smooth = !matchMedia('(prefers-reduced-motion: reduce)').matches
+    page.scrollBy({ top: direction * page.clientHeight * 0.9, behavior: smooth ? 'smooth' : 'auto' })
   }
 </script>
 
