@@ -4,6 +4,7 @@
   import Star from '@lucide/svelte/icons/star'
   import { bundledFontFaces, fontStacks } from './fonts'
   import { escapeHtml, formatFull } from './format'
+  import { animate, motion } from './motion'
   import { dragRegion } from './platform'
   import { openInBrowser } from './api'
   import { store } from './store.svelte'
@@ -20,7 +21,9 @@
     html { background: transparent; }
     body { margin: 0; padding: 36px 40px 64px; color: var(--text);
       font: 16px/1.65 ${fontStacks[store.settings.articleFont]}; -webkit-font-smoothing: antialiased; }
-    article { max-width: 38em; margin: 0 auto; }
+    article { max-width: 38em; margin: 0 auto; animation: enter 160ms ease-out; }
+    @keyframes enter { from { opacity: 0; transform: translateY(4px); } }
+    :root[data-motion='off'] article { animation: none; }
     header { margin-bottom: 32px; }
     header, h1, h2, h3, h4, h5, h6 { font-family: ${fontStacks[store.settings.headlineFont]}; }
     .date, .source { font-size: 12px; font-weight: 600; line-height: 1.3; text-transform: uppercase; color: var(--text-3); }
@@ -41,13 +44,14 @@
   // bundled fonts; with scripts off, nothing in it can use that access. NEVER add
   // allow-scripts next to it: article scripts would then run as the app, with IPC.
   // Only our own header fields are escaped; the body is shown as the feed sent it.
-  // The theme is set on the frame's root, not written into the HTML, so a change
-  // doesn't reload the article.
+  // The theme and motion are set on the frame's root, not written into the HTML, so a
+  // change doesn't reload the article.
   const theme = $derived(palette(store.settings.theme))
+  const frameMotion = $derived(motion(store.settings.animations))
   const srcdoc = $derived.by(() => {
     if (!article) return ''
     const feed = store.feed(article.feedId)?.title ?? ''
-    return `<!doctype html><html data-theme="${untrack(() => theme)}"><head><meta charset="utf-8"><style>${frameCss}</style></head><body><article>
+    return `<!doctype html><html data-theme="${untrack(() => theme)}" data-motion="${untrack(() => frameMotion)}"><head><meta charset="utf-8"><style>${frameCss}</style></head><body><article>
       <header>
         <div class="date">${escapeHtml(formatFull(article.published))}</div>
         <h1>${escapeHtml(article.title)}</h1>
@@ -60,9 +64,21 @@
   let { onkeydown }: { onkeydown: (e: KeyboardEvent) => void } = $props()
   let frame = $state<HTMLIFrameElement>()
 
+  // The star pops when the shown article gets starred, not when a starred one opens.
+  let pop = $state(false)
+  let lastStar: { id?: string; starred: boolean } = { starred: false }
+  $effect(() => {
+    const id = article?.id
+    const starred = id !== undefined && store.starred.has(id)
+    pop = id === lastStar.id && starred && !lastStar.starred
+    lastStar = { id, starred }
+  })
+
   $effect(() => {
     const root = frame?.contentDocument?.documentElement
-    if (root) root.dataset.theme = theme
+    if (!root) return
+    root.dataset.theme = theme
+    root.dataset.motion = frameMotion
   })
 
   // Links in the article open in the system browser, never in the frame. The frame is
@@ -103,8 +119,7 @@
       store.step(1)
       return
     }
-    const smooth = !matchMedia('(prefers-reduced-motion: reduce)').matches
-    page.scrollBy({ top: direction * page.clientHeight * 0.9, behavior: smooth ? 'smooth' : 'auto' })
+    page.scrollBy({ top: direction * page.clientHeight * 0.9, behavior: animate() ? 'smooth' : 'auto' })
   }
 </script>
 
@@ -127,6 +142,7 @@
       <button
         class="icon-button"
         class:starred={store.starred.has(article.id)}
+        class:pop
         aria-label={store.starred.has(article.id) ? 'Remove star' : 'Star'}
         aria-pressed={store.starred.has(article.id)}
         onclick={() => store.toggleStarred(article.id)}
@@ -215,10 +231,19 @@
     }
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .loading {
-      animation: none;
-      opacity: 0.5;
+  /* Without the pulse, a dimmed icon shows the loading. */
+  :global(:root[data-motion='off']) .loading {
+    opacity: 0.5;
+  }
+
+  /* Starring an article, not opening a starred one. */
+  .pop :global(svg) {
+    animation: pop 220ms ease-out;
+  }
+
+  @keyframes pop {
+    50% {
+      transform: scale(1.25);
     }
   }
 

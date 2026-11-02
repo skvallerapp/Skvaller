@@ -75,6 +75,8 @@ export interface Settings {
   /** Ask before marking every article in a view as read. */
   confirmMarkAllRead: boolean
   theme: Theme
+  /** Off stops the UI's animations. The system's reduced motion stops them as well. */
+  animations: boolean
   uiFont: Font
   /** The article's headline, with its date and source. */
   headlineFont: Font

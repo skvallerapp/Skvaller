@@ -268,6 +268,8 @@
     border-radius: 10px;
     background: var(--reader-bg);
     box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+    animation: appear 140ms ease-out;
+    transform-origin: top right;
   }
 
   .confirm p {
