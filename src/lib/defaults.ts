@@ -6,6 +6,7 @@ export const defaultSettings: Settings = {
   keepReadDays: 30,
   confirmMarkAllRead: true,
   theme: 'system',
+  animations: true,
   uiFont: 'inter',
   headlineFont: 'inter',
   articleFont: 'literata',

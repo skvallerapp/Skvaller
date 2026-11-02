@@ -9,6 +9,7 @@
   import * as api from './lib/api'
   import { fontStacks } from './lib/fonts'
   import { serviceTitle } from './lib/format'
+  import { motion } from './lib/motion'
   import { dragRegion, isMac } from './lib/platform'
   import ShortcutList from './lib/ShortcutList.svelte'
   import { palette } from './lib/theme'
@@ -94,6 +95,7 @@
     if (!settings) return
     document.documentElement.style.fontFamily = fontStacks[settings.uiFont]
     document.documentElement.dataset.theme = palette(settings.theme)
+    document.documentElement.dataset.motion = motion(settings.animations)
   })
 
   /** Applies a change at once. The main window gets it through `settings-changed`. A
@@ -236,6 +238,22 @@
                 {@render select('theme', settings.theme, themes, (theme) => change({ theme }))}
               </div>
             </div>
+          </section>
+          <section>
+            <h2>Motion</h2>
+            <div class="group">
+              <div class="row">
+                <label for="animations">Animations</label>
+                <input
+                  id="animations"
+                  type="checkbox"
+                  role="switch"
+                  checked={settings.animations}
+                  onchange={(e) => change({ animations: e.currentTarget.checked })}
+                />
+              </div>
+            </div>
+            <p class="note">Off when the system is set to reduce motion.</p>
           </section>
           <section>
             <h2>Fonts</h2>
@@ -529,6 +547,7 @@
 
   .confirm {
     padding: 12px;
+    animation: appear 140ms ease-out;
   }
 
   .confirm p {
@@ -579,12 +598,5 @@
 
   input[role='switch']:checked::after {
     transform: translateX(14px);
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    input[role='switch'],
-    input[role='switch']::after {
-      transition: none;
-    }
   }
 </style>

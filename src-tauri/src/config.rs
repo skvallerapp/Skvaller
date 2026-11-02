@@ -31,6 +31,9 @@ pub struct Settings {
     pub confirm_mark_all_read: bool,
     #[serde(deserialize_with = "or_default")]
     pub theme: Theme,
+    /// Off stops the UI's animations. The system's reduced motion stops them as well.
+    #[serde(deserialize_with = "animations_or_default")]
+    pub animations: bool,
     #[serde(deserialize_with = "or_default")]
     pub ui_font: Font,
     /// The article's headline, with its date and source.
@@ -114,6 +117,10 @@ fn article_font_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<Font, D::E
     or_else(d, |s| s.article_font)
 }
 
+fn animations_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    or_else(d, |s| s.animations)
+}
+
 fn confirm_mark_all_read_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     or_else(d, |s| s.confirm_mark_all_read)
 }
@@ -125,6 +132,7 @@ impl Default for Settings {
             keep_read_days: DEFAULT_KEEP_READ_DAYS,
             confirm_mark_all_read: true,
             theme: Theme::default(),
+            animations: true,
             ui_font: Font::default(),
             headline_font: Font::default(),
             article_font: Font::Literata,
@@ -228,7 +236,7 @@ mod tests {
     fn a_bad_value_gives_that_settings_default_and_keeps_the_rest() {
         let config: Config = serde_json::from_str(
             r#"{ "account": { "server": "https://rss.example.com", "username": "carl" },
-                 "syncIntervalMinutes": "15", "keepReadDays": -1, "confirmMarkAllRead": null,
+                 "syncIntervalMinutes": "15", "keepReadDays": -1, "confirmMarkAllRead": null, "animations": "yes",
                  "shortcuts": { "next": 5 }, "articleFont": "serif" }"#,
         )
         .unwrap();
@@ -236,6 +244,7 @@ mod tests {
         assert_eq!(config.settings.sync_interval_minutes, 15);
         assert_eq!(config.settings.keep_read_days, DEFAULT_KEEP_READ_DAYS);
         assert!(config.settings.confirm_mark_all_read);
+        assert!(config.settings.animations);
         assert!(config.settings.shortcuts.is_empty());
         assert_eq!(config.settings.article_font, Font::Serif);
         assert!(config.account.is_some());

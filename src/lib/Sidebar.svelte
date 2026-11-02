@@ -5,9 +5,11 @@
   import Rss from '@lucide/svelte/icons/rss'
   import { CheckMenuItem, Menu } from '@tauri-apps/api/menu'
   import { untrack } from 'svelte'
+  import { slide } from 'svelte/transition'
   import { SvelteSet } from 'svelte/reactivity'
   import { formatSynced, serviceTitle } from './format'
   import { openSettings } from './api'
+  import { ms } from './motion'
   import { dragRegion, inTauri, isMac } from './platform'
   import { store } from './store.svelte'
   import type { Feed, Scope } from './types'
@@ -67,13 +69,14 @@
   }
 
   let viewButtons: HTMLButtonElement[] = []
+  const viewIndex = $derived(views.findIndex((v) => v.view === store.view))
 
   /** Arrow keys move between the views, as in a radio group. */
   function onViewsKeydown(e: KeyboardEvent) {
     const step = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key]
     if (!step) return
     e.preventDefault()
-    const i = (views.findIndex((v) => v.view === store.view) + step + views.length) % views.length
+    const i = (viewIndex + step + views.length) % views.length
     store.setView(views[i].view)
     viewButtons[i].focus()
   }
@@ -202,9 +205,11 @@
             {@render row({ kind: 'folder', id: folder.id }, folder.title, store.folderCounts.get(folder.id) ?? 0, null)}
           </div>
           {#if !collapsed.has(folder.id)}
-            {#each feedsByFolder.get(folder.id) ?? [] as feed (feed.id)}
-              {@render row({ kind: 'feed', id: feed.id }, feed.title, store.counts.get(feed.id) ?? 0, null, true, feed)}
-            {/each}
+            <div transition:slide={{ duration: ms(160) }}>
+              {#each feedsByFolder.get(folder.id) ?? [] as feed (feed.id)}
+                {@render row({ kind: 'feed', id: feed.id }, feed.title, store.counts.get(feed.id) ?? 0, null, true, feed)}
+              {/each}
+            </div>
           {/if}
         {/each}
         {#each looseFeeds as feed (feed.id)}
@@ -213,7 +218,16 @@
       </section>
     {/if}
   </div>
-  <div class="views" role="radiogroup" aria-label="Show" tabindex="-1" onkeydown={onViewsKeydown}>
+  <div
+    class="views"
+    role="radiogroup"
+    aria-label="Show"
+    tabindex="-1"
+    style:--count={views.length}
+    style:--index={viewIndex}
+    onkeydown={onViewsKeydown}
+  >
+    <span class="indicator" aria-hidden="true"></span>
     {#each views as v, i (v.view)}
       <button
         role="radio"
@@ -253,11 +267,9 @@
     }
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .sync.spinning :global(svg) {
-      animation: none;
-      opacity: 0.5;
-    }
+  /* Without the spin, a dimmed icon shows the sync. */
+  :global(:root[data-motion='off']) .sync.spinning :global(svg) {
+    opacity: 0.5;
   }
 
   .account {
@@ -399,8 +411,10 @@
     color: var(--text-3);
   }
 
-  /* A segmented control: one button per view. */
+  /* A segmented control: one button per view, over an indicator that slides to the
+     selected one. */
   .views {
+    position: relative;
     flex: none;
     display: flex;
     gap: 2px;
@@ -410,7 +424,23 @@
     background: var(--active);
   }
 
+  .indicator {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    left: 2px;
+    width: calc((100% - 4px - (var(--count) - 1) * 2px) / var(--count));
+    transform: translateX(calc(var(--index) * (100% + 2px)));
+    border-radius: 6px;
+    background: var(--segment-bg);
+    box-shadow:
+      0 0 0 0.5px var(--thumb-edge),
+      0 0.5px 2px rgb(0 0 0 / 0.15);
+    transition: transform 180ms ease;
+  }
+
   .views button {
+    position: relative;
     flex: 1;
     display: grid;
     place-items: center;
@@ -419,16 +449,12 @@
     color: var(--text-2);
   }
 
-  .views button:hover {
+  .views button:hover:not([aria-checked='true']) {
     background: var(--hover);
     color: var(--text);
   }
 
   .views button[aria-checked='true'] {
-    background: var(--segment-bg);
-    box-shadow:
-      0 0 0 0.5px var(--thumb-edge),
-      0 0.5px 2px rgb(0 0 0 / 0.15);
     color: var(--text);
   }
 </style>
