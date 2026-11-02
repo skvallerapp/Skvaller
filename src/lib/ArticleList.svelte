@@ -155,8 +155,8 @@
             Mark {unread.toLocaleString()} {unread === 1 ? 'article' : 'articles'} as read?
           </p>
           <div class="actions">
-            <button class="secondary" onclick={cancel}>Cancel</button>
-            <button class="primary" bind:this={confirmButton} onclick={confirmMarkAll}>
+            <button class="button" onclick={cancel}>Cancel</button>
+            <button class="button primary" bind:this={confirmButton} onclick={confirmMarkAll}>
               Mark as Read
             </button>
           </div>
@@ -277,22 +277,6 @@
     display: flex;
     justify-content: flex-end;
     gap: 8px;
-  }
-
-  .actions button {
-    height: 28px;
-    padding: 0 12px;
-    border-radius: 6px;
-    font-weight: 600;
-  }
-
-  .secondary {
-    background: var(--active);
-  }
-
-  .primary {
-    background: var(--accent);
-    color: var(--accent-text);
   }
 
   .viewport {

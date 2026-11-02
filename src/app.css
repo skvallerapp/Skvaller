@@ -19,6 +19,8 @@
   --unread-dot: #2f6bd6;
   --star: #e0a21b;
   --error: #c4352b;
+  /* Behind white text, so the same in both themes. */
+  --destructive: #c4352b;
   --thumb-bg: #ffffff;
   --thumb-edge: rgb(0 0 0 / 0.15);
 }
@@ -97,6 +99,24 @@ button {
 .icon-button:disabled {
   background: none;
   color: var(--text-3);
+}
+
+.button {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-weight: 600;
+  background: var(--active);
+}
+
+.button.primary {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.button.destructive {
+  background: var(--destructive);
+  color: #ffffff;
 }
 
 :focus-visible {

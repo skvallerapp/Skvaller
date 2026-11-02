@@ -11,11 +11,21 @@ use skvaller_core::{
     ArticleSummary, Client, Counts, Db, Error, Feed, Folder, Selection, delete_token, load_token,
     save_token, sync,
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder};
+use tokio::sync::Notify;
+use tokio::time::{Instant, sleep_until};
 
-use crate::config::{Account, Config, Font};
+use crate::config::{Account, Config, Settings};
 
 const SYNC_STATUS_EVENT: &str = "sync-status";
+/// Sent to every window with the new `Settings` when they change.
+const SETTINGS_EVENT: &str = "settings-changed";
+/// Sent to every window with the `Account` after signing in.
+const SIGNED_IN_EVENT: &str = "signed-in";
+/// Sent to every window after signing out.
+const SIGNED_OUT_EVENT: &str = "signed-out";
+/// The label of the Settings window, in tauri.conf.json.
+const SETTINGS_WINDOW: &str = "settings";
 
 pub struct AppState {
     db: Arc<Db>,
@@ -26,11 +36,15 @@ pub struct AppState {
     client: Mutex<Option<Client>>,
     /// Held while a sync runs, so only one runs at a time.
     syncing: tokio::sync::Mutex<()>,
+    /// Wakes the background sync when the sync interval changes.
+    interval_changed: Notify,
 }
 
 impl AppState {
     pub fn load(app: &AppHandle) -> Result<Self, Box<dyn std::error::Error>> {
-        let data_dir = app.path().app_data_dir()?;
+        // Local, not roaming, on Windows: a cache has no business following the user
+        // between machines.
+        let data_dir = app.path().app_local_data_dir()?;
         let config_dir = app.path().app_config_dir()?;
         std::fs::create_dir_all(&data_dir)?;
         std::fs::create_dir_all(&config_dir)?;
@@ -41,11 +55,23 @@ impl AppState {
             config_path,
             client: Mutex::new(None),
             syncing: tokio::sync::Mutex::new(()),
+            interval_changed: Notify::new(),
         })
     }
 
     fn config(&self) -> Config {
         lock(&self.config).clone()
+    }
+
+    /// Changes the config and saves it, under the lock, so concurrent changes to
+    /// different fields don't undo each other.
+    fn update_config(&self, change: impl FnOnce(&mut Config)) -> CommandResult<()> {
+        let mut config = lock(&self.config);
+        let mut new = config.clone();
+        change(&mut new);
+        new.save(&self.config_path).map_err(CommandError::other)?;
+        *config = new;
+        Ok(())
     }
 
     fn client(&self) -> Option<Client> {
@@ -118,7 +144,16 @@ async fn ensure_client(state: &AppState) -> CommandResult<Option<Client>> {
         return Ok(None);
     };
     let client = Client::new(&account.server, &token)?;
-    *lock(&state.client) = Some(client.clone());
+    // Signing in or out may have happened while the token loaded. Keep this client only
+    // if nothing replaced it and the account is still the same.
+    let mut current = lock(&state.client);
+    if let Some(current) = current.as_ref() {
+        return Ok(Some(current.clone()));
+    }
+    if state.config().account.as_ref() != Some(&account) {
+        return Ok(None);
+    }
+    *current = Some(client.clone());
     Ok(Some(client))
 }
 
@@ -130,25 +165,6 @@ pub struct Session {
     signed_in: bool,
     status: SyncStatus,
     settings: Settings,
-}
-
-/// The settings the UI needs.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Settings {
-    confirm_mark_all_read: bool,
-    ui_font: Font,
-    article_font: Font,
-}
-
-impl From<&Config> for Settings {
-    fn from(config: &Config) -> Self {
-        Self {
-            confirm_mark_all_read: config.confirm_mark_all_read,
-            ui_font: config.ui_font,
-            article_font: config.article_font,
-        }
-    }
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -168,7 +184,7 @@ pub async fn session(state: State<'_, AppState>) -> CommandResult<Session> {
     let signed_in = ensure_client(&state).await?.is_some();
     let config = state.config();
     Ok(Session {
-        settings: Settings::from(&config),
+        settings: config.settings,
         account: config.account,
         signed_in,
         status: SyncStatus {
@@ -201,23 +217,29 @@ pub async fn sign_in(
     {
         // No sync of the old account may write while the cache is emptied.
         let _no_sync = state.syncing.lock().await;
-        let mut config = state.config();
-        if let Some(old) = config.account.as_ref().filter(|old| **old != account) {
+        // The cache belongs to the saved account. With none saved, it may hold what a
+        // failed sign-out left behind.
+        let old = state.config().account;
+        if old.as_ref() != Some(&account) {
             state.db.clear()?;
-            let key = old.keychain_key();
-            blocking(move || delete_token(&key)).await?;
         }
-        config.account = Some(account.clone());
-        config
-            .save(&state.config_path)
-            .map_err(CommandError::other)?;
-        *lock(&state.config) = config;
+        if let Some(old) = old.filter(|old| *old != account) {
+            let key = old.keychain_key();
+            if let Err(e) = blocking(move || delete_token(&key)).await {
+                eprintln!(
+                    "Signing in: removing the old account's token failed: {}",
+                    e.message
+                );
+            }
+        }
+        state.update_config(|config| config.account = Some(account.clone()))?;
         *lock(&state.client) = Some(client);
     }
 
+    let _ = app.emit(SIGNED_IN_EVENT, &account);
     tauri::async_runtime::spawn(async move { run_sync(&app).await });
     Ok(Session {
-        settings: Settings::from(&state.config()),
+        settings: state.config().settings,
         account: Some(account),
         signed_in: true,
         status: SyncStatus {
@@ -284,6 +306,81 @@ pub async fn set_starred(
     Ok(state.db.set_starred(&parse_ids(&ids)?, starred)?)
 }
 
+/// Saves the settings and sends them to every window.
+#[tauri::command]
+pub async fn set_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: Settings,
+) -> CommandResult<()> {
+    let mut interval_changed = false;
+    state.update_config(|config| {
+        interval_changed = config.settings.sync_interval_minutes != settings.sync_interval_minutes;
+        config.settings = settings.clone();
+    })?;
+    if interval_changed {
+        state.interval_changed.notify_one();
+    }
+    let _ = app.emit(SETTINGS_EVENT, settings);
+    Ok(())
+}
+
+/// Signs out: removes the account from the config, its token from the keychain and every
+/// article from the cache, queued changes included. Closes the Settings window, where
+/// signing out happens.
+///
+/// Once the account is gone from the config, the user is signed out. Removing the token
+/// and the articles after that is best effort: a failure is logged, and the next sign-in
+/// empties the cache anyway.
+#[tauri::command]
+pub async fn sign_out(app: AppHandle, state: State<'_, AppState>) -> CommandResult<()> {
+    // No sync may write while the cache is emptied.
+    let _no_sync = state.syncing.lock().await;
+    let account = state.config().account;
+    state.update_config(|config| config.account = None)?;
+    *lock(&state.client) = None;
+
+    if let Some(account) = account {
+        let key = account.keychain_key();
+        if let Err(e) = blocking(move || delete_token(&key)).await {
+            eprintln!("Signing out: removing the token failed: {}", e.message);
+        }
+    }
+    if let Err(e) = state.db.clear() {
+        eprintln!("Signing out: emptying the cache failed: {e}");
+    }
+
+    let _ = app.emit(SIGNED_OUT_EVENT, ());
+    if let Some(window) = app.get_webview_window(SETTINGS_WINDOW) {
+        let _ = window.close();
+    }
+    Ok(())
+}
+
+/// Opens the Settings window, or brings it to the front when it is open. Async because
+/// creating a window from a synchronous command deadlocks on Windows.
+#[tauri::command]
+pub async fn open_settings(app: AppHandle) -> CommandResult<()> {
+    show_settings_window(&app).map_err(CommandError::other)
+}
+
+/// Opens or focuses the Settings window, as defined in tauri.conf.json.
+pub fn show_settings_window(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window(SETTINGS_WINDOW) {
+        window.unminimize()?;
+        return window.set_focus();
+    }
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == SETTINGS_WINDOW)
+        .expect("tauri.conf.json defines the Settings window");
+    WebviewWindowBuilder::from_config(app, config)?.build()?;
+    Ok(())
+}
+
 fn parse_ids(ids: &[String]) -> CommandResult<Vec<i64>> {
     ids.iter().map(|id| parse_id(id)).collect()
 }
@@ -293,17 +390,33 @@ fn parse_id(id: &str) -> CommandResult<i64> {
         .map_err(|_| CommandError::other(format!("bad article ID {id:?}")))
 }
 
-/// Syncs on start, then every `sync_interval_minutes`.
+/// Syncs on start, then every `sync_interval_minutes` after the last automatic sync.
+/// With the interval set to manually (0), it never syncs on its own, not on start either.
+/// A changed interval applies at once.
 pub fn start_background_sync(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let mut last: Option<Instant> = None;
         loop {
-            run_sync(&app).await;
-            let minutes = app
-                .state::<AppState>()
-                .config()
-                .sync_interval_minutes
-                .max(1);
-            tokio::time::sleep(Duration::from_secs(u64::from(minutes) * 60)).await;
+            let minutes = state.config().settings.sync_interval_minutes;
+            let due = match (minutes, last) {
+                (0, _) => None,
+                (_, None) => Some(Instant::now()),
+                (m, Some(last)) => Some(last + Duration::from_secs(u64::from(m) * 60)),
+            };
+            let wait = async {
+                match due {
+                    Some(due) => sleep_until(due).await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                () = wait => {
+                    run_sync(&app).await;
+                    last = Some(Instant::now());
+                }
+                () = state.interval_changed.notified() => {}
+            }
         }
     });
 }
@@ -341,7 +454,7 @@ async fn run_sync(app: &AppHandle) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
-    let keep_read_days = state.config().keep_read_days;
+    let keep_read_days = state.config().settings.keep_read_days.max(1);
     let status = match sync(&client, &state.db, now, keep_read_days).await {
         Ok(_) => SyncStatus {
             last_sync: last_sync(),

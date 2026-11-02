@@ -2,13 +2,16 @@
   import { onMount } from 'svelte'
   import ArticleList from './lib/ArticleList.svelte'
   import { fontStacks } from './lib/fonts'
-  import { openInBrowser } from './lib/api'
+  import { openInBrowser, openSettings } from './lib/api'
   import { LIST, SIDEBAR, layout, saveLayout, toggleSidebar } from './lib/layout.svelte'
   import Reader from './lib/Reader.svelte'
   import Resizer from './lib/Resizer.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import SignIn from './lib/SignIn.svelte'
+  import { isMac } from './lib/platform'
+  import { bindings, fixedKeys, keyName } from './lib/shortcuts'
   import { store } from './lib/store.svelte'
+  import type { ShortcutAction } from './lib/types'
 
   onMount(() => void store.init())
 
@@ -21,22 +24,26 @@
   let list = $state<ArticleList>()
   let reader = $state<Reader>()
 
-  // Single-key shortcuts (FR-10). Keys the reader frame receives come here too.
-  const shortcuts: Record<string, () => void> = {
-    j: () => store.step(1),
-    k: () => store.step(-1),
-    ArrowDown: () => store.step(1),
-    ArrowUp: () => store.step(-1),
-    ' ': () => reader?.readOn(1),
-    'Shift+ ': () => reader?.readOn(-1),
-    m: () => store.article && store.toggleRead(store.article.id),
-    s: () => store.article && store.toggleStarred(store.article.id),
-    b: () => store.article && openInBrowser(store.article.url),
-    r: () => store.sync(),
-    a: () => list?.markAllRead(),
+  const actions: Record<ShortcutAction, () => void> = {
+    next: () => store.step(1),
+    previous: () => store.step(-1),
+    readOn: () => reader?.readOn(1),
+    readBack: () => reader?.readOn(-1),
+    toggleRead: () => store.article && store.toggleRead(store.article.id),
+    toggleStar: () => store.article && store.toggleStarred(store.article.id),
+    openInBrowser: () => store.article && openInBrowser(store.article.url),
+    sync: () => store.sync(),
+    markAllRead: () => list?.markAllRead(),
   }
-  /** Keys that act again while held down. The others act once per press. */
-  const repeating = new Set(['j', 'k', 'ArrowDown', 'ArrowUp', ' ', 'Shift+ '])
+  /** Actions that run again while their key is held down. The others run once. */
+  const repeating = new Set<ShortcutAction>(['next', 'previous', 'readOn', 'readBack'])
+
+  const actionByKey = $derived.by(() => {
+    const map = new Map<string, ShortcutAction>()
+    for (const [action, key] of Object.entries(bindings(store.settings.shortcuts)))
+      if (key !== null) map.set(key, action as ShortcutAction)
+    return map
+  })
 
   /** True when the key belongs to the focused element: a text field, a dialog, a
    * resizer, or arrow keys while reading, which scroll the article. */
@@ -47,6 +54,7 @@
     return e.key.startsWith('Arrow') && target.ownerDocument !== document
   }
 
+  // Keys the reader frame receives come here too.
   function onkeydown(e: KeyboardEvent) {
     // Cmd+Shift+S on macOS, Ctrl+Shift+S elsewhere.
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === 'KeyS') {
@@ -54,14 +62,18 @@
       toggleSidebar()
       return
     }
-    if (!store.signedIn || e.metaKey || e.ctrlKey || e.altKey || ownsKey(e)) return
-    // Letters match with Caps Lock on too.
-    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key
-    const name = e.shiftKey ? `Shift+${key}` : key
-    const action = shortcuts[name]
+    // macOS opens Settings from the app menu, with Cmd+,.
+    if (!isMac && e.ctrlKey && !e.shiftKey && !e.altKey && e.key === ',') {
+      e.preventDefault()
+      void openSettings()
+      return
+    }
+    if (!store.signedIn || ownsKey(e)) return
+    const key = keyName(e)
+    const action = key === null ? undefined : (fixedKeys[key] ?? actionByKey.get(key))
     if (!action) return
     e.preventDefault()
-    if (!e.repeat || repeating.has(name)) action()
+    if (!e.repeat || repeating.has(action)) actions[action]()
   }
 </script>
 
