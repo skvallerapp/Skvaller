@@ -9,12 +9,16 @@ repository.workspace = true
 
 [dependencies]
 base64 = "0.23.1"
+dom_query = "0.29.0"
+dom_smoothie = "0.19.0"
+encoding_rs = "0.8.44"
 keyring = "4.2.0"
 reqwest = { version = "0.13.5", features = ["form", "gzip", "json", "query"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["rt"] }
 
 [dev-dependencies]
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }

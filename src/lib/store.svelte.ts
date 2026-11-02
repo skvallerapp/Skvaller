@@ -33,6 +33,14 @@ class Store {
   articleId = $state<string | null>(null)
   /** Untrusted HTML of the open article. Render only in the sandboxed reader frame. */
   html = $state<string | null>(null)
+  /** The open article shows Reader View: its full text, from its web page. */
+  readerView = $state(false)
+  /** Untrusted Reader View HTML of the open article, once loaded. */
+  fullText = $state<string | null>(null)
+  fullTextState = $state<'idle' | 'loading' | 'failed'>('idle')
+  /** For a moment after Reader View starts loading, the reader waits for it instead of
+   * showing the feed's content and swapping. */
+  awaitingFullText = $state(false)
 
   /** Read and starred state of the listed articles, changed in place by the user. */
   readonly read = new SvelteSet<string>()
@@ -42,6 +50,7 @@ class Store {
   // Responses to older requests are dropped when a newer one was made.
   #listRequest = 0
   #htmlRequest = 0
+  #fullTextRequest = 0
   // Bumped on sign-out, so loads from before it are dropped.
   #session = 0
   // Local changes, saved one after another. Reads wait for it, so they never see the
@@ -110,6 +119,7 @@ class Store {
     this.selection = selection
     this.articleId = null
     this.html = null
+    this.#resetFullText()
     void this.#loadList()
   }
 
@@ -120,7 +130,73 @@ class Store {
     void api.articleHtml(id).then((html) => {
       if (request === this.#htmlRequest) this.html = html ?? ''
     })
+    if (id !== this.#fullTextId) {
+      this.#resetFullText()
+      this.#fullTextId = id
+      const article = this.visible.find((a) => a.id === id)
+      if (article?.url && this.feed(article.feedId)?.readerView) {
+        this.readerView = true
+        this.#loadFullText(id, { retry: false, hold: true })
+      }
+    }
     if (!this.read.has(id)) this.toggleRead(id)
+  }
+
+  /** Switches the open article between Reader View and the feed's content. */
+  toggleReaderView() {
+    if (!this.article?.url) return
+    this.readerView = !this.readerView
+    if (this.readerView && this.fullText === null && this.fullTextState !== 'loading')
+      this.#loadFullText(this.article.id, { retry: true, hold: false })
+  }
+
+  /** Opens the feed's articles in Reader View from now on, or stops. The open article
+   * follows. */
+  setFeedReaderView(feedId: string, on: boolean) {
+    this.feeds = this.feeds.map((f) => (f.id === feedId ? { ...f, readerView: on } : f))
+    this.#write(() => api.setFeedReaderView(feedId, on))
+    if (this.article?.feedId === feedId && this.readerView !== on) this.toggleReaderView()
+  }
+
+  /** Fetching can take seconds. Until it's done, the reader shows the feed's content;
+   * with `hold`, for an article just opened, only after a moment. If it fails, Reader
+   * View turns off and says so. `retry` fetches a page given up on. */
+  #loadFullText(id: string, { retry, hold }: { retry: boolean; hold: boolean }) {
+    const request = ++this.#fullTextRequest
+    this.fullTextState = 'loading'
+    this.awaitingFullText = hold
+    if (hold)
+      setTimeout(() => {
+        if (request === this.#fullTextRequest) this.awaitingFullText = false
+      }, 400)
+    void api.fullText(id, retry).then(
+      (html) => {
+        if (request !== this.#fullTextRequest) return
+        this.fullText = html
+        this.fullTextState = 'idle'
+        this.awaitingFullText = false
+      },
+      (e) => {
+        if (request !== this.#fullTextRequest) return
+        console.warn('Reader View failed', e)
+        // Turned off meanwhile: nothing to say.
+        this.fullTextState = this.readerView ? 'failed' : 'idle'
+        this.awaitingFullText = false
+        this.readerView = false
+      },
+    )
+  }
+
+  /** The article whose Reader View state this is. */
+  #fullTextId: string | null = null
+
+  #resetFullText() {
+    this.#fullTextRequest++
+    this.#fullTextId = null
+    this.fullText = null
+    this.fullTextState = 'idle'
+    this.awaitingFullText = false
+    this.readerView = false
   }
 
   /** Opens the next (1) or previous (-1) article in the list. With none open, opens the
@@ -200,6 +276,7 @@ class Store {
     this.visible = []
     this.articleId = null
     this.html = null
+    this.#resetFullText()
     this.read.clear()
     this.starred.clear()
   }

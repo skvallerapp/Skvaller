@@ -10,14 +10,14 @@ const folders: Folder[] = [
 ]
 
 const feeds: Feed[] = [
-  { id: 'hn', title: 'Hacker News', folderId: 'f-tech', subscribed: true, icon: null },
-  { id: 'lwn', title: 'LWN.net', folderId: 'f-tech', subscribed: true, icon: null },
-  { id: 'rust', title: 'This Week in Rust', folderId: 'f-tech', subscribed: true, icon: null },
-  { id: 'daring', title: 'Daring Fireball', folderId: 'f-design', subscribed: true, icon: null },
-  { id: 'sidebar', title: 'Sidebar', folderId: 'f-design', subscribed: true, icon: null },
-  { id: 'bbc', title: 'BBC News — World', folderId: 'f-news', subscribed: true, icon: null },
-  { id: 'xkcd', title: 'xkcd', folderId: null, subscribed: true, icon: null },
-  { id: 'kottke', title: 'kottke.org', folderId: null, subscribed: true, icon: null },
+  { id: 'hn', title: 'Hacker News', folderId: 'f-tech', subscribed: true, icon: null, readerView: false },
+  { id: 'lwn', title: 'LWN.net', folderId: 'f-tech', subscribed: true, icon: null, readerView: true },
+  { id: 'rust', title: 'This Week in Rust', folderId: 'f-tech', subscribed: true, icon: null, readerView: false },
+  { id: 'daring', title: 'Daring Fireball', folderId: 'f-design', subscribed: true, icon: null, readerView: false },
+  { id: 'sidebar', title: 'Sidebar', folderId: 'f-design', subscribed: true, icon: null, readerView: false },
+  { id: 'bbc', title: 'BBC News — World', folderId: 'f-news', subscribed: true, icon: null, readerView: false },
+  { id: 'xkcd', title: 'xkcd', folderId: null, subscribed: true, icon: null, readerView: false },
+  { id: 'kottke', title: 'kottke.org', folderId: null, subscribed: true, icon: null, readerView: false },
 ]
 
 // 5,000 articles, to test scrolling. Deterministic, so reloads look the same.
@@ -140,6 +140,22 @@ const commands: Record<string, (args: Args) => unknown> = {
       ? `<p>${a.summary}</p><h2>A subheading</h2><p>Mock article body for <a href="${a.url}">${a.title}</a>.</p>` +
           '<blockquote>A quoted passage.</blockquote><pre><code>let x = 42;</code></pre>'
       : null
+  },
+  // Takes a moment, like fetching a page. xkcd's pages have nothing readable.
+  full_text: async ({ id }) => {
+    await new Promise((r) => setTimeout(r, 800))
+    const a = articles.find((x) => x.id === id)
+    if (!a || a.feedId === 'xkcd') throw { kind: 'other', message: 'Nothing to show in Reader View' }
+    return (
+      `<p>${a.summary}</p><p>This is the <strong>Reader View</strong> of the article: the full text ` +
+      'extracted from its web page, with more paragraphs than the feed sent.</p>' +
+      '<h2>The rest of the story</h2><p>Second paragraph of the full article.</p>' +
+      '<p>Third paragraph, with a <a href="https://example.com/more">link</a>.</p>'
+    )
+  },
+  set_feed_reader_view: ({ feedId, on }) => {
+    const feed = feeds.find((f) => f.id === feedId)
+    if (feed) feed.readerView = on as boolean
   },
   set_read: ({ ids, read }) => update(ids as string[], { read: read as boolean }),
   set_starred: ({ ids, starred }) => update(ids as string[], { starred: starred as boolean }),

@@ -11,6 +11,8 @@ export interface Feed {
   subscribed: boolean
   /** The favicon as a data: URL. */
   icon: string | null
+  /** Open its articles in Reader View. A local setting. */
+  readerView: boolean
 }
 
 /** An article in the list. The HTML is loaded separately, when the article opens. */
@@ -88,6 +90,7 @@ export type ShortcutAction =
   | 'toggleRead'
   | 'toggleStar'
   | 'openInBrowser'
+  | 'toggleReaderView'
   | 'sync'
   | 'markAllRead'
 

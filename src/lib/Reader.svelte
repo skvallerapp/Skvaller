@@ -1,4 +1,5 @@
 <script lang="ts">
+  import BookOpenText from '@lucide/svelte/icons/book-open-text'
   import Circle from '@lucide/svelte/icons/circle'
   import CircleDot from '@lucide/svelte/icons/circle-dot'
   import Compass from '@lucide/svelte/icons/compass'
@@ -30,6 +31,9 @@
   `)
 
   const article = $derived(store.article)
+  // Until Reader View content arrives, or if it fails, the feed's content shows.
+  const showFullText = $derived(store.readerView && store.fullText !== null)
+  const loadingFullText = $derived(store.readerView && store.fullTextState === 'loading')
 
   // Article HTML is untrusted. It goes into a sandboxed frame with no allow-scripts,
   // on top of the app CSP. allow-same-origin is there only so the frame can load the
@@ -45,7 +49,7 @@
         <h1>${escapeHtml(article.title)}</h1>
         <div class="source">${escapeHtml(article.author)}<br>${escapeHtml(feed)}</div>
       </header>
-      ${store.html ?? ''}
+      ${(showFullText ? store.fullText : store.html) ?? ''}
     </article></body></html>`
   })
 
@@ -78,11 +82,14 @@
 
   /** Scrolls the article a page down (1) or up (-1). At its end, opens the next one. */
   export function readOn(direction: 1 | -1) {
-    const page = frame?.contentDocument?.scrollingElement
-    if (!page) {
+    const doc = frame?.contentDocument
+    if (!doc) {
       if (direction === 1 && !article) store.step(1)
       return
     }
+    // A frame still loading has an empty document, which looks scrolled to its end.
+    const page = doc.querySelector('article') && doc.scrollingElement
+    if (!page) return
     if (direction === 1 && page.scrollTop + page.clientHeight >= page.scrollHeight - 1) {
       store.step(1)
       return
@@ -95,7 +102,12 @@
 <section class="reader" aria-label="Article">
   <div class="toolbar" data-tauri-drag-region={dragRegion}>
     {#if article}
-      <div class="spacer"></div>
+      <div class="spacer">
+        <!-- Announced, and shown until the next try or article. -->
+        <span class="notice" role="status">
+          {store.fullTextState === 'failed' ? "Reader View isn't available for this article" : ''}
+        </span>
+      </div>
       <button
         class="icon-button"
         aria-label={store.read.has(article.id) ? 'Mark as unread' : 'Mark as read'}
@@ -118,6 +130,19 @@
       </button>
       <button
         class="icon-button"
+        class:reader-view={store.readerView}
+        class:loading={loadingFullText}
+        aria-label="Reader View"
+        aria-pressed={store.readerView}
+        aria-busy={loadingFullText}
+        title="Reader View"
+        disabled={!article.url}
+        onclick={() => store.toggleReaderView()}
+      >
+        <BookOpenText size={18} strokeWidth={2} />
+      </button>
+      <button
+        class="icon-button"
         aria-label="Open in Browser"
         title="Open in Browser"
         disabled={!article.url}
@@ -131,8 +156,13 @@
   {#if article}
     <!-- Create the frame only once the HTML is in, so it loads once. Chromium leaves
          a sandboxed frame blank when its srcdoc changes during the first load. -->
-    {#if store.html !== null}
-      <iframe title={article.title} sandbox="allow-same-origin" {srcdoc} bind:this={frame} onload={onFrameLoad}></iframe>
+    <!-- Reader View that is fetched quickly, usually from the cache, shows without the
+         feed's content flashing first. -->
+    {#if store.html !== null && !(loadingFullText && store.awaitingFullText)}
+      <!-- A new frame when Reader View content swaps in, for the same reason. -->
+      {#key showFullText}
+        <iframe title={article.title} sandbox="allow-same-origin" {srcdoc} bind:this={frame} onload={onFrameLoad}></iframe>
+      {/key}
     {/if}
   {:else}
     <p class="empty">No article selected</p>
@@ -149,10 +179,42 @@
 
   .spacer {
     flex: 1;
+    min-width: 0;
+  }
+
+  .notice {
+    display: block;
+    padding-left: 12px;
+    overflow: hidden;
+    font-size: 12px;
+    color: var(--text-3);
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
   .starred {
     color: var(--star);
+  }
+
+  .reader-view {
+    color: var(--accent);
+  }
+
+  .loading {
+    animation: pulse 1s ease-in-out infinite alternate;
+  }
+
+  @keyframes pulse {
+    to {
+      opacity: 0.35;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .loading {
+      animation: none;
+      opacity: 0.5;
+    }
   }
 
   iframe {
