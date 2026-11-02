@@ -1,6 +1,6 @@
 <script lang="ts">
-  import BookOpenText from '@lucide/svelte/icons/book-open-text'
   import Globe from '@lucide/svelte/icons/globe'
+  import SquareText from '@lucide/svelte/icons/square-text'
   import Star from '@lucide/svelte/icons/star'
   import { bundledFontFaces, fontStacks } from './fonts'
   import { escapeHtml, formatFull } from './format'
@@ -143,7 +143,7 @@
         disabled={!article.url}
         onclick={() => store.toggleReaderView()}
       >
-        <BookOpenText size={18} strokeWidth={2} />
+        <SquareText size={18} strokeWidth={2} />
       </button>
       <button
         class="icon-button"
