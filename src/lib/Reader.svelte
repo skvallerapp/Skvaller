@@ -2,6 +2,7 @@
   import Globe from '@lucide/svelte/icons/globe'
   import SquareText from '@lucide/svelte/icons/square-text'
   import Star from '@lucide/svelte/icons/star'
+  import { readyArticle } from './articleHtml'
   import { bundledFontFaces, fontStacks } from './fonts'
   import { escapeHtml, formatFull } from './format'
   import { animate, motion } from './motion'
@@ -44,7 +45,8 @@
   // on top of the app CSP. allow-same-origin is there only so the frame can load the
   // bundled fonts; with scripts off, nothing in it can use that access. NEVER add
   // allow-scripts next to it: article scripts would then run as the app, with IPC.
-  // Only our own header fields are escaped; the body is shown as the feed sent it.
+  // Only our own header fields are escaped. The body is shown as the feed sent it,
+  // except for media and http URLs; see `readyArticle`.
   // The settings the frame shows are set on its root, so changing one doesn't reload the
   // article. The HTML starts with them too, so a new article doesn't flash.
   const frameRoot = $derived({
@@ -71,7 +73,7 @@
         <h1>${escapeHtml(article.title)}</h1>
         <div class="source">${escapeHtml(article.author)}<br>${escapeHtml(feed)}</div>
       </header>
-      ${(showFullText ? store.fullText : store.html) ?? ''}
+      ${readyArticle((showFullText ? store.fullText : store.html) ?? '')}
     </article></body></html>`
   })
 
