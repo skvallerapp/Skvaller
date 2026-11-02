@@ -21,7 +21,8 @@
     body { margin: 0; padding: 36px 40px 64px; color: var(--text);
       font: 16px/1.65 ${fontStacks[store.settings.articleFont]}; -webkit-font-smoothing: antialiased; }
     article { max-width: 38em; margin: 0 auto; }
-    header { margin-bottom: 32px; font-family: ${fontStacks[store.settings.headlineFont]}; }
+    header { margin-bottom: 32px; }
+    header, h1, h2, h3, h4, h5, h6 { font-family: ${fontStacks[store.settings.headlineFont]}; }
     .date, .source { font-size: 12px; font-weight: 600; line-height: 1.3; text-transform: uppercase; color: var(--text-3); }
     h1 { margin: 2px 0 6px; font-size: 36px; line-height: 1.12; font-weight: 800; letter-spacing: -0.015em; }
     a { color: var(--link); text-decoration: none; }
