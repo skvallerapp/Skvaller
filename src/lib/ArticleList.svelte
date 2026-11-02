@@ -11,7 +11,7 @@
 
   // Fixed row height keeps the list virtualized and cheap at 5,000+ rows.
   // Room for a headline of three lines.
-  const ROW_HEIGHT = 104
+  const ROW_HEIGHT = 102
   const OVERSCAN = 6
 
   let viewport: HTMLDivElement
@@ -325,8 +325,10 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 13px;
-    font-weight: 600;
+    font-size: 11.5px;
+    font-weight: 400;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
     color: var(--text-3);
   }
 
