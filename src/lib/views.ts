@@ -5,7 +5,7 @@ import type { View } from './types'
 import UnreadIcon from './UnreadIcon.svelte'
 
 /** A Lucide icon, or one drawn to the same size. */
-export type ViewIcon = Component<{ size?: number; strokeWidth?: number; class?: string }>
+export type ViewIcon = Component<{ size?: number; strokeWidth?: number }>
 
 export interface ViewInfo {
   view: View
