@@ -7,12 +7,10 @@
   import SettingsIcon from '@lucide/svelte/icons/settings'
   import { onMount, tick } from 'svelte'
   import * as api from './lib/api'
-  import { fontStacks } from './lib/fonts'
   import { serviceTitle } from './lib/format'
-  import { motion } from './lib/motion'
   import { dragRegion, macWindow } from './lib/platform'
   import ShortcutList from './lib/ShortcutList.svelte'
-  import { palette } from './lib/theme'
+  import { styleRoot } from './lib/theme'
   import type { Account, Font, Settings, Theme } from './lib/types'
 
   type Pane = 'general' | 'appearance' | 'reading' | 'shortcuts' | 'account'
@@ -92,10 +90,7 @@
   }
 
   $effect(() => {
-    if (!settings) return
-    document.documentElement.style.fontFamily = fontStacks[settings.uiFont]
-    document.documentElement.dataset.theme = palette(settings.theme)
-    document.documentElement.dataset.motion = motion(settings.animations)
+    if (settings) styleRoot(settings)
   })
 
   /** Applies a change at once. The main window gets it through `settings-changed`. A

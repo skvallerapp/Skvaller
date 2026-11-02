@@ -1,7 +1,9 @@
 // The `theme` setting. app.css and the article frame have a palette per theme, picked by
 // `data-theme` on their root element.
 import { MediaQuery } from 'svelte/reactivity'
-import type { Theme } from './types'
+import { fontStacks } from './fonts'
+import { motion } from './motion'
+import type { Settings, Theme } from './types'
 
 const systemDark = new MediaQuery('(prefers-color-scheme: dark)')
 
@@ -9,4 +11,12 @@ const systemDark = new MediaQuery('(prefers-color-scheme: dark)')
 export function palette(theme: Theme): Exclude<Theme, 'system'> {
   if (theme !== 'system') return theme
   return systemDark.current ? 'dark' : 'light'
+}
+
+/** Shows the window in the settings' theme, interface font and motion. Reactive. */
+export function styleRoot(settings: Settings) {
+  const root = document.documentElement
+  root.style.fontFamily = fontStacks[settings.uiFont]
+  root.dataset.theme = palette(settings.theme)
+  root.dataset.motion = motion(settings.animations)
 }

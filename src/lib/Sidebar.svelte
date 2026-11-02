@@ -68,7 +68,7 @@
     return cur.kind === 'all' || cur.id === (scope as typeof cur).id
   }
 
-  let viewButtons: HTMLButtonElement[] = []
+  let viewButtons = $state<HTMLButtonElement[]>([])
   const viewIndex = $derived(views.findIndex((v) => v.view === store.view))
 
   /** Arrow keys move between the views, as in a radio group. */
