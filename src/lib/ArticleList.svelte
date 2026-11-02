@@ -5,7 +5,7 @@
   import { untrack } from 'svelte'
   import { formatTime } from './format'
   import { layout, toggleSidebar } from './layout.svelte'
-  import { dragRegion, isMac } from './platform'
+  import { dragRegion, macWindow } from './platform'
   import { store } from './store.svelte'
   import { viewInfo } from './views'
 
@@ -119,7 +119,7 @@
 <section class="list" aria-label="Articles">
   <div
     class="toolbar"
-    class:window-buttons={isMac && !layout.sidebarOpen}
+    class:window-buttons={macWindow && !layout.sidebarOpen}
     data-tauri-drag-region={dragRegion}
   >
     <button

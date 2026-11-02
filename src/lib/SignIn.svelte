@@ -1,7 +1,7 @@
 <script lang="ts">
   import Rss from '@lucide/svelte/icons/rss'
   import { apiUrl } from './format'
-  import { isMac } from './platform'
+  import { macWindow } from './platform'
   import { store } from './store.svelte'
   import type { CommandError } from './types'
 
@@ -38,7 +38,7 @@
   }
 </script>
 
-{#if isMac}
+{#if macWindow}
   <!-- The title bar is hidden on macOS: an empty strip to drag the window by. Not the
        whole screen, so text stays selectable and the scrollbar keeps working. -->
   <div class="drag-strip" data-tauri-drag-region></div>

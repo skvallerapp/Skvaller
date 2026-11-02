@@ -10,7 +10,7 @@
   import { fontStacks } from './lib/fonts'
   import { serviceTitle } from './lib/format'
   import { motion } from './lib/motion'
-  import { dragRegion, isMac } from './lib/platform'
+  import { dragRegion, macWindow } from './lib/platform'
   import ShortcutList from './lib/ShortcutList.svelte'
   import { palette } from './lib/theme'
   import type { Account, Font, Settings, Theme } from './lib/types'
@@ -169,7 +169,7 @@
   </span>
 {/snippet}
 
-<div class="settings" class:mac={isMac}>
+<div class="settings" class:mac={macWindow}>
   <nav aria-label="Settings">
     <div class="drag" data-tauri-drag-region={dragRegion}></div>
     <ul>
