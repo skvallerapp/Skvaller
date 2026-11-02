@@ -129,6 +129,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_keychain_service_is_the_bundle_identifier() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(conf["identifier"], skvaller_core::KEYCHAIN_SERVICE);
+    }
+
+    #[test]
     fn fonts_default_to_inter_and_an_unknown_one_keeps_the_rest() {
         let config: Config = serde_json::from_str(
             r#"{ "account": { "server": "https://rss.example.com", "username": "carl" },

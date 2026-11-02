@@ -10,15 +10,16 @@ use keyring::{Entry, Error as KeyringError};
 
 use crate::Result;
 
-const SERVICE: &str = "io.github.sinderc.skvaller";
+/// The app's bundle identifier. A test in src-tauri checks it against tauri.conf.json.
+pub const KEYCHAIN_SERVICE: &str = "io.github.skvallerapp.Skvaller";
 
 /// `account` identifies the sign-in, such as `"carl@https://rss.example.com/api/greader.php"`.
 pub fn save_token(account: &str, token: &str) -> Result<()> {
-    Ok(Entry::new(SERVICE, account)?.set_password(token)?)
+    Ok(Entry::new(KEYCHAIN_SERVICE, account)?.set_password(token)?)
 }
 
 pub fn load_token(account: &str) -> Result<Option<String>> {
-    match Entry::new(SERVICE, account)?.get_password() {
+    match Entry::new(KEYCHAIN_SERVICE, account)?.get_password() {
         Ok(token) => Ok(Some(token)),
         Err(KeyringError::NoEntry) => Ok(None),
         Err(e) => Err(e.into()),
@@ -26,7 +27,7 @@ pub fn load_token(account: &str) -> Result<Option<String>> {
 }
 
 pub fn delete_token(account: &str) -> Result<()> {
-    match Entry::new(SERVICE, account)?.delete_credential() {
+    match Entry::new(KEYCHAIN_SERVICE, account)?.delete_credential() {
         Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
         Err(e) => Err(e.into()),
     }

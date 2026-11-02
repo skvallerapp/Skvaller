@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Skvaller",
-  "identifier": "io.github.sinderc.skvaller",
+  "identifier": "io.github.skvallerapp.Skvaller",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
