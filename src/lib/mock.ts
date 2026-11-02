@@ -96,7 +96,7 @@ const commands: Record<string, (args: Args) => unknown> = {
     account: { server: 'https://rss.example.com/api/greader.php', username: 'demo' },
     signedIn: true,
     status: { ...status },
-    settings: { confirmMarkAllRead: true },
+    settings: { confirmMarkAllRead: true, uiFont: 'inter', articleFont: 'inter' },
   }),
   sign_in: () => commands.session({}),
   sync_now: () => sync(),

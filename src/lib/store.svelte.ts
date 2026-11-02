@@ -19,7 +19,7 @@ class Store {
   signedIn = $state(false)
   account = $state<Account | null>(null)
   status = $state<SyncStatus>({ syncing: false, lastSync: null, error: null, unauthorized: false })
-  settings = $state<Settings>({ confirmMarkAllRead: true })
+  settings = $state<Settings>({ confirmMarkAllRead: true, uiFont: 'inter', articleFont: 'inter' })
 
   folders = $state.raw<Folder[]>([])
   feeds = $state.raw<Feed[]>([])

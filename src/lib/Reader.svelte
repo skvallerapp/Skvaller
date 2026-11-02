@@ -2,20 +2,21 @@
   import Circle from '@lucide/svelte/icons/circle'
   import CircleDot from '@lucide/svelte/icons/circle-dot'
   import Star from '@lucide/svelte/icons/star'
+  import { fontStacks, interFontFaces } from './fonts'
   import { escapeHtml, formatFull } from './format'
   import { dragRegion } from './platform'
   import { store } from './store.svelte'
 
   // Styles for the article frame. The frame has its own document, so app.css
   // doesn't reach it.
-  const frameCss = `
+  const frameCss = $derived(`${interFontFaces}
     :root { color-scheme: light dark; --text: #1c1c1e; --text-2: #6b6b70; --text-3: #8e8e93; --rule: rgb(0 0 0 / .1); --link: #2f6bd6; }
     @media (prefers-color-scheme: dark) {
       :root { --text: #e6e6e8; --text-2: #a0a0a6; --text-3: #8a8580; --rule: rgb(255 255 255 / .1); --link: #6c9cf2; }
     }
     html { background: transparent; }
     body { margin: 0; padding: 36px 40px 64px; color: var(--text);
-      font: 16px/1.65 system-ui, -apple-system, 'Segoe UI', sans-serif; -webkit-font-smoothing: antialiased; }
+      font: 16px/1.65 ${fontStacks[store.settings.articleFont]}; -webkit-font-smoothing: antialiased; }
     article { max-width: 38em; margin: 0 auto; }
     header { margin-bottom: 32px; }
     .date, .source { font-size: 12px; font-weight: 600; line-height: 1.3; text-transform: uppercase; color: var(--text-3); }
@@ -24,13 +25,15 @@
     blockquote { margin: 1.4em 0; padding-left: 1em; border-left: 3px solid var(--rule); color: var(--text-2); }
     img, video { max-width: 100%; height: auto; }
     pre { overflow-x: auto; }
-  `
+  `)
 
   const article = $derived(store.article)
 
-  // Article HTML is untrusted. It goes into a sandboxed frame with no
-  // allow-scripts, on top of the app CSP. Only our own header fields are escaped;
-  // the body is shown as the feed sent it.
+  // Article HTML is untrusted. It goes into a sandboxed frame with no allow-scripts,
+  // on top of the app CSP. allow-same-origin is there only so the frame can load the
+  // bundled fonts; with scripts off, nothing in it can use that access. NEVER add
+  // allow-scripts next to it: article scripts would then run as the app, with IPC.
+  // Only our own header fields are escaped; the body is shown as the feed sent it.
   const srcdoc = $derived.by(() => {
     if (!article) return ''
     const feed = store.feed(article.feedId)?.title ?? ''
@@ -76,7 +79,7 @@
     <!-- Create the frame only once the HTML is in, so it loads once. Chromium leaves
          a sandboxed frame blank when its srcdoc changes during the first load. -->
     {#if store.html !== null}
-      <iframe title={article.title} sandbox="" {srcdoc}></iframe>
+      <iframe title={article.title} sandbox="allow-same-origin" {srcdoc}></iframe>
     {/if}
   {:else}
     <p class="empty">No article selected</p>
