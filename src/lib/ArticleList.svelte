@@ -307,7 +307,6 @@
     gap: 3px;
     padding: 11px 16px 0 22px;
     text-align: left;
-    border-bottom: 1px solid var(--separator);
     overflow: hidden;
   }
 
