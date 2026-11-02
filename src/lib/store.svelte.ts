@@ -4,7 +4,6 @@ import { defaultSettings, idleStatus } from './defaults'
 import type {
   Account,
   Article,
-  CommandError,
   Feed,
   Folder,
   Scope,
@@ -61,6 +60,8 @@ class Store {
   // Local changes, saved one after another. Reads wait for it, so they never see the
   // cache from before a change.
   #writes: Promise<void> = Promise.resolve()
+  /** Changes made so far. A list load that sees it change started too early. */
+  #writeCount = 0
 
   /** Feeds to show in the sidebar. Unsubscribed ones exist only for old starred articles. */
   readonly sidebarFeeds: Feed[] = $derived(this.feeds.filter((f) => f.subscribed))
@@ -95,13 +96,15 @@ class Store {
       if (this.signedIn) await this.#reload()
     } catch (e) {
       // Such as no keychain available. The sign-in screen shows it.
-      this.status = { ...this.status, error: (e as CommandError).message ?? String(e) }
+      this.status = { ...this.status, error: api.errorMessage(e) }
     }
     this.ready = true
   }
 
   async signIn(server: string, username: string, password: string) {
     const session = await api.signIn(server, username, password)
+    // After a rejected token, maybe as someone else: nothing of the old session stays.
+    this.#reset()
     this.account = session.account
     this.status = session.status
     this.settings = session.settings
@@ -146,9 +149,15 @@ class Store {
     this.articleId = id
     this.html = null
     const request = ++this.#htmlRequest
-    void api.articleHtml(id).then((html) => {
-      if (request === this.#htmlRequest) this.html = html ?? ''
-    })
+    void api.articleHtml(id).then(
+      (html) => {
+        if (request === this.#htmlRequest) this.html = html ?? ''
+      },
+      (e) => {
+        console.error('Loading the article failed', e)
+        if (request === this.#htmlRequest) this.html = ''
+      },
+    )
     if (id !== this.#fullTextId) {
       this.#resetFullText()
       this.#fullTextId = id
@@ -221,6 +230,8 @@ class Store {
   /** Opens the next (1) or previous (-1) article in the list. With none open, opens the
    * first. */
   step(delta: 1 | -1) {
+    // Until a new selection's list arrives, `visible` is the old one.
+    if (this.#selectionKey() !== this.#listKey) return
     const i = this.visible.findIndex((a) => a.id === this.articleId)
     const next = this.visible[i === -1 ? 0 : i + delta]
     if (next) this.open(next.id)
@@ -264,19 +275,26 @@ class Store {
    * counts never stay wrong. The reload is not part of `#writes`: it waits for it.
    */
   #write(save: () => Promise<void>) {
+    this.#writeCount++
     const saved = this.#writes.then(save).catch((e) => console.error('Saving a change failed', e))
     this.#writes = saved
-    void saved.then(() => this.#loadLibrary())
+    void saved.then(() => this.#loadLibrary()).catch((e) => console.error('Loading the feeds failed', e))
   }
 
   /** Signing out happens in the Settings window; the cache is empty by now. */
   #onSignedOut() {
-    this.#session++
-    this.#listRequest++
-    this.#htmlRequest++
+    this.#reset()
     this.signedIn = false
     this.account = null
     this.status = { ...idleStatus }
+  }
+
+  /** Forgets the account's feeds and articles, and drops responses still on the way. */
+  #reset() {
+    this.#session++
+    this.#listRequest++
+    this.#htmlRequest++
+    this.#listKey = ''
     this.folders = []
     this.feeds = []
     this.unreadByFeed = new Map()
@@ -297,7 +315,9 @@ class Store {
     // After a sync, the Unread view keeps what was read since it opened (FR-7a), and the
     // Starred view what was unstarred.
     else if (this.signedIn && !status.syncing && !status.error)
-      void this.#reload((a) => (this.view === 'unread' ? this.read.has(a.id) : !this.starred.has(a.id)))
+      this.#reload((a) => (this.view === 'unread' ? this.read.has(a.id) : !this.starred.has(a.id))).catch((e) =>
+        console.error('Reloading after a sync failed', e),
+      )
   }
 
   async #reload(keep?: (a: Article) => boolean) {
@@ -315,18 +335,26 @@ class Store {
     this.starredByFeed = new Map(Object.entries(lib.counts.starredByFeed))
   }
 
+  #selectionKey(): string {
+    return JSON.stringify({ view: this.view, scope: this.scope })
+  }
+
   /**
    * Loads the list for the current selection. In the Unread and Starred views, listed
    * articles that left the view stay if `keep` says so, so the list doesn't jump while
    * you read. Only a reload of the same selection keeps any.
    */
-  async #loadList(keep: (a: Article) => boolean = () => false) {
+  async #loadList(keep: (a: Article) => boolean = () => false): Promise<void> {
     const request = ++this.#listRequest
     const selection = { view: this.view, scope: $state.snapshot(this.scope) }
-    const key = JSON.stringify(selection)
+    const key = this.#selectionKey()
+    const writes = this.#writeCount
     await this.#writes
     let list = await api.articles(selection)
     if (request !== this.#listRequest) return
+    // A change made while this loaded isn't in it, and would be undone. Load again; the
+    // next load waits for the change to be saved.
+    if (writes !== this.#writeCount) return this.#loadList(keep)
 
     if (selection.view !== 'all' && key === this.#listKey) {
       const ids = new Set(list.map((a) => a.id))
