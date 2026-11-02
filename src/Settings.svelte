@@ -45,10 +45,13 @@
     { value: 'espresso', label: 'Espresso' },
   ]
 
-  const fonts: { font: Font; label: string }[] = [
-    { font: 'inter', label: 'Inter' },
-    { font: 'system', label: 'System' },
-    { font: 'serif', label: 'Serif' },
+  const fonts: { value: Font; label: string }[] = [
+    { value: 'inter', label: 'Inter' },
+    { value: 'geist', label: 'Geist' },
+    { value: 'system', label: 'System' },
+    { value: 'source-serif', label: 'Source Serif' },
+    { value: 'literata', label: 'Literata' },
+    { value: 'serif', label: 'System Serif' },
   ]
 
   let pane = $state<Pane>('general')
@@ -242,16 +245,25 @@
                 {@render select(
                   'ui-font',
                   settings.uiFont,
-                  fonts.map((f) => ({ value: f.font, label: f.label })),
+                  fonts,
                   (uiFont) => change({ uiFont }),
                 )}
               </div>
               <div class="row">
-                <label for="article-font">Articles</label>
+                <label for="headline-font">Headlines</label>
+                {@render select(
+                  'headline-font',
+                  settings.headlineFont,
+                  fonts,
+                  (headlineFont) => change({ headlineFont }),
+                )}
+              </div>
+              <div class="row">
+                <label for="article-font">Article Text</label>
                 {@render select(
                   'article-font',
                   settings.articleFont,
-                  fonts.map((f) => ({ value: f.font, label: f.label })),
+                  fonts,
                   (articleFont) => change({ articleFont }),
                 )}
               </div>

@@ -76,6 +76,9 @@ export interface Settings {
   confirmMarkAllRead: boolean
   theme: Theme
   uiFont: Font
+  /** The article's headline, with its date and source. */
+  headlineFont: Font
+  /** The article's body text. */
   articleFont: Font
   /** Shortcut keys that differ from the defaults. `null` means no key. */
   shortcuts: Partial<Record<ShortcutAction, string | null>>
@@ -83,7 +86,7 @@ export interface Settings {
 
 export type Theme = 'system' | 'light' | 'dark' | 'espresso'
 
-export type Font = 'inter' | 'system' | 'serif'
+export type Font = 'inter' | 'geist' | 'system' | 'source-serif' | 'literata' | 'serif'
 
 export type ShortcutAction =
   | 'next'
