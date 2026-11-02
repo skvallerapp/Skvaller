@@ -2,7 +2,7 @@
   import BookOpenText from '@lucide/svelte/icons/book-open-text'
   import Globe from '@lucide/svelte/icons/globe'
   import Star from '@lucide/svelte/icons/star'
-  import { fontStacks, interFontFaces } from './fonts'
+  import { bundledFontFaces, fontStacks } from './fonts'
   import { escapeHtml, formatFull } from './format'
   import { dragRegion } from './platform'
   import { openInBrowser } from './api'
@@ -13,7 +13,7 @@
 
   // Styles for the article frame. The frame has its own document, so app.css
   // doesn't reach it.
-  const frameCss = $derived(`${interFontFaces}
+  const frameCss = $derived(`${bundledFontFaces}
     :root { color-scheme: light; --text: #2e2e2d; --text-2: #61605f; --text-3: #676665; --rule: rgb(0 0 0 / .1); --link: #9a5136; }
     :root[data-theme='dark'] { color-scheme: dark; --text: #e6e6e8; --text-2: #a0a0a6; --text-3: #97979d; --rule: rgb(255 255 255 / .1); --link: #8aa4c8; }
     :root[data-theme='espresso'] { color-scheme: dark; --text: #e0dedd; --text-2: #c1bdbc; --text-3: #9e928d; --rule: rgb(255 236 224 / .12); --link: #cfa080; }
@@ -21,7 +21,7 @@
     body { margin: 0; padding: 36px 40px 64px; color: var(--text);
       font: 16px/1.65 ${fontStacks[store.settings.articleFont]}; -webkit-font-smoothing: antialiased; }
     article { max-width: 38em; margin: 0 auto; }
-    header { margin-bottom: 32px; }
+    header { margin-bottom: 32px; font-family: ${fontStacks[store.settings.headlineFont]}; }
     .date, .source { font-size: 12px; font-weight: 600; line-height: 1.3; text-transform: uppercase; color: var(--text-3); }
     h1 { margin: 2px 0 6px; font-size: 36px; line-height: 1.12; font-weight: 800; letter-spacing: -0.015em; }
     a { color: var(--link); text-decoration: none; }

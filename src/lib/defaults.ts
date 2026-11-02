@@ -7,7 +7,8 @@ export const defaultSettings: Settings = {
   confirmMarkAllRead: true,
   theme: 'system',
   uiFont: 'inter',
-  articleFont: 'inter',
+  headlineFont: 'inter',
+  articleFont: 'literata',
   shortcuts: {},
 }
 

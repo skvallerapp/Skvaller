@@ -33,7 +33,11 @@ pub struct Settings {
     pub theme: Theme,
     #[serde(deserialize_with = "or_default")]
     pub ui_font: Font,
+    /// The article's headline, with its date and source.
     #[serde(deserialize_with = "or_default")]
+    pub headline_font: Font,
+    /// The article's body text.
+    #[serde(deserialize_with = "article_font_or_default")]
     pub article_font: Font,
     /// Shortcut keys that differ from the defaults, by action. `None` means no key.
     /// The UI knows the actions and the defaults.
@@ -66,12 +70,16 @@ impl Theme {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub enum Font {
-    /// Bundled with the app; other scripts fall back to the system's fonts.
+    /// Bundled with the app, like Geist, Source Serif and Literata; other scripts fall
+    /// back to the system's fonts.
     #[default]
     Inter,
+    Geist,
     System,
+    SourceSerif,
+    Literata,
     Serif,
 }
 
@@ -102,6 +110,10 @@ fn keep_read_days_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::
     or_else(d, |s| s.keep_read_days)
 }
 
+fn article_font_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<Font, D::Error> {
+    or_else(d, |s| s.article_font)
+}
+
 fn confirm_mark_all_read_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     or_else(d, |s| s.confirm_mark_all_read)
 }
@@ -114,7 +126,8 @@ impl Default for Settings {
             confirm_mark_all_read: true,
             theme: Theme::default(),
             ui_font: Font::default(),
-            article_font: Font::default(),
+            headline_font: Font::default(),
+            article_font: Font::Literata,
             shortcuts: BTreeMap::new(),
         }
     }
@@ -166,14 +179,19 @@ mod tests {
     fn fonts_default_to_inter_and_an_unknown_one_keeps_the_rest() {
         let config: Config = serde_json::from_str(
             r#"{ "account": { "server": "https://rss.example.com", "username": "carl" },
-                 "articleFont": "serif", "uiFont": "comic" }"#,
+                 "articleFont": "source-serif", "uiFont": "comic" }"#,
         )
         .unwrap();
 
-        assert_eq!(config.settings.article_font, Font::Serif);
+        assert_eq!(config.settings.article_font, Font::SourceSerif);
         assert_eq!(config.settings.ui_font, Font::Inter);
+        assert_eq!(config.settings.headline_font, Font::Inter);
         assert!(config.account.is_some());
         assert_eq!(Config::default().settings.ui_font, Font::Inter);
+        assert_eq!(Config::default().settings.article_font, Font::Literata);
+
+        let config: Config = serde_json::from_str(r#"{ "articleFont": "comic" }"#).unwrap();
+        assert_eq!(config.settings.article_font, Font::Literata);
     }
 
     #[test]
