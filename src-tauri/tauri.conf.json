@@ -11,11 +11,29 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Skvaller",
         "width": 1200,
         "height": 800,
         "minWidth": 640,
         "minHeight": 400,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 20,
+          "y": 22
+        }
+      },
+      {
+        "label": "settings",
+        "create": false,
+        "url": "settings.html",
+        "title": "Settings",
+        "width": 720,
+        "height": 520,
+        "resizable": false,
+        "maximizable": false,
+        "center": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "trafficLightPosition": {

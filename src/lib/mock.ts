@@ -1,6 +1,7 @@
 // A stand-in for the Tauri commands, so the UI runs in a plain browser during
 // `bun run dev`. It is loaded only in development and outside Tauri (see api.ts).
-import type { Article, Feed, Folder, Library, Selection, Session, SyncStatus } from './types'
+import { defaultSettings } from './defaults'
+import type { Article, Feed, Folder, Library, Selection, Session, Settings, SyncStatus } from './types'
 
 const folders: Folder[] = [
   { id: 'f-tech', title: 'Technology' },
@@ -54,7 +55,34 @@ const articles: Article[] = Array.from({ length: 5000 }, (_, i) => {
 })
 
 const status: SyncStatus = { syncing: false, lastSync: now - 5 * 60_000, error: null, unauthorized: false }
-const statusHandlers: ((s: SyncStatus) => void)[] = []
+
+// Events reach every window of the app, like Tauri's, through a BroadcastChannel.
+// Settings live in localStorage, so the Settings window and the main window share them.
+type Handler = (payload: unknown) => void
+const handlers = new Map<string, Set<Handler>>()
+const channel = new BroadcastChannel('skvaller-mock')
+channel.onmessage = (e) => handlers.get(e.data.event)?.forEach((h) => h(e.data.payload))
+
+function emit(event: string, payload: unknown) {
+  handlers.get(event)?.forEach((h) => h(payload))
+  channel.postMessage({ event, payload })
+}
+
+export async function listen(event: string, handler: Handler): Promise<() => void> {
+  if (!handlers.has(event)) handlers.set(event, new Set())
+  handlers.get(event)!.add(handler)
+  return () => handlers.get(event)!.delete(handler)
+}
+
+const SETTINGS_KEY = 'skvaller.mock.settings'
+const SIGNED_OUT_KEY = 'skvaller.mock.signedOut'
+function settings(): Settings {
+  try {
+    return { ...defaultSettings, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') }
+  } catch {
+    return defaultSettings
+  }
+}
 
 function matches(a: Article, sel: Selection): boolean {
   switch (sel.kind) {
@@ -79,13 +107,12 @@ function update(ids: string[], change: Partial<Article>) {
 }
 
 function sync() {
-  const emit = () => statusHandlers.forEach((h) => h({ ...status }))
   status.syncing = true
-  emit()
+  emit('sync-status', { ...status })
   setTimeout(() => {
     status.syncing = false
     status.lastSync = Date.now()
-    emit()
+    emit('sync-status', { ...status })
   }, 1200)
 }
 
@@ -94,11 +121,16 @@ type Args = Record<string, unknown>
 const commands: Record<string, (args: Args) => unknown> = {
   session: (): Session => ({
     account: { server: 'https://rss.example.com/api/greader.php', username: 'demo' },
-    signedIn: true,
+    signedIn: localStorage.getItem(SIGNED_OUT_KEY) === null,
     status: { ...status },
-    settings: { confirmMarkAllRead: true, uiFont: 'inter', articleFont: 'inter' },
+    settings: settings(),
   }),
-  sign_in: () => commands.session({}),
+  sign_in: () => {
+    localStorage.removeItem(SIGNED_OUT_KEY)
+    const session = commands.session({}) as Session
+    emit('signed-in', session.account)
+    return session
+  },
   sync_now: () => sync(),
   library,
   articles: ({ selection }) => articles.filter((a) => matches(a, selection as Selection)).map((a) => ({ ...a })),
@@ -111,15 +143,20 @@ const commands: Record<string, (args: Args) => unknown> = {
   },
   set_read: ({ ids, read }) => update(ids as string[], { read: read as boolean }),
   set_starred: ({ ids, starred }) => update(ids as string[], { starred: starred as boolean }),
+  set_settings: ({ settings }) => {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
+    emit('settings-changed', settings)
+  },
+  sign_out: () => {
+    localStorage.setItem(SIGNED_OUT_KEY, '1')
+    emit('signed-out', null)
+    window.close()
+  },
+  open_settings: () => void window.open('/settings.html', 'settings', 'width=720,height=520'),
 }
 
 export async function invoke<T>(cmd: string, args: Args = {}): Promise<T> {
   const command = commands[cmd]
   if (!command) throw { kind: 'other', message: `Mock has no command "${cmd}"` }
   return command(args) as T
-}
-
-export async function onSyncStatus(handler: (s: SyncStatus) => void): Promise<() => void> {
-  statusHandlers.push(handler)
-  return () => statusHandlers.splice(statusHandlers.indexOf(handler), 1)
 }

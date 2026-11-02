@@ -15,4 +15,10 @@ export default defineConfig({
     watch: { ignored: ['**/src-tauri/**', '**/crates/**', '**/target/**'] },
   },
   envPrefix: ['VITE_', 'TAURI_ENV_'],
+  // Two pages: the main window and the Settings window.
+  build: {
+    rollupOptions: {
+      input: { main: 'index.html', settings: 'settings.html' },
+    },
+  },
 })

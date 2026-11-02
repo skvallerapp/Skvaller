@@ -64,15 +64,32 @@ export interface Session {
   settings: Settings
 }
 
-/** Settings from config.json that the UI needs. */
+/** Settings from config.json, changed in the Settings window. */
 export interface Settings {
+  /** Minutes between automatic syncs. 0 means manually. */
+  syncIntervalMinutes: number
+  /** How long read, unstarred articles stay in the cache. */
+  keepReadDays: number
   /** Ask before marking every article in a view as read. */
   confirmMarkAllRead: boolean
   uiFont: Font
   articleFont: Font
+  /** Shortcut keys that differ from the defaults. `null` means no key. */
+  shortcuts: Partial<Record<ShortcutAction, string | null>>
 }
 
 export type Font = 'inter' | 'system' | 'serif'
+
+export type ShortcutAction =
+  | 'next'
+  | 'previous'
+  | 'readOn'
+  | 'readBack'
+  | 'toggleRead'
+  | 'toggleStar'
+  | 'openInBrowser'
+  | 'sync'
+  | 'markAllRead'
 
 /** An error from a command. */
 export interface CommandError {

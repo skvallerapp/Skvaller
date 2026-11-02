@@ -3,11 +3,13 @@
   import CircleDot from '@lucide/svelte/icons/circle-dot'
   import Layers from '@lucide/svelte/icons/layers'
   import RotateCw from '@lucide/svelte/icons/rotate-cw'
+  import SettingsIcon from '@lucide/svelte/icons/settings'
   import Rss from '@lucide/svelte/icons/rss'
   import Star from '@lucide/svelte/icons/star'
   import { SvelteSet } from 'svelte/reactivity'
   import { formatSynced, serviceTitle } from './format'
-  import { dragRegion } from './platform'
+  import { openSettings } from './api'
+  import { dragRegion, isMac } from './platform'
   import { store } from './store.svelte'
   import type { Feed, Selection, SmartView } from './types'
 
@@ -68,6 +70,17 @@
 
 <nav class="sidebar" aria-label="Feeds">
   <div class="toolbar" data-tauri-drag-region={dragRegion}>
+    {#if !isMac}
+      <!-- macOS opens Settings from the app menu. -->
+      <button
+        class="icon-button"
+        aria-label="Settings"
+        title="Settings (Ctrl+,)"
+        onclick={() => openSettings()}
+      >
+        <SettingsIcon size={18} strokeWidth={2} />
+      </button>
+    {/if}
     <button
       class="icon-button sync"
       class:spinning={store.status.syncing}

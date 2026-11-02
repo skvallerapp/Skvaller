@@ -1,8 +1,9 @@
 // Typed wrappers for the Tauri commands in src-tauri/src/commands.rs.
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import type { Article, Library, Selection, Session, SyncStatus } from './types'
+import type { Account, Article, Library, Selection, Session, Settings, SyncStatus } from './types'
 
 // Outside Tauri (a plain browser during `bun run dev`), use mock data instead.
 const mock =
@@ -44,7 +45,31 @@ export function openInBrowser(url: string, base?: string) {
   else openUrl(parsed.href).catch((e) => console.error('Opening a link failed', e))
 }
 
-export const onSyncStatus = (handler: (status: SyncStatus) => void): Promise<UnlistenFn> =>
-  mock
-    ? mock.then((m) => m.onSyncStatus(handler))
-    : listen<SyncStatus>('sync-status', (e) => handler(e.payload))
+export const setSettings = (settings: Settings) => call<void>('set_settings', { settings })
+
+/** Signs out and removes the account's articles. Closes the Settings window. */
+export const signOut = () => call<void>('sign_out')
+
+export const openSettings = () => call<void>('open_settings')
+
+function on<T>(event: string, handler: (payload: T) => void): Promise<UnlistenFn> {
+  return mock
+    ? mock.then((m) => m.listen(event, handler as (payload: unknown) => void))
+    : listen<T>(event, (e) => handler(e.payload))
+}
+
+export const onSyncStatus = (handler: (status: SyncStatus) => void) => on('sync-status', handler)
+
+/** New settings, from any window. */
+export const onSettingsChanged = (handler: (settings: Settings) => void) =>
+  on('settings-changed', handler)
+
+export const onSignedIn = (handler: (account: Account) => void) => on('signed-in', handler)
+
+export const onSignedOut = (handler: () => void) => on('signed-out', handler)
+
+/** The message of a command error, or of anything else thrown. */
+export const errorMessage = (e: unknown): string =>
+  (e as { message?: string } | null)?.message ?? String(e)
+
+export const closeWindow = () => (mock ? window.close() : getCurrentWindow().close())

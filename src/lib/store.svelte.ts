@@ -1,5 +1,6 @@
 import { SvelteSet } from 'svelte/reactivity'
 import * as api from './api'
+import { defaultSettings, idleStatus } from './defaults'
 import type {
   Account,
   Article,
@@ -18,8 +19,9 @@ class Store {
   ready = $state(false)
   signedIn = $state(false)
   account = $state<Account | null>(null)
-  status = $state<SyncStatus>({ syncing: false, lastSync: null, error: null, unauthorized: false })
-  settings = $state<Settings>({ confirmMarkAllRead: true, uiFont: 'inter', articleFont: 'inter' })
+  status = $state<SyncStatus>({ ...idleStatus })
+  /** Until `init` loads them. */
+  settings = $state<Settings>({ ...defaultSettings })
 
   folders = $state.raw<Folder[]>([])
   feeds = $state.raw<Feed[]>([])
@@ -40,6 +42,8 @@ class Store {
   // Responses to older requests are dropped when a newer one was made.
   #listRequest = 0
   #htmlRequest = 0
+  // Bumped on sign-out, so loads from before it are dropped.
+  #session = 0
   // Local changes, saved one after another. Reads wait for it, so they never see the
   // cache from before a change.
   #writes: Promise<void> = Promise.resolve()
@@ -64,6 +68,8 @@ class Store {
     try {
       // Listen first, so a sync that finishes meanwhile is not missed.
       await api.onSyncStatus((status) => this.#onStatus(status))
+      await api.onSettingsChanged((settings) => (this.settings = settings))
+      await api.onSignedOut(() => this.#onSignedOut())
       const session = await api.session()
       this.account = session.account
       this.status = session.status
@@ -178,11 +184,31 @@ class Store {
     void saved.then(() => this.#loadLibrary())
   }
 
+  /** Signing out happens in the Settings window; the cache is empty by now. */
+  #onSignedOut() {
+    this.#session++
+    this.#listRequest++
+    this.#htmlRequest++
+    this.signedIn = false
+    this.account = null
+    this.status = { ...idleStatus }
+    this.folders = []
+    this.feeds = []
+    this.unreadByFeed = new Map()
+    this.starredCount = 0
+    this.selection = { kind: 'smart', view: 'unread' }
+    this.visible = []
+    this.articleId = null
+    this.html = null
+    this.read.clear()
+    this.starred.clear()
+  }
+
   #onStatus(status: SyncStatus) {
     this.status = status
     if (status.unauthorized) this.signedIn = false
     // After a sync, the Unread view keeps what was read since it opened (FR-7a).
-    else if (!status.syncing && !status.error) void this.#reload((a) => this.read.has(a.id))
+    else if (this.signedIn && !status.syncing && !status.error) void this.#reload((a) => this.read.has(a.id))
   }
 
   async #reload(keep?: (a: Article) => boolean) {
@@ -190,8 +216,10 @@ class Store {
   }
 
   async #loadLibrary() {
+    const session = this.#session
     await this.#writes
     const lib = await api.library()
+    if (session !== this.#session) return
     this.folders = lib.folders
     this.feeds = lib.feeds
     this.unreadByFeed = new Map(Object.entries(lib.counts.unreadByFeed))
