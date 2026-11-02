@@ -47,10 +47,10 @@
   })
 
   /** True when the key belongs to the focused element: a text field, a dialog, a
-   * resizer, or arrow keys while reading, which scroll the article. */
+   * resizer, the view switcher, or arrow keys while reading, which scroll the article. */
   function ownsKey(e: KeyboardEvent): boolean {
     const target = e.target as Element
-    if (target.closest?.('input, textarea, select, [contenteditable], [role=dialog], [role=separator]'))
+    if (target.closest?.('input, textarea, select, [contenteditable], [role=dialog], [role=separator], [role=radiogroup]'))
       return true
     return e.key.startsWith('Arrow') && target.ownerDocument !== document
   }

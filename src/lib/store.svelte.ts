@@ -7,9 +7,10 @@ import type {
   CommandError,
   Feed,
   Folder,
-  Selection,
+  Scope,
   Settings,
   SyncStatus,
+  View,
 } from './types'
 
 /** All UI state. Everything comes from the local cache through `api`; nothing here
@@ -26,9 +27,11 @@ class Store {
   folders = $state.raw<Folder[]>([])
   feeds = $state.raw<Feed[]>([])
   unreadByFeed = $state.raw(new Map<string, number>())
-  starredCount = $state(0)
+  starredByFeed = $state.raw(new Map<string, number>())
 
-  selection = $state<Selection>({ kind: 'smart', view: 'unread' })
+  /** The list shows the articles in `view` from `scope`. */
+  view = $state<View>('unread')
+  scope = $state<Scope>({ kind: 'all' })
   visible = $state.raw<Article[]>([])
   articleId = $state<string | null>(null)
   /** Untrusted HTML of the open article. Render only in the sandboxed reader frame. */
@@ -49,6 +52,8 @@ class Store {
   #feedById = $derived(new Map(this.feeds.map((f) => [f.id, f])))
   // Responses to older requests are dropped when a newer one was made.
   #listRequest = 0
+  /** The selection `visible` was loaded for, as JSON. */
+  #listKey = ''
   #htmlRequest = 0
   #fullTextRequest = 0
   // Bumped on sign-out, so loads from before it are dropped.
@@ -60,9 +65,12 @@ class Store {
   /** Feeds to show in the sidebar. Unsubscribed ones exist only for old starred articles. */
   readonly sidebarFeeds: Feed[] = $derived(this.feeds.filter((f) => f.subscribed))
 
-  readonly unreadTotal: number = $derived(
-    [...this.unreadByFeed.values()].reduce((sum, n) => sum + n, 0),
+  /** The counts the sidebar shows: starred ones in the Starred view, else unread ones. */
+  readonly counts: Map<string, number> = $derived(
+    this.view === 'starred' ? this.starredByFeed : this.unreadByFeed,
   )
+
+  readonly countTotal: number = $derived([...this.counts.values()].reduce((sum, n) => sum + n, 0))
 
   /** Unread articles in the current list. */
   readonly unreadInView: number = $derived(
@@ -109,14 +117,25 @@ class Store {
     return this.#feedById.get(id)
   }
 
-  folderUnread(folderId: string): number {
-    let n = 0
-    for (const f of this.feeds) if (f.folderId === folderId) n += this.unreadByFeed.get(f.id) ?? 0
-    return n
+  /** `counts` summed per folder. */
+  readonly folderCounts: Map<string, number> = $derived.by(() => {
+    const sums = new Map<string, number>()
+    for (const f of this.feeds)
+      if (f.folderId !== null) sums.set(f.folderId, (sums.get(f.folderId) ?? 0) + (this.counts.get(f.id) ?? 0))
+    return sums
+  })
+
+  select(scope: Scope) {
+    this.scope = scope
+    this.#showList()
   }
 
-  select(selection: Selection) {
-    this.selection = selection
+  setView(view: View) {
+    this.view = view
+    this.#showList()
+  }
+
+  #showList() {
     this.articleId = null
     this.html = null
     this.#resetFullText()
@@ -212,7 +231,7 @@ class Store {
     const read = !this.read.has(id)
     if (read) this.read.add(id)
     else this.read.delete(id)
-    if (article) this.#adjustUnread([article], read ? -1 : 1)
+    if (article) this.unreadByFeed = adjusted(this.unreadByFeed, [article], read ? -1 : 1)
     this.#write(() => api.setRead([id], read))
   }
 
@@ -222,30 +241,20 @@ class Store {
     const unread = this.visible.filter((a) => !this.read.has(a.id))
     if (unread.length === 0) return
     for (const a of unread) this.read.add(a.id)
-    this.#adjustUnread(unread, -1)
+    this.unreadByFeed = adjusted(this.unreadByFeed, unread, -1)
     this.#write(() => api.setRead(unread.map((a) => a.id), true))
     const open = this.articleId
     const keepOpen = (a: Article) => a.id === open
-    if (this.#isUnreadView) this.visible = this.visible.filter(keepOpen)
+    if (this.view === 'unread') this.visible = this.visible.filter(keepOpen)
     void this.#loadList(keepOpen)
   }
 
-  get #isUnreadView(): boolean {
-    return this.selection.kind === 'smart' && this.selection.view === 'unread'
-  }
-
-  /** Adjusts the sidebar counts right away; the next load from the cache corrects them. */
-  #adjustUnread(articles: Article[], delta: number) {
-    const counts = new Map(this.unreadByFeed)
-    for (const a of articles) counts.set(a.feedId, Math.max(0, (counts.get(a.feedId) ?? 0) + delta))
-    this.unreadByFeed = counts
-  }
-
   toggleStarred(id: string) {
+    const article = this.visible.find((a) => a.id === id)
     const starred = !this.starred.has(id)
     if (starred) this.starred.add(id)
     else this.starred.delete(id)
-    this.starredCount += starred ? 1 : -1
+    if (article) this.starredByFeed = adjusted(this.starredByFeed, [article], starred ? 1 : -1)
     this.#write(() => api.setStarred([id], starred))
   }
 
@@ -271,8 +280,9 @@ class Store {
     this.folders = []
     this.feeds = []
     this.unreadByFeed = new Map()
-    this.starredCount = 0
-    this.selection = { kind: 'smart', view: 'unread' }
+    this.starredByFeed = new Map()
+    this.view = 'unread'
+    this.scope = { kind: 'all' }
     this.visible = []
     this.articleId = null
     this.html = null
@@ -284,8 +294,10 @@ class Store {
   #onStatus(status: SyncStatus) {
     this.status = status
     if (status.unauthorized) this.signedIn = false
-    // After a sync, the Unread view keeps what was read since it opened (FR-7a).
-    else if (this.signedIn && !status.syncing && !status.error) void this.#reload((a) => this.read.has(a.id))
+    // After a sync, the Unread view keeps what was read since it opened (FR-7a), and the
+    // Starred view what was unstarred.
+    else if (this.signedIn && !status.syncing && !status.error)
+      void this.#reload((a) => (this.view === 'unread' ? this.read.has(a.id) : !this.starred.has(a.id)))
   }
 
   async #reload(keep?: (a: Article) => boolean) {
@@ -300,29 +312,32 @@ class Store {
     this.folders = lib.folders
     this.feeds = lib.feeds
     this.unreadByFeed = new Map(Object.entries(lib.counts.unreadByFeed))
-    this.starredCount = lib.counts.starred
+    this.starredByFeed = new Map(Object.entries(lib.counts.starredByFeed))
   }
 
   /**
-   * Loads the list for the current selection. In the Unread view, listed articles that
-   * are no longer unread stay if `keep` says so, so the list doesn't jump while you read.
+   * Loads the list for the current selection. In the Unread and Starred views, listed
+   * articles that left the view stay if `keep` says so, so the list doesn't jump while
+   * you read. Only a reload of the same selection keeps any.
    */
   async #loadList(keep: (a: Article) => boolean = () => false) {
     const request = ++this.#listRequest
-    const selection = $state.snapshot(this.selection)
-    const unreadView = this.#isUnreadView
+    const selection = { view: this.view, scope: $state.snapshot(this.scope) }
+    const key = JSON.stringify(selection)
     await this.#writes
     let list = await api.articles(selection)
     if (request !== this.#listRequest) return
 
-    if (unreadView) {
+    if (selection.view !== 'all' && key === this.#listKey) {
       const ids = new Set(list.map((a) => a.id))
       const kept = this.visible.filter((a) => !ids.has(a.id) && keep(a))
       if (kept.length > 0) {
-        list = [...list, ...kept.map((a) => ({ ...a, read: this.read.has(a.id) }))]
+        const local = (a: Article) => ({ ...a, read: this.read.has(a.id), starred: this.starred.has(a.id) })
+        list = [...list, ...kept.map(local)]
         list.sort((a, b) => b.published - a.published)
       }
     }
+    this.#listKey = key
 
     this.read.clear()
     this.starred.clear()
@@ -332,6 +347,14 @@ class Store {
     }
     this.visible = list
   }
+}
+
+/** `counts` with each article's feed changed by `delta`, for the sidebar to show right
+ * away. The next load from the cache corrects them. */
+function adjusted(counts: Map<string, number>, articles: Article[], delta: number) {
+  const next = new Map(counts)
+  for (const a of articles) next.set(a.feedId, Math.max(0, (next.get(a.feedId) ?? 0) + delta))
+  return next
 }
 
 export const store = new Store()
