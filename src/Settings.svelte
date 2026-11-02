@@ -1,5 +1,6 @@
 <script lang="ts">
   import BookOpen from '@lucide/svelte/icons/book-open'
+  import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down'
   import CircleUser from '@lucide/svelte/icons/circle-user'
   import Keyboard from '@lucide/svelte/icons/keyboard'
   import Palette from '@lucide/svelte/icons/palette'
@@ -150,14 +151,17 @@
   {@const options = choices.some((c) => c.value === value)
     ? choices
     : [{ value, label: other(value) }, ...choices]}
-  <select
-    {id}
-    onchange={(e) => onchange(options[e.currentTarget.selectedIndex].value)}
-  >
-    {#each options as option (option.value)}
-      <option selected={option.value === value}>{option.label}</option>
-    {/each}
-  </select>
+  <span class="select">
+    <select
+      {id}
+      onchange={(e) => onchange(options[e.currentTarget.selectedIndex].value)}
+    >
+      {#each options as option (option.value)}
+        <option selected={option.value === value}>{option.label}</option>
+      {/each}
+    </select>
+    <ChevronsUpDown size={14} strokeWidth={2} aria-hidden="true" />
+  </span>
 {/snippet}
 
 <div class="settings" class:mac={isMac}>
@@ -464,10 +468,46 @@
     user-select: text;
   }
 
-  select {
-    font: inherit;
-    color: inherit;
+  /* Drawn with the theme's colors instead of the platform's. The open list stays
+     native: WebView2 and Chromium use the option colors below, while WebKit's menus on
+     macOS and Linux follow only color-scheme. */
+  .select {
+    position: relative;
+    display: inline-flex;
+    min-width: 0;
     max-width: 60%;
+  }
+
+  select {
+    appearance: none;
+    min-width: 0;
+    height: 26px;
+    padding: 0 28px 0 10px;
+    border: 0;
+    border-radius: 6px;
+    background: var(--active);
+    font: inherit;
+    color: var(--text);
+    text-overflow: ellipsis;
+  }
+
+  select:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  option {
+    background: var(--reader-bg);
+    color: var(--text);
+  }
+
+  .select :global(svg) {
+    position: absolute;
+    top: 50%;
+    right: 8px;
+    translate: 0 -50%;
+    color: var(--text-2);
+    pointer-events: none;
   }
 
   .error {
