@@ -1,6 +1,6 @@
 <script lang="ts">
   import BookOpenText from '@lucide/svelte/icons/book-open-text'
-  import Compass from '@lucide/svelte/icons/compass'
+  import Globe from '@lucide/svelte/icons/globe'
   import Star from '@lucide/svelte/icons/star'
   import { fontStacks, interFontFaces } from './fonts'
   import { escapeHtml, formatFull } from './format'
@@ -152,7 +152,7 @@
         disabled={!article.url}
         onclick={() => openInBrowser(article.url)}
       >
-        <Compass size={18} strokeWidth={2} />
+        <Globe size={18} strokeWidth={2} />
       </button>
     {/if}
   </div>
