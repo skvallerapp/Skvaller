@@ -1,11 +1,17 @@
 const time = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' })
 const day = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' })
+const dayInYear = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 const full = new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeStyle: 'short' })
+
+/** "12 Oct", with the year when it isn't this year's. */
+function shortDate(d: Date): string {
+  return (d.getFullYear() === new Date().getFullYear() ? day : dayInYear).format(d)
+}
 
 /** Time for today, a short date otherwise. */
 export function formatTime(ms: number): string {
   const d = new Date(ms)
-  return d.toDateString() === new Date().toDateString() ? time.format(d) : day.format(d)
+  return d.toDateString() === new Date().toDateString() ? time.format(d) : shortDate(d)
 }
 
 /** "Today at 20:34", "Yesterday at 09:12" or "12 Oct at 09:12". */
@@ -18,7 +24,7 @@ export function formatSynced(ms: number): string {
       ? 'Today'
       : d.toDateString() === yesterday.toDateString()
         ? 'Yesterday'
-        : day.format(d)
+        : shortDate(d)
   return `${dayLabel} at ${time.format(d)}`
 }
 

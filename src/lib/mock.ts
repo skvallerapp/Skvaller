@@ -80,7 +80,7 @@ function settings(): Settings {
   try {
     return { ...defaultSettings, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') }
   } catch {
-    return defaultSettings
+    return { ...defaultSettings }
   }
 }
 
