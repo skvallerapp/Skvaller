@@ -2,6 +2,7 @@
   import CircleCheck from '@lucide/svelte/icons/circle-check'
   import PanelLeft from '@lucide/svelte/icons/panel-left'
   import Star from '@lucide/svelte/icons/star'
+  import { untrack } from 'svelte'
   import { formatTime } from './format'
   import { layout, toggleSidebar } from './layout.svelte'
   import { dragRegion, isMac } from './platform'
@@ -77,6 +78,24 @@
 
   function onFocusout(e: FocusEvent) {
     if (!markAll.contains(e.relatedTarget as Node | null)) confirming = false
+  }
+
+  // Brings a newly opened article's row into view, such as when stepping through with
+  // the keyboard. Only a change of article does this: a list reload or a resize must not
+  // pull the list back while the user scrolls it.
+  $effect(() => {
+    const id = store.articleId
+    const i = untrack(() => items.findIndex((a) => a.id === id))
+    if (i === -1) return
+    const top = i * ROW_HEIGHT
+    if (top < viewport.scrollTop) viewport.scrollTop = top
+    else if (top + ROW_HEIGHT > viewport.scrollTop + viewport.clientHeight)
+      viewport.scrollTop = top + ROW_HEIGHT - viewport.clientHeight
+  })
+
+  /** Marks all as read, asking first when the setting says so. */
+  export function markAllRead() {
+    if (unread > 0) onMarkAll()
   }
 
   // A new selection starts at the top, with no confirmation open.
