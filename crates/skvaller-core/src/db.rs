@@ -7,10 +7,13 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
+use crate::full_text::MAX_ATTEMPTS;
 use crate::{Error, Result, api};
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
+/// Schema version 2. A new cache gets it plus the migrations after it, so each table
+/// is written down once.
 const SCHEMA: &str = "
 CREATE TABLE folders (
     id    TEXT PRIMARY KEY,
@@ -62,6 +65,24 @@ ALTER TABLE feeds ADD COLUMN icon_from TEXT;
 ALTER TABLE feeds ADD COLUMN icon TEXT;
 ";
 
+/// Schema version 2 to 3: Reader View.
+const MIGRATE_2: &str = "
+-- 1: open the feed's articles in Reader View. Local, not synced.
+ALTER TABLE feeds ADD COLUMN reader_view INTEGER NOT NULL DEFAULT 0;
+-- Reader View: the article's full text, extracted from its web page.
+CREATE TABLE full_text (
+    article_id INTEGER PRIMARY KEY REFERENCES articles (id) ON DELETE CASCADE,
+    html       TEXT,             -- untrusted; NULL until extracted
+    attempts   INTEGER NOT NULL  -- failed fetches; at full_text::MAX_ATTEMPTS, given up
+);
+-- A new URL is a new page.
+CREATE TRIGGER full_text_follows_url AFTER UPDATE OF url ON articles
+WHEN old.url IS NOT new.url
+BEGIN
+    DELETE FROM full_text WHERE article_id = new.id;
+END;
+";
+
 /// Newest crawl time seen from the server, in Unix milliseconds.
 const NEWEST_CRAWL: &str = "newest_crawl";
 /// When the last sync finished, in Unix milliseconds.
@@ -88,6 +109,13 @@ impl Flag {
             Flag::Starred => api::STARRED,
         }
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum FullText {
+    Html(String),
+    /// Fetching it failed this many times.
+    Failed(u32),
 }
 
 pub(crate) struct FeedRow {
@@ -129,6 +157,8 @@ pub struct Feed {
     pub subscribed: bool,
     /// The favicon as a `data:` URL.
     pub icon: Option<String>,
+    /// Open its articles in Reader View. A local setting, not synced.
+    pub reader_view: bool,
 }
 
 /// An article without its HTML, for the article list.
@@ -202,19 +232,17 @@ impl Db {
     fn init(conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "foreign_keys", true)?;
         let version: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        match version {
-            0 => {
-                conn.execute_batch(&format!(
-                    "BEGIN; {SCHEMA} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
-                ))?;
-            }
-            1 => {
-                conn.execute_batch(&format!(
-                    "BEGIN; {MIGRATE_1} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
-                ))?;
-            }
-            SCHEMA_VERSION => {}
+        let steps = match version {
+            0 => format!("{SCHEMA} {MIGRATE_2}"),
+            1 => format!("{MIGRATE_1} {MIGRATE_2}"),
+            2 => MIGRATE_2.to_owned(),
+            SCHEMA_VERSION => String::new(),
             _ => return Err(Error::CacheTooNew),
+        };
+        if !steps.is_empty() {
+            conn.execute_batch(&format!(
+                "BEGIN; {steps} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+            ))?;
         }
         Ok(Self {
             conn: Mutex::new(conn),
@@ -238,7 +266,7 @@ impl Db {
     pub fn feeds(&self) -> Result<Vec<Feed>> {
         let conn = self.read();
         let mut stmt = conn.prepare(
-            "SELECT id, title, folder_id, subscribed, icon FROM feeds
+            "SELECT id, title, folder_id, subscribed, icon, reader_view FROM feeds
              ORDER BY title COLLATE NOCASE",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -248,6 +276,7 @@ impl Db {
                 folder_id: r.get(2)?,
                 subscribed: r.get(3)?,
                 icon: r.get(4)?,
+                reader_view: r.get(5)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -301,6 +330,65 @@ impl Db {
                 r.get(0)
             })
             .optional()?)
+    }
+
+    /// The article's web page URL, if the article is cached.
+    pub(crate) fn article_url(&self, id: i64) -> Result<Option<String>> {
+        Ok(self
+            .read()
+            .query_row("SELECT url FROM articles WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?)
+    }
+
+    /// The article's Reader View text, or how often fetching it failed. `None` if it
+    /// was never tried.
+    pub(crate) fn full_text(&self, id: i64) -> Result<Option<FullText>> {
+        Ok(self
+            .read()
+            .query_row(
+                "SELECT html, attempts FROM full_text WHERE article_id = ?1",
+                [id],
+                |r| {
+                    Ok(match r.get::<_, Option<String>>(0)? {
+                        Some(html) => FullText::Html(html),
+                        None => FullText::Failed(r.get(1)?),
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Does nothing if the article left the cache meanwhile.
+    pub(crate) fn set_full_text(&self, id: i64, html: &str) -> Result<()> {
+        self.lock().execute(
+            "INSERT INTO full_text (article_id, html, attempts)
+             SELECT id, ?2, 0 FROM articles WHERE id = ?1
+             ON CONFLICT DO UPDATE SET html = excluded.html, attempts = 0",
+            params![id, html],
+        )?;
+        Ok(())
+    }
+
+    /// Counts a failed fetch. A `permanent` failure, such as a page with nothing
+    /// readable, gives up at once.
+    pub(crate) fn full_text_failed(&self, id: i64, permanent: bool) -> Result<()> {
+        let attempts = if permanent { MAX_ATTEMPTS } else { 1 };
+        self.lock().execute(
+            "INSERT INTO full_text (article_id, html, attempts)
+             SELECT id, NULL, ?2 FROM articles WHERE id = ?1
+             ON CONFLICT DO UPDATE SET
+                 html = NULL, attempts = min(?3, attempts + excluded.attempts)",
+            params![id, attempts, MAX_ATTEMPTS],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_feed_reader_view(&self, feed_id: &str, on: bool) -> Result<()> {
+        self.lock().execute(
+            "UPDATE feeds SET reader_view = ?2 WHERE id = ?1",
+            params![feed_id, on],
+        )?;
+        Ok(())
     }
 
     pub fn counts(&self) -> Result<Counts> {
@@ -476,6 +564,22 @@ impl Db {
             params![feed_id, from, icon],
         )?;
         Ok(())
+    }
+
+    /// Unread articles of Reader View feeds whose full text is not cached and not given
+    /// up on, newest first.
+    pub(crate) fn full_text_wanted(&self, limit: usize) -> Result<Vec<i64>> {
+        let conn = self.read();
+        let mut stmt = conn.prepare(
+            "SELECT a.id FROM articles a JOIN feeds f ON f.id = a.feed_id
+             WHERE f.reader_view AND NOT a.read AND a.url != ''
+             AND a.id NOT IN (
+                 SELECT article_id FROM full_text WHERE html IS NOT NULL OR attempts >= ?2
+             )
+             ORDER BY a.published DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64, MAX_ATTEMPTS], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Inserts or updates articles from the server, and returns how many rows changed.
@@ -902,6 +1006,105 @@ mod tests {
         db.set_read(&[4], true).unwrap();
         assert_eq!(db.prune(10_000).unwrap(), 1);
         assert_eq!(db.missing_ids(&[1, 2, 3, 4, 50]).unwrap(), [3]);
+    }
+
+    #[test]
+    fn version_2_cache_gets_reader_view() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "{SCHEMA}
+             INSERT INTO feeds (id, title, subscribed) VALUES ('feed/1', 'A', 1);
+             PRAGMA user_version = 2;"
+        ))
+        .unwrap();
+
+        let db = Db::init(conn).unwrap();
+
+        assert!(!db.feeds().unwrap()[0].reader_view);
+        db.upsert_articles(&[article(1, "feed/1", false, false)])
+            .unwrap();
+        db.set_full_text(1, "<p>x</p>").unwrap();
+        assert_eq!(
+            db.full_text(1).unwrap(),
+            Some(FullText::Html("<p>x</p>".into()))
+        );
+    }
+
+    #[test]
+    fn full_text_goes_with_its_article_and_its_url() {
+        let db = db_with_article(); // 1: unread, published at 1 s
+        let at = |url: &str| ArticleRow {
+            url: url.into(),
+            ..article(3, "feed/1", true, false)
+        };
+        db.upsert_articles(&[at("https://example.com/a")]).unwrap();
+        assert_eq!(db.full_text(3).unwrap(), None);
+        db.full_text_failed(3, false).unwrap();
+        db.full_text_failed(3, false).unwrap();
+        assert_eq!(db.full_text(3).unwrap(), Some(FullText::Failed(2)));
+        db.full_text_failed(3, true).unwrap();
+        db.full_text_failed(3, false).unwrap();
+        assert_eq!(
+            db.full_text(3).unwrap(),
+            Some(FullText::Failed(MAX_ATTEMPTS))
+        );
+        db.set_full_text(3, "<p>full</p>").unwrap();
+        assert_eq!(
+            db.full_text(3).unwrap(),
+            Some(FullText::Html("<p>full</p>".into()))
+        );
+
+        // Another update keeps it; a new URL drops it.
+        db.upsert_articles(&[ArticleRow {
+            title: "New".into(),
+            ..at("https://example.com/a")
+        }])
+        .unwrap();
+        assert!(db.full_text(3).unwrap().is_some());
+        db.upsert_articles(&[at("https://example.com/b")]).unwrap();
+        assert_eq!(db.full_text(3).unwrap(), None);
+
+        db.set_full_text(3, "<p>full</p>").unwrap();
+        db.prune(10_000).unwrap();
+        assert_eq!(db.full_text(3).unwrap(), None);
+        // An article that left the cache gets no row.
+        db.set_full_text(3, "<p>full</p>").unwrap();
+        db.full_text_failed(3, true).unwrap();
+        assert_eq!(db.full_text(3).unwrap(), None);
+    }
+
+    #[test]
+    fn reader_view_feeds_want_their_unread_articles_fetched() {
+        let db = Db::open_in_memory().unwrap();
+        db.replace_subscriptions(&[feed("feed/1", None), feed("feed/2", None)])
+            .unwrap();
+        let with_url = |id, feed_id: &str, read| ArticleRow {
+            url: format!("https://example.com/{id}"),
+            ..article(id, feed_id, read, false)
+        };
+        db.upsert_articles(&[
+            with_url(1, "feed/1", false),
+            with_url(2, "feed/1", false),       // fetched
+            with_url(3, "feed/1", true),        // read
+            with_url(4, "feed/2", false),       // feed not in Reader View
+            article(5, "feed/1", false, false), // no URL
+            with_url(6, "feed/1", false),       // failed once: tried again
+            with_url(7, "feed/1", false),       // given up on
+        ])
+        .unwrap();
+        db.set_full_text(2, "<p>x</p>").unwrap();
+        db.full_text_failed(6, false).unwrap();
+        db.full_text_failed(7, true).unwrap();
+        assert!(db.full_text_wanted(10).unwrap().is_empty());
+
+        db.set_feed_reader_view("feed/1", true).unwrap();
+        // A sync keeps the local setting.
+        db.replace_subscriptions(&[feed("feed/1", None), feed("feed/2", None)])
+            .unwrap();
+        assert!(db.feeds().unwrap()[0].reader_view);
+
+        assert_eq!(db.full_text_wanted(10).unwrap(), [6, 1]);
+        assert_eq!(db.full_text_wanted(1).unwrap(), [6]);
     }
 
     fn ids(db: &Db, selection: Selection) -> Vec<String> {

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>How the kernel scheduler works – Kernel Notes</title>
+  <script>window.track = function () {}</script>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <nav><a href="/">Home</a> <a href="/about">About</a> <a href="/archive">Archive</a></nav>
+  </header>
+  <aside class="sidebar">
+    <h3>Subscribe to our newsletter</h3>
+    <form><input type="email"><button>Sign up</button></form>
+  </aside>
+  <main>
+    <article class="post">
+      <h1>How the kernel scheduler works</h1>
+      <p class="byline">By Ada Example</p>
+      <div class="entry-content">
+        <p>The scheduler picks the next task to run on each CPU. It has to be fair to every
+          task, quick to decide, and careful with caches, all at once. This post walks through
+          how it balances those demands, and what changed in the latest release.</p>
+        <p>Each CPU keeps its own queue of runnable tasks. Since the latest release, that queue
+          is a lock-free run queue, so waking a task on another CPU no longer takes a lock that
+          every other CPU also wants. See the <a href="/about">about page</a> for who we are.</p>
+        <figure><img src="diagram.png" alt="Run queues per CPU"><figcaption>One run queue per
+          CPU.</figcaption></figure>
+        <p>Fairness comes from tracking how much CPU time each task has had, weighted by its
+          priority. The task that has had the least runs next. This keeps interactive programs
+          responsive even when a long build keeps every core busy for minutes on end.</p>
+        <p>Load balancing moves tasks between queues when one CPU is much busier than another.
+          It runs rarely, because moving a task loses whatever it had in the old CPU's caches,
+          and that cost often outweighs the gain from a shorter queue.</p>
+      </div>
+    </article>
+    <section class="related">
+      <h2>Related posts</h2>
+      <ul><li><a href="/posts/memory/">Memory</a></li><li><a href="/posts/io/">IO</a></li></ul>
+    </section>
+  </main>
+  <footer>© Kernel Notes</footer>
+  <script src="/analytics.js"></script>
+</body>
+</html>

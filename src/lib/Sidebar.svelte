@@ -6,6 +6,7 @@
   import SettingsIcon from '@lucide/svelte/icons/settings'
   import Rss from '@lucide/svelte/icons/rss'
   import Star from '@lucide/svelte/icons/star'
+  import { CheckMenuItem, Menu } from '@tauri-apps/api/menu'
   import { SvelteSet } from 'svelte/reactivity'
   import { formatSynced, serviceTitle } from './format'
   import { openSettings } from './api'
@@ -38,6 +39,47 @@
   function toggleFolder(id: string) {
     if (!collapsed.delete(id)) collapsed.add(id)
   }
+
+  // One native menu for every feed, made on first use: menus are app resources that
+  // stay until closed, and on Linux `popup` returns before the menu does.
+  let feedMenu: Promise<{ menu: Menu; readerView: CheckMenuItem }> | null = null
+  // The feed the menu was last opened for. Its action acts on this one.
+  let menuFeedId = ''
+  let menuRequest = 0
+
+  function makeFeedMenu() {
+    feedMenu ??= (async () => {
+      const readerView = await CheckMenuItem.new({
+        text: 'Always Use Reader View',
+        action: () => {
+          const feed = store.feed(menuFeedId)
+          if (feed) store.setFeedReaderView(feed.id, !feed.readerView)
+        },
+      })
+      return { menu: await Menu.new({ items: [readerView] }), readerView }
+    })().catch((e) => {
+      feedMenu = null
+      throw e
+    })
+    return feedMenu
+  }
+
+  async function showFeedMenu(e: MouseEvent, feed: Feed) {
+    if (!inTauri) return
+    e.preventDefault()
+    // Only the latest right-click opens the menu, checked for its own feed.
+    const request = ++menuRequest
+    try {
+      const { menu, readerView } = await makeFeedMenu()
+      if (request !== menuRequest) return
+      await readerView.setChecked(feed.readerView)
+      if (request !== menuRequest) return
+      menuFeedId = feed.id
+      await menu.popup()
+    } catch (err) {
+      console.warn('Showing the feed menu failed', err)
+    }
+  }
 </script>
 
 {#snippet row(
@@ -53,6 +95,7 @@
     class:indent
     class:selected={isSelected(sel)}
     onclick={() => store.select(sel)}
+    oncontextmenu={feed ? (e) => showFeedMenu(e, feed) : undefined}
   >
     {#if feed}
       <span class="row-icon thumb">

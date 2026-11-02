@@ -1,6 +1,7 @@
 //! Tauri commands and the background sync. The UI's commands read and write only the
 //! local cache. Network work happens in `run_sync`, which reports through the
-//! `sync-status` event.
+//! `sync-status` event. One exception: `full_text` fetches a page the user opens in
+//! Reader View, while the UI shows the cached feed content.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -8,8 +9,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use skvaller_core::{
-    ArticleSummary, Client, Counts, Db, Error, Feed, Folder, Selection, delete_token, load_token,
-    save_token, sync,
+    ArticleSummary, Client, Counts, Db, Error, Feed, Folder, Selection, delete_token,
+    load_full_text, load_token, prefetch_full_text, save_token, sync,
 };
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder};
 use tokio::sync::Notify;
@@ -36,6 +37,8 @@ pub struct AppState {
     /// server rejects the token.
     client: Mutex<Option<Client>>,
     sync_gate: SyncGate,
+    /// Reader View prefetch, after a sync. Separate, so syncing is not held up by it.
+    prefetch_gate: SyncGate,
     /// Wakes the background sync when the sync interval changes.
     interval_changed: Notify,
 }
@@ -55,6 +58,7 @@ impl AppState {
             config_path,
             client: Mutex::new(None),
             sync_gate: SyncGate::default(),
+            prefetch_gate: SyncGate::default(),
             interval_changed: Notify::new(),
         })
     }
@@ -218,6 +222,7 @@ pub async fn sign_in(
         // No sync of the old account may write while the cache is emptied. One that is
         // running stops; it leaves the cache consistent, and the next one picks up from there.
         let _no_sync = state.sync_gate.stop().await;
+        let _no_prefetch = state.prefetch_gate.stop().await;
         // The cache belongs to the saved account. With none saved, it may hold what a
         // failed sign-out left behind.
         let old = state.config().account;
@@ -289,6 +294,30 @@ pub async fn article_html(state: State<'_, AppState>, id: String) -> CommandResu
     Ok(state.db.article_html(parse_id(&id)?)?)
 }
 
+/// The article's Reader View text, extracted from its web page: cached, or else
+/// fetched. The UI shows the feed's content meanwhile. A page given up on is fetched
+/// again only with `retry`, when the user asks. Untrusted, like the feed's HTML.
+#[tauri::command]
+pub async fn full_text(
+    state: State<'_, AppState>,
+    id: String,
+    retry: bool,
+) -> CommandResult<String> {
+    load_full_text(&state.db, parse_id(&id)?, retry)
+        .await?
+        .ok_or_else(|| CommandError::other("the page has nothing to show in Reader View"))
+}
+
+/// Opens the feed's articles in Reader View, or stops doing so.
+#[tauri::command]
+pub async fn set_feed_reader_view(
+    state: State<'_, AppState>,
+    feed_id: String,
+    on: bool,
+) -> CommandResult<()> {
+    Ok(state.db.set_feed_reader_view(&feed_id, on)?)
+}
+
 #[tauri::command]
 pub async fn set_read(
     state: State<'_, AppState>,
@@ -337,6 +366,7 @@ pub async fn set_settings(
 pub async fn sign_out(app: AppHandle, state: State<'_, AppState>) -> CommandResult<()> {
     // No sync may write while the cache is emptied.
     let _no_sync = state.sync_gate.stop().await;
+    let _no_prefetch = state.prefetch_gate.stop().await;
     let account = state.config().account;
     state.update_config(|config| config.account = None)?;
     *lock(&state.client) = None;
@@ -474,11 +504,26 @@ async fn run_sync(app: &AppHandle) {
     };
 
     match state.sync_gate.run(work).await {
-        Outcome::Done(Some(status)) => emit(status),
+        Outcome::Done(Some(status)) => {
+            let synced = status.error.is_none();
+            emit(status);
+            if synced {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move { prefetch(&app.state()).await });
+            }
+        }
         Outcome::Stopped => emit(SyncStatus {
             last_sync: last_sync(),
             ..SyncStatus::default()
         }),
         Outcome::Done(None) | Outcome::Busy => {}
+    }
+}
+
+/// Fetches Reader View pages for new articles, which can take minutes. Skipped while
+/// the last sync's prefetch still runs; signing in or out stops it.
+async fn prefetch(state: &AppState) {
+    if let Outcome::Done(Err(e)) = state.prefetch_gate.run(prefetch_full_text(&state.db)).await {
+        eprintln!("Prefetching Reader View failed: {e}");
     }
 }

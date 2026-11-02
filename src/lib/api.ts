@@ -26,6 +26,14 @@ export const articles = (selection: Selection) => call<Article[]>('articles', { 
 
 export const articleHtml = (id: string) => call<string | null>('article_html', { id })
 
+/** The article's Reader View HTML, extracted from its web page. Untrusted. Fetches the
+ * page if it isn't cached, so it may take seconds or fail. A page given up on is fetched
+ * again only with `retry`. */
+export const fullText = (id: string, retry: boolean) => call<string>('full_text', { id, retry })
+
+export const setFeedReaderView = (feedId: string, on: boolean) =>
+  call<void>('set_feed_reader_view', { feedId, on })
+
 export const setRead = (ids: string[], read: boolean) => call<void>('set_read', { ids, read })
 
 export const setStarred = (ids: string[], starred: boolean) =>

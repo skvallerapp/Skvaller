@@ -51,6 +51,8 @@ fn main() {
             commands::library,
             commands::articles,
             commands::article_html,
+            commands::full_text,
+            commands::set_feed_reader_view,
             commands::set_read,
             commands::set_starred,
             commands::set_settings,

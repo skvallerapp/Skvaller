@@ -11,6 +11,7 @@ export const shortcutActions: { action: ShortcutAction; label: string }[] = [
   { action: 'toggleRead', label: 'Mark as Read or Unread' },
   { action: 'toggleStar', label: 'Star or Remove Star' },
   { action: 'openInBrowser', label: 'Open in Browser' },
+  { action: 'toggleReaderView', label: 'Show or Hide Reader View' },
   { action: 'sync', label: 'Sync' },
   { action: 'markAllRead', label: 'Mark All as Read' },
 ]
@@ -23,6 +24,7 @@ const defaults: Record<ShortcutAction, string> = {
   toggleRead: 'm',
   toggleStar: 's',
   openInBrowser: 'b',
+  toggleReaderView: 'v',
   sync: 'r',
   markAllRead: 'a',
 }

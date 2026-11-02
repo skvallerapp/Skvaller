@@ -32,6 +32,7 @@
     toggleRead: () => store.article && store.toggleRead(store.article.id),
     toggleStar: () => store.article && store.toggleStarred(store.article.id),
     openInBrowser: () => store.article && openInBrowser(store.article.url),
+    toggleReaderView: () => store.toggleReaderView(),
     sync: () => store.sync(),
     markAllRead: () => list?.markAllRead(),
   }
