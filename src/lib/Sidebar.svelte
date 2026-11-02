@@ -10,7 +10,7 @@
   import { formatSynced, serviceTitle } from './format'
   import { openSettings } from './api'
   import { ms } from './motion'
-  import { dragRegion, inTauri, isMac } from './platform'
+  import { dragRegion, inTauri, isMac, macWindow } from './platform'
   import { store } from './store.svelte'
   import type { Feed, Scope } from './types'
   import { type ViewIcon, viewInfo, views } from './views'
@@ -158,7 +158,7 @@
 
 <nav class="sidebar" aria-label="Feeds">
   <div class="toolbar" data-tauri-drag-region={dragRegion}>
-    {#if !isMac || !inTauri}
+    {#if !macWindow}
       <!-- macOS opens Settings from the app menu, which a browser doesn't have. -->
       <button
         class="icon-button"
