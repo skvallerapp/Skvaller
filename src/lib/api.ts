@@ -1,6 +1,7 @@
 // Typed wrappers for the Tauri commands in src-tauri/src/commands.rs.
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import type { Article, Library, Selection, Session, SyncStatus } from './types'
 
 // Outside Tauri (a plain browser during `bun run dev`), use mock data instead.
@@ -28,6 +29,20 @@ export const setRead = (ids: string[], read: boolean) => call<void>('set_read', 
 
 export const setStarred = (ids: string[], starred: boolean) =>
   call<void>('set_starred', { ids, starred })
+
+/** Opens an http(s) URL in the system browser, resolving a relative one against `base`.
+ * Anything else is ignored. */
+export function openInBrowser(url: string, base?: string) {
+  let parsed: URL
+  try {
+    parsed = new URL(url.trim(), base || undefined)
+  } catch {
+    return
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return
+  if (mock) window.open(parsed.href, '_blank', 'noopener')
+  else openUrl(parsed.href).catch((e) => console.error('Opening a link failed', e))
+}
 
 export const onSyncStatus = (handler: (status: SyncStatus) => void): Promise<UnlistenFn> =>
   mock
