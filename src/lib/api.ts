@@ -3,11 +3,11 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { openUrl } from '@tauri-apps/plugin-opener'
+import { inTauri } from './platform'
 import type { Account, Article, Library, Selection, Session, Settings, SyncStatus } from './types'
 
 // Outside Tauri (a plain browser during `bun run dev`), use mock data instead.
-const mock =
-  import.meta.env.DEV && !('__TAURI_INTERNALS__' in window) ? import('./mock') : null
+const mock = import.meta.env.DEV && !inTauri ? import('./mock') : null
 
 const call = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
   mock ? mock.then((m) => m.invoke<T>(cmd, args)) : invoke<T>(cmd, args)
