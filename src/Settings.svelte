@@ -10,7 +10,8 @@
   import { serviceTitle } from './lib/format'
   import { dragRegion, isMac } from './lib/platform'
   import ShortcutList from './lib/ShortcutList.svelte'
-  import type { Account, Font, Settings } from './lib/types'
+  import { palette } from './lib/theme'
+  import type { Account, Font, Settings, Theme } from './lib/types'
 
   type Pane = 'general' | 'appearance' | 'reading' | 'shortcuts' | 'account'
 
@@ -34,6 +35,13 @@
     { days: 14, label: '2 Weeks' },
     { days: 30, label: '30 Days' },
     { days: 90, label: '3 Months' },
+  ]
+
+  const themes: { value: Theme; label: string }[] = [
+    { value: 'system', label: 'System' },
+    { value: 'light', label: 'Light' },
+    { value: 'dark', label: 'Dark' },
+    { value: 'espresso', label: 'Espresso' },
   ]
 
   const fonts: { font: Font; label: string }[] = [
@@ -79,7 +87,9 @@
   }
 
   $effect(() => {
-    if (settings) document.documentElement.style.fontFamily = fontStacks[settings.uiFont]
+    if (!settings) return
+    document.documentElement.style.fontFamily = fontStacks[settings.uiFont]
+    document.documentElement.dataset.theme = palette(settings.theme)
   })
 
   /** Applies a change at once. The main window gets it through `settings-changed`. A
@@ -211,6 +221,15 @@
             </div>
           </section>
         {:else if pane === 'appearance'}
+          <section>
+            <h2>Colors</h2>
+            <div class="group">
+              <div class="row">
+                <label for="theme">Theme</label>
+                {@render select('theme', settings.theme, themes, (theme) => change({ theme }))}
+              </div>
+            </div>
+          </section>
           <section>
             <h2>Fonts</h2>
             <div class="group">

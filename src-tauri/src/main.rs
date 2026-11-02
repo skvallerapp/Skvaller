@@ -40,6 +40,7 @@ fn main() {
         })
         .setup(|app| {
             let state = commands::AppState::load(app.handle())?;
+            app.set_theme(state.theme().native());
             app.manage(state);
             commands::start_background_sync(app.handle().clone());
             Ok(())

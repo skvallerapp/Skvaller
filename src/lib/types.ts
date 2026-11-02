@@ -74,11 +74,14 @@ export interface Settings {
   keepReadDays: number
   /** Ask before marking every article in a view as read. */
   confirmMarkAllRead: boolean
+  theme: Theme
   uiFont: Font
   articleFont: Font
   /** Shortcut keys that differ from the defaults. `null` means no key. */
   shortcuts: Partial<Record<ShortcutAction, string | null>>
 }
+
+export type Theme = 'system' | 'light' | 'dark' | 'espresso'
 
 export type Font = 'inter' | 'system' | 'serif'
 

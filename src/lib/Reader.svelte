@@ -9,14 +9,15 @@
   import { dragRegion } from './platform'
   import { openInBrowser } from './api'
   import { store } from './store.svelte'
+  import { palette } from './theme'
+  import { untrack } from 'svelte'
 
   // Styles for the article frame. The frame has its own document, so app.css
   // doesn't reach it.
   const frameCss = $derived(`${interFontFaces}
-    :root { color-scheme: light dark; --text: #1c1c1e; --text-2: #6b6b70; --text-3: #8e8e93; --rule: rgb(0 0 0 / .1); --link: #2f6bd6; }
-    @media (prefers-color-scheme: dark) {
-      :root { --text: #e6e6e8; --text-2: #a0a0a6; --text-3: #8a8580; --rule: rgb(255 255 255 / .1); --link: #6c9cf2; }
-    }
+    :root { color-scheme: light; --text: #2e2e2d; --text-2: #61605f; --text-3: #676665; --rule: rgb(0 0 0 / .1); --link: #9a5136; }
+    :root[data-theme='dark'] { color-scheme: dark; --text: #e6e6e8; --text-2: #a0a0a6; --text-3: #97979d; --rule: rgb(255 255 255 / .1); --link: #8aa4c8; }
+    :root[data-theme='espresso'] { color-scheme: dark; --text: #e0dedd; --text-2: #c1bdbc; --text-3: #9e928d; --rule: rgb(255 236 224 / .12); --link: #cfa080; }
     html { background: transparent; }
     body { margin: 0; padding: 36px 40px 64px; color: var(--text);
       font: 16px/1.65 ${fontStacks[store.settings.articleFont]}; -webkit-font-smoothing: antialiased; }
@@ -40,10 +41,13 @@
   // bundled fonts; with scripts off, nothing in it can use that access. NEVER add
   // allow-scripts next to it: article scripts would then run as the app, with IPC.
   // Only our own header fields are escaped; the body is shown as the feed sent it.
+  // The theme is set on the frame's root, not written into the HTML, so a change
+  // doesn't reload the article.
+  const theme = $derived(palette(store.settings.theme))
   const srcdoc = $derived.by(() => {
     if (!article) return ''
     const feed = store.feed(article.feedId)?.title ?? ''
-    return `<!doctype html><html><head><meta charset="utf-8"><style>${frameCss}</style></head><body><article>
+    return `<!doctype html><html data-theme="${untrack(() => theme)}"><head><meta charset="utf-8"><style>${frameCss}</style></head><body><article>
       <header>
         <div class="date">${escapeHtml(formatFull(article.published))}</div>
         <h1>${escapeHtml(article.title)}</h1>
@@ -55,6 +59,11 @@
 
   let { onkeydown }: { onkeydown: (e: KeyboardEvent) => void } = $props()
   let frame = $state<HTMLIFrameElement>()
+
+  $effect(() => {
+    const root = frame?.contentDocument?.documentElement
+    if (root) root.dataset.theme = theme
+  })
 
   // Links in the article open in the system browser, never in the frame. The frame is
   // same-origin, so the app can listen to its events while its own scripts stay off.

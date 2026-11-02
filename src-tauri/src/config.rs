@@ -30,6 +30,8 @@ pub struct Settings {
     #[serde(deserialize_with = "confirm_mark_all_read_or_default")]
     pub confirm_mark_all_read: bool,
     #[serde(deserialize_with = "or_default")]
+    pub theme: Theme,
+    #[serde(deserialize_with = "or_default")]
     pub ui_font: Font,
     #[serde(deserialize_with = "or_default")]
     pub article_font: Font,
@@ -37,6 +39,30 @@ pub struct Settings {
     /// The UI knows the actions and the defaults.
     #[serde(deserialize_with = "or_default")]
     pub shortcuts: BTreeMap<String, Option<String>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    /// Light or dark, as the system is.
+    #[default]
+    System,
+    Light,
+    Dark,
+    /// Warm brown, on a dark base.
+    Espresso,
+}
+
+impl Theme {
+    /// The theme for the windows' own parts, such as the title bar. `None` follows
+    /// the system.
+    pub fn native(self) -> Option<tauri::Theme> {
+        match self {
+            Theme::System => None,
+            Theme::Light => Some(tauri::Theme::Light),
+            Theme::Dark | Theme::Espresso => Some(tauri::Theme::Dark),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +112,7 @@ impl Default for Settings {
             sync_interval_minutes: 15,
             keep_read_days: DEFAULT_KEEP_READ_DAYS,
             confirm_mark_all_read: true,
+            theme: Theme::default(),
             ui_font: Font::default(),
             article_font: Font::default(),
             shortcuts: BTreeMap::new(),
@@ -147,6 +174,18 @@ mod tests {
         assert_eq!(config.settings.ui_font, Font::Inter);
         assert!(config.account.is_some());
         assert_eq!(Config::default().settings.ui_font, Font::Inter);
+    }
+
+    #[test]
+    fn the_theme_defaults_to_system_and_an_unknown_one_keeps_the_rest() {
+        let config: Config =
+            serde_json::from_str(r#"{ "theme": "espresso", "uiFont": "serif" }"#).unwrap();
+        assert_eq!(config.settings.theme, Theme::Espresso);
+
+        let config: Config =
+            serde_json::from_str(r#"{ "theme": "neon", "uiFont": "serif" }"#).unwrap();
+        assert_eq!(config.settings.theme, Theme::System);
+        assert_eq!(config.settings.ui_font, Font::Serif);
     }
 
     #[test]
