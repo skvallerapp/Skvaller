@@ -68,7 +68,11 @@ export interface Session {
 export interface Settings {
   /** Ask before marking every article in a view as read. */
   confirmMarkAllRead: boolean
+  uiFont: Font
+  articleFont: Font
 }
+
+export type Font = 'inter' | 'system' | 'serif'
 
 /** An error from a command. */
 export interface CommandError {

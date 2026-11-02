@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import ArticleList from './lib/ArticleList.svelte'
+  import { fontStacks } from './lib/fonts'
   import { LIST, SIDEBAR, layout, saveLayout, toggleSidebar } from './lib/layout.svelte'
   import Reader from './lib/Reader.svelte'
   import Resizer from './lib/Resizer.svelte'
@@ -9,6 +10,10 @@
   import { store } from './lib/store.svelte'
 
   onMount(() => void store.init())
+
+  $effect(() => {
+    document.documentElement.style.fontFamily = fontStacks[store.settings.uiFont]
+  })
 
   let resizing = $state(false)
 

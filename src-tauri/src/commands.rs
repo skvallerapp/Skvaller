@@ -13,7 +13,7 @@ use skvaller_core::{
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::config::{Account, Config};
+use crate::config::{Account, Config, Font};
 
 const SYNC_STATUS_EVENT: &str = "sync-status";
 
@@ -137,12 +137,16 @@ pub struct Session {
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     confirm_mark_all_read: bool,
+    ui_font: Font,
+    article_font: Font,
 }
 
 impl From<&Config> for Settings {
     fn from(config: &Config) -> Self {
         Self {
             confirm_mark_all_read: config.confirm_mark_all_read,
+            ui_font: config.ui_font,
+            article_font: config.article_font,
         }
     }
 }
