@@ -13,10 +13,11 @@
   import { untrack } from 'svelte'
 
   // Styles for the article frame. The frame has its own document, so app.css
-  // doesn't reach it. Settings reach it through its root; see `frameRoot`.
+  // doesn't reach it. Settings reach it through its root; see `frameRoot`. The text
+  // colors are app.css's, and must stay the same.
   const frameCss = `${bundledFontFaces}
     :root { color-scheme: light; --text: #2e2e2d; --text-2: #61605f; --text-3: #676665; --rule: rgb(0 0 0 / .1); --link: #9a5136; }
-    :root[data-theme='dark'] { color-scheme: dark; --text: #e6e6e8; --text-2: #a0a0a6; --text-3: #97979d; --rule: rgb(255 255 255 / .1); --link: #8aa4c8; }
+    :root[data-theme='dark'] { color-scheme: dark; --text: #ececee; --text-2: #a0a0a6; --text-3: #97979d; --rule: rgb(255 255 255 / .1); --link: #8aa4c8; }
     :root[data-theme='espresso'] { color-scheme: dark; --text: #e0dedd; --text-2: #c1bdbc; --text-3: #9e928d; --rule: rgb(255 236 224 / .12); --link: #cfa080; }
     html { background: transparent; }
     body { margin: 0; padding: 36px 40px 64px; color: var(--text);
