@@ -5,6 +5,7 @@ export const defaultSettings: Settings = {
   syncIntervalMinutes: 15,
   keepReadDays: 30,
   confirmMarkAllRead: true,
+  theme: 'system',
   uiFont: 'inter',
   articleFont: 'inter',
   shortcuts: {},

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import ArticleList from './lib/ArticleList.svelte'
   import { fontStacks } from './lib/fonts'
+  import { palette } from './lib/theme'
   import { openInBrowser, openSettings } from './lib/api'
   import { LIST, SIDEBAR, layout, saveLayout, toggleSidebar } from './lib/layout.svelte'
   import Reader from './lib/Reader.svelte'
@@ -17,6 +18,7 @@
 
   $effect(() => {
     document.documentElement.style.fontFamily = fontStacks[store.settings.uiFont]
+    document.documentElement.dataset.theme = palette(store.settings.theme)
   })
 
   let resizing = $state(false)

@@ -1,5 +1,5 @@
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   font-size: 13px;
   -webkit-font-smoothing: antialiased;
 
@@ -8,15 +8,17 @@
   --sidebar-bg: #f1f0ee;
   --list-bg: #fafaf9;
   --reader-bg: #ffffff;
-  --text: #1c1c1e;
-  --text-2: #6b6b70;
-  --text-3: #a3a3a8;
+  --text: #2e2e2d;
+  /* Muted text. In every theme, --text-2 and --text-3 keep 4.5:1 contrast (WCAG AA)
+     on each pane, hovered rows included. */
+  --text-2: #61605f;
+  --text-3: #676665;
   --separator: rgb(0 0 0 / 0.08);
   --hover: rgb(0 0 0 / 0.04);
   --active: rgb(0 0 0 / 0.07);
-  --accent: #2f6bd6;
+  --accent: #9a5136;
   --accent-text: #ffffff;
-  --unread-dot: #2f6bd6;
+  --unread-dot: #9a5136;
   --star: #e0a21b;
   --error: #c4352b;
   /* Behind white text, so the same in both themes. */
@@ -27,25 +29,45 @@
   --segment-bg: #ffffff;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --sidebar-bg: #1b1b1d;
-    --list-bg: #202022;
-    --reader-bg: #252527;
-    --text: #ececee;
-    --text-2: #a0a0a6;
-    --text-3: #6c6c72;
-    --separator: rgb(255 255 255 / 0.08);
-    --hover: rgb(255 255 255 / 0.04);
-    --active: rgb(255 255 255 / 0.08);
-    --accent: #4a82e8;
-    --unread-dot: #5b8ff0;
-    --star: #f0b63a;
-    --error: #f0776c;
-    --thumb-bg: #3a3a3d;
-    --thumb-edge: rgb(255 255 255 / 0.2);
-    --segment-bg: #4a4a4e;
-  }
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --sidebar-bg: #1b1b1d;
+  --list-bg: #202022;
+  --reader-bg: #252527;
+  --text: #ececee;
+  --text-2: #a0a0a6;
+  --text-3: #97979d;
+  --separator: rgb(255 255 255 / 0.08);
+  --hover: rgb(255 255 255 / 0.04);
+  --active: rgb(255 255 255 / 0.08);
+  --accent: #52709c;
+  --unread-dot: #8aa4c8;
+  --star: #f0b63a;
+  --error: #f0776c;
+  --thumb-bg: #3a3a3d;
+  --thumb-edge: rgb(255 255 255 / 0.2);
+  --segment-bg: #4a4a4e;
+}
+
+/* Warm brown. */
+:root[data-theme='espresso'] {
+  color-scheme: dark;
+  --sidebar-bg: #241815;
+  --list-bg: #2d211e;
+  --reader-bg: #2d211e;
+  --text: #e0dedd;
+  --text-2: #c1bdbc;
+  --text-3: #9e928d;
+  --separator: rgb(255 236 224 / 0.09);
+  --hover: rgb(255 236 224 / 0.05);
+  --active: rgb(255 236 224 / 0.09);
+  --accent: #9a6342;
+  --unread-dot: #cfa080;
+  --star: #f0b63a;
+  --error: #f0776c;
+  --thumb-bg: #5a4640;
+  --thumb-edge: rgb(255 236 224 / 0.2);
+  --segment-bg: #4f3c36;
 }
 
 *,

@@ -16,7 +16,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder};
 use tokio::sync::Notify;
 use tokio::time::{Instant, sleep_until};
 
-use crate::config::{Account, Config, Settings};
+use crate::config::{Account, Config, Settings, Theme};
 use crate::sync_gate::{Outcome, SyncGate};
 
 const SYNC_STATUS_EVENT: &str = "sync-status";
@@ -65,6 +65,10 @@ impl AppState {
 
     fn config(&self) -> Config {
         lock(&self.config).clone()
+    }
+
+    pub fn theme(&self) -> Theme {
+        lock(&self.config).settings.theme
     }
 
     /// Changes the config and saves it, under the lock, so concurrent changes to
@@ -344,12 +348,17 @@ pub async fn set_settings(
     settings: Settings,
 ) -> CommandResult<()> {
     let mut interval_changed = false;
+    let mut theme_changed = false;
     state.update_config(|config| {
         interval_changed = config.settings.sync_interval_minutes != settings.sync_interval_minutes;
+        theme_changed = config.settings.theme != settings.theme;
         config.settings = settings.clone();
     })?;
     if interval_changed {
         state.interval_changed.notify_one();
+    }
+    if theme_changed {
+        app.set_theme(settings.theme.native());
     }
     let _ = app.emit(SETTINGS_EVENT, settings);
     Ok(())
