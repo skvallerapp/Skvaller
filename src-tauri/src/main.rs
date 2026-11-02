@@ -3,6 +3,7 @@
 
 mod commands;
 mod config;
+mod sync_gate;
 
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
 use tauri::{AppHandle, Manager, WindowEvent};

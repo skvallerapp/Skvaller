@@ -16,6 +16,7 @@ use tokio::sync::Notify;
 use tokio::time::{Instant, sleep_until};
 
 use crate::config::{Account, Config, Settings};
+use crate::sync_gate::{Outcome, SyncGate};
 
 const SYNC_STATUS_EVENT: &str = "sync-status";
 /// Sent to every window with the new `Settings` when they change.
@@ -34,8 +35,7 @@ pub struct AppState {
     /// Built from the keychain token on first use. `None` until then, and after the
     /// server rejects the token.
     client: Mutex<Option<Client>>,
-    /// Held while a sync runs, so only one runs at a time.
-    syncing: tokio::sync::Mutex<()>,
+    sync_gate: SyncGate,
     /// Wakes the background sync when the sync interval changes.
     interval_changed: Notify,
 }
@@ -54,7 +54,7 @@ impl AppState {
             config: Mutex::new(Config::load(&config_path)),
             config_path,
             client: Mutex::new(None),
-            syncing: tokio::sync::Mutex::new(()),
+            sync_gate: SyncGate::default(),
             interval_changed: Notify::new(),
         })
     }
@@ -79,7 +79,7 @@ impl AppState {
     }
 
     fn is_syncing(&self) -> bool {
-        self.syncing.try_lock().is_err()
+        self.sync_gate.is_running()
     }
 }
 
@@ -215,8 +215,9 @@ pub async fn sign_in(
     blocking(move || save_token(&key, &token)).await?;
 
     {
-        // No sync of the old account may write while the cache is emptied.
-        let _no_sync = state.syncing.lock().await;
+        // No sync of the old account may write while the cache is emptied. One that is
+        // running stops; it leaves the cache consistent, and the next one picks up from there.
+        let _no_sync = state.sync_gate.stop().await;
         // The cache belongs to the saved account. With none saved, it may hold what a
         // failed sign-out left behind.
         let old = state.config().account;
@@ -335,7 +336,7 @@ pub async fn set_settings(
 #[tauri::command]
 pub async fn sign_out(app: AppHandle, state: State<'_, AppState>) -> CommandResult<()> {
     // No sync may write while the cache is emptied.
-    let _no_sync = state.syncing.lock().await;
+    let _no_sync = state.sync_gate.stop().await;
     let account = state.config().account;
     state.update_config(|config| config.account = None)?;
     *lock(&state.client) = None;
@@ -425,53 +426,59 @@ pub fn start_background_sync(app: AppHandle) {
 /// when no one is signed in.
 async fn run_sync(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let Ok(_running) = state.syncing.try_lock() else {
-        return;
-    };
     let last_sync = || state.db.last_sync().ok().flatten();
     let emit = |status: SyncStatus| {
         let _ = app.emit(SYNC_STATUS_EVENT, status);
     };
 
-    let client = match ensure_client(&state).await {
-        Ok(Some(client)) => client,
-        Ok(None) => return,
-        Err(e) => {
-            emit(SyncStatus {
-                last_sync: last_sync(),
-                error: Some(e.message),
-                ..SyncStatus::default()
-            });
-            return;
-        }
-    };
-    emit(SyncStatus {
-        syncing: true,
-        last_sync: last_sync(),
-        ..SyncStatus::default()
-    });
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
-    let keep_read_days = state.config().settings.keep_read_days.max(1);
-    let status = match sync(&client, &state.db, now, keep_read_days).await {
-        Ok(_) => SyncStatus {
+    let work = async {
+        let client = match ensure_client(&state).await {
+            Ok(Some(client)) => client,
+            Ok(None) => return None,
+            Err(e) => {
+                return Some(SyncStatus {
+                    last_sync: last_sync(),
+                    error: Some(e.message),
+                    ..SyncStatus::default()
+                });
+            }
+        };
+        emit(SyncStatus {
+            syncing: true,
             last_sync: last_sync(),
             ..SyncStatus::default()
-        },
-        Err(e) => {
-            let unauthorized = matches!(e, Error::Unauthorized);
-            if unauthorized {
-                *lock(&state.client) = None;
-            }
-            SyncStatus {
+        });
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        let keep_read_days = state.config().settings.keep_read_days.max(1);
+        Some(match sync(&client, &state.db, now, keep_read_days).await {
+            Ok(_) => SyncStatus {
                 last_sync: last_sync(),
-                error: Some(e.to_string()),
-                unauthorized,
                 ..SyncStatus::default()
+            },
+            Err(e) => {
+                let unauthorized = matches!(e, Error::Unauthorized);
+                if unauthorized {
+                    *lock(&state.client) = None;
+                }
+                SyncStatus {
+                    last_sync: last_sync(),
+                    error: Some(e.to_string()),
+                    unauthorized,
+                    ..SyncStatus::default()
+                }
             }
-        }
+        })
     };
-    emit(status);
+
+    match state.sync_gate.run(work).await {
+        Outcome::Done(Some(status)) => emit(status),
+        Outcome::Stopped => emit(SyncStatus {
+            last_sync: last_sync(),
+            ..SyncStatus::default()
+        }),
+        Outcome::Done(None) | Outcome::Busy => {}
+    }
 }
