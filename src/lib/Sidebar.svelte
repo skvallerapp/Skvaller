@@ -288,8 +288,6 @@
 
   .count {
     flex: none;
-    font-size: 11.5px;
-    font-variant-numeric: tabular-nums;
     color: var(--text-3);
   }
 </style>

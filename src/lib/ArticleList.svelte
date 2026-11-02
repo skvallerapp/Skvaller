@@ -225,7 +225,6 @@
   .heading p {
     font-size: 12px;
     line-height: 1.3;
-    font-variant-numeric: tabular-nums;
     color: var(--text-3);
   }
 
@@ -347,10 +346,6 @@
 
   .meta :global(.star) {
     color: var(--star);
-  }
-
-  time {
-    font-variant-numeric: tabular-nums;
   }
 
   .title {
