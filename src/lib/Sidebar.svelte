@@ -236,6 +236,7 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    font-size: 14px;
     background: var(--sidebar-bg);
   }
 
@@ -277,7 +278,6 @@
 
   .account p {
     margin: 3px 0 0;
-    font-size: 13px;
     font-weight: 600;
     color: var(--text-3);
   }
