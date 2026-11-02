@@ -10,7 +10,8 @@
   import { viewInfo } from './views'
 
   // Fixed row height keeps the list virtualized and cheap at 5,000+ rows.
-  const ROW_HEIGHT = 92
+  // Room for a headline of three lines.
+  const ROW_HEIGHT = 104
   const OVERSCAN = 6
 
   let viewport: HTMLDivElement
@@ -196,7 +197,6 @@
               <time>{formatTime(article.published)}</time>
             </span>
             <span class="title">{article.title}</span>
-            <span class="summary">{article.summary}</span>
           </button>
         {/each}
       </div>
@@ -325,7 +325,8 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 11px;
+    font-size: 13px;
+    font-weight: 600;
     color: var(--text-3);
   }
 
@@ -354,12 +355,14 @@
   }
 
   .title {
-    font-size: 13.5px;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    font-size: 15.5px;
     font-weight: 600;
     line-height: 1.3;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
   }
 
   .row:not(.unread) .title {
@@ -367,20 +370,8 @@
     color: var(--text-2);
   }
 
-  .summary {
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    font-size: 12.5px;
-    line-height: 1.4;
-    color: var(--text-2);
-  }
-
   .row.selected .meta,
   .row.selected .title,
-  .row.selected .summary,
   .row.selected .dot {
     color: inherit;
   }

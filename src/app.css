@@ -1,6 +1,8 @@
 :root {
   color-scheme: light;
   font-size: 13px;
+  /* Text without a weight of its own. */
+  font-weight: 500;
   -webkit-font-smoothing: antialiased;
 
   --toolbar-height: 44px;
