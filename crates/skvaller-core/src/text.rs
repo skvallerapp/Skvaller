@@ -21,10 +21,11 @@ pub(crate) fn plain_text(html: &str, max: usize) -> String {
             *space = true;
             return true;
         }
-        if count == max {
+        let gap = *space && !out.is_empty();
+        if count + usize::from(gap) + 1 > max {
             return false;
         }
-        if *space && !out.is_empty() {
+        if gap {
             out.push(' ');
             count += 1;
         }
@@ -38,8 +39,10 @@ pub(crate) fn plain_text(html: &str, max: usize) -> String {
         if c == '<' {
             let name = tag_name(&rest[1..]);
             let end = rest.find('>').map_or(rest.len(), |i| i + 1);
+            // Only `<svg>` hides what follows, not `</svg>` or `<svg/>`.
+            let opens = !rest[1..].starts_with('/') && !rest[..end].ends_with("/>");
             rest = &rest[end..];
-            if SKIPPED.contains(&name.as_str()) && !rest.is_empty() {
+            if opens && SKIPPED.contains(&name.as_str()) && !rest.is_empty() {
                 rest = skip_past_close(rest, &name);
             }
             if !INLINE.contains(&name.as_str()) {
@@ -71,12 +74,22 @@ fn tag_name(s: &str) -> String {
 }
 
 /// The rest of `s` after the closing tag `</name>`, or nothing if it never closes.
+/// Compares in place: lowercasing a copy per skipped tag made pages of many `<svg>`s
+/// quadratic.
 fn skip_past_close<'a>(s: &'a str, name: &str) -> &'a str {
-    let needle = format!("</{name}");
-    match s.to_ascii_lowercase().find(&needle) {
-        Some(i) => s[i..].find('>').map_or("", |j| &s[i + j + 1..]),
-        None => "",
+    let mut from = 0;
+    while let Some(i) = s[from..].find("</") {
+        let start = from + i;
+        let tag = start + 2..start + 2 + name.len();
+        if s.as_bytes()
+            .get(tag)
+            .is_some_and(|b| b.eq_ignore_ascii_case(name.as_bytes()))
+        {
+            return s[start..].find('>').map_or("", |j| &s[start + j + 1..]);
+        }
+        from = start + 2;
     }
+    ""
 }
 
 /// Decodes the entity at the start of `s` (which starts with `&`). Returns the
@@ -142,5 +155,17 @@ mod tests {
     fn truncates_by_characters() {
         assert_eq!(plain_text("<p>åäö åäö</p>", 5), "åäö å…");
         assert_eq!(plain_text("åäö", 3), "åäö");
+        // The space before a word counts, so a word that starts one short of the limit
+        // is cut too.
+        assert_eq!(plain_text("aaa bbbb", 4), "aaa…");
+    }
+
+    #[test]
+    fn a_stray_or_self_closing_skipped_tag_hides_nothing() {
+        assert_eq!(
+            plain_text("<p>a</p></svg><p>Real text</p>", 100),
+            "a Real text"
+        );
+        assert_eq!(plain_text("<svg/><p>Real text</p>", 100), "Real text");
     }
 }

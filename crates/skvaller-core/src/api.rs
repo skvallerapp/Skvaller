@@ -24,6 +24,9 @@ const IDS_PAGE: &str = "10000";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Time without any data arriving. A large page may take longer than this in total.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// A whole request. Generous for large pages, but a server that trickles data can't stall
+/// a sync forever.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const LONG_ID_PREFIX: &str = "tag:google.com,2005:reader/item/";
 
 #[derive(Clone)]
@@ -68,6 +71,7 @@ impl Client {
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .read_timeout(READ_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
             .redirect(Policy::none())
             .build()?;
         Ok(Self {

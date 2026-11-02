@@ -148,7 +148,12 @@ async fn fetch_icons(client: &Client, db: &Db) -> Result<()> {
         let Ok(res) = http.get(resolved).send().await else {
             continue;
         };
-        if res.status().is_server_error() {
+        // Try again next sync. Any other failure gives up on this URL.
+        let status = res.status();
+        if status.is_server_error()
+            || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || status == reqwest::StatusCode::REQUEST_TIMEOUT
+        {
             continue;
         }
         let mime = res
@@ -157,7 +162,10 @@ async fn fetch_icons(client: &Client, db: &Db) -> Result<()> {
             .and_then(|v| v.to_str().ok())
             .map(|v| v.split(';').next().unwrap_or(v).trim().to_owned())
             .filter(|m| m.starts_with("image/"));
-        let icon = match (res.status().is_success(), mime) {
+        let too_big = res
+            .content_length()
+            .is_some_and(|n| n > MAX_ICON_BYTES as u64);
+        let icon = match (status.is_success() && !too_big, mime) {
             (true, Some(mime)) => match res.bytes().await {
                 Ok(b) if !b.is_empty() && b.len() <= MAX_ICON_BYTES => {
                     Some(format!("data:{mime};base64,{}", BASE64.encode(&b)))
@@ -226,7 +234,7 @@ fn store(db: &Db, items: Vec<Item>) -> Result<(usize, Option<i64>)> {
                 feed_id: item.origin.stream_id,
                 title: item.title.unwrap_or_default(),
                 author: item.author.unwrap_or_default(),
-                published: item.published * 1000,
+                published: item.published.saturating_mul(1000),
             })
         })
         .collect();
