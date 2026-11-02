@@ -64,15 +64,26 @@
   let { onkeydown }: { onkeydown: (e: KeyboardEvent) => void } = $props()
   let frame = $state<HTMLIFrameElement>()
 
-  // The star pops when the shown article gets starred, not when a starred one opens.
-  let pop = $state(false)
-  let lastStar: { id?: string; starred: boolean } = { starred: false }
-  $effect(() => {
-    const id = article?.id
-    const starred = id !== undefined && store.starred.has(id)
-    pop = id === lastStar.id && starred && !lastStar.starred
-    lastStar = { id, starred }
-  })
+  /** Whether a toolbar icon pops: when `on` turns true for the shown article, not when
+   * an article it's already true for opens. */
+  function popsWhen(on: (id: string) => boolean) {
+    let pop = $state(false)
+    let last: { id?: string; on: boolean } = { on: false }
+    $effect(() => {
+      const id = article?.id
+      const now = id !== undefined && on(id)
+      pop = id === last.id && now && !last.on
+      last = { id, on: now }
+    })
+    return {
+      get pop() {
+        return pop
+      },
+    }
+  }
+
+  const unreadPop = popsWhen((id) => !store.read.has(id))
+  const starPop = popsWhen((id) => store.starred.has(id))
 
   $effect(() => {
     const root = frame?.contentDocument?.documentElement
@@ -134,6 +145,8 @@
       </div>
       <button
         class="icon-button"
+        class:unread={!store.read.has(article.id)}
+        class:pop={unreadPop.pop}
         aria-label={store.read.has(article.id) ? 'Mark as unread' : 'Mark as read'}
         onclick={() => store.toggleRead(article.id)}
       >
@@ -142,7 +155,7 @@
       <button
         class="icon-button"
         class:starred={store.starred.has(article.id)}
-        class:pop
+        class:pop={starPop.pop}
         aria-label={store.starred.has(article.id) ? 'Remove star' : 'Star'}
         aria-pressed={store.starred.has(article.id)}
         onclick={() => store.toggleStarred(article.id)}
@@ -213,6 +226,11 @@
     text-overflow: ellipsis;
   }
 
+  /* The same color as the unread dots in the list. */
+  .unread {
+    color: var(--unread-dot);
+  }
+
   .starred {
     color: var(--star);
   }
@@ -236,7 +254,7 @@
     opacity: 0.5;
   }
 
-  /* Starring an article, not opening a starred one. */
+  /* Marking an article unread or starring it, not opening one that already is. */
   .pop :global(svg) {
     animation: pop 220ms ease-out;
   }
