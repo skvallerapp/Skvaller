@@ -84,21 +84,27 @@ function settings(): Settings {
   }
 }
 
-function matches(a: Article, sel: Selection): boolean {
-  switch (sel.kind) {
-    case 'smart':
-      return sel.view === 'unread' ? !a.read : sel.view === 'starred' ? a.starred : true
+function matches(a: Article, { view, scope }: Selection): boolean {
+  if (view === 'unread' ? a.read : view === 'starred' && !a.starred) return false
+  switch (scope.kind) {
+    case 'all':
+      return true
     case 'folder':
-      return feeds.some((f) => f.id === a.feedId && f.folderId === sel.id)
+      return feeds.some((f) => f.id === a.feedId && f.folderId === scope.id)
     case 'feed':
-      return a.feedId === sel.id
+      return a.feedId === scope.id
   }
 }
 
+function byFeed(keep: (a: Article) => boolean): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const a of articles) if (keep(a)) counts[a.feedId] = (counts[a.feedId] ?? 0) + 1
+  return counts
+}
+
 function library(): Library {
-  const unreadByFeed: Record<string, number> = {}
-  for (const a of articles) if (!a.read) unreadByFeed[a.feedId] = (unreadByFeed[a.feedId] ?? 0) + 1
-  return { folders, feeds, counts: { unreadByFeed, starred: articles.filter((a) => a.starred).length } }
+  const counts = { unreadByFeed: byFeed((a) => !a.read), starredByFeed: byFeed((a) => a.starred) }
+  return { folders, feeds, counts }
 }
 
 function update(ids: string[], change: Partial<Article>) {

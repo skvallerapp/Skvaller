@@ -9,7 +9,7 @@ mod sync;
 mod text;
 
 pub use api::Client;
-pub use db::{ArticleSummary, Counts, Db, Feed, Folder, Selection, SmartView};
+pub use db::{ArticleSummary, Counts, Db, Feed, Folder, Scope, Selection, View};
 pub use error::{Error, Result};
 pub use full_text::{load as load_full_text, prefetch as prefetch_full_text};
 pub use keychain::{KEYCHAIN_SERVICE, delete_token, load_token, save_token};

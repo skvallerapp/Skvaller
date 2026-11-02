@@ -1,27 +1,58 @@
 <script lang="ts">
   import ChevronRight from '@lucide/svelte/icons/chevron-right'
-  import CircleDot from '@lucide/svelte/icons/circle-dot'
-  import Layers from '@lucide/svelte/icons/layers'
   import RotateCw from '@lucide/svelte/icons/rotate-cw'
   import SettingsIcon from '@lucide/svelte/icons/settings'
   import Rss from '@lucide/svelte/icons/rss'
   import Star from '@lucide/svelte/icons/star'
   import { CheckMenuItem, Menu } from '@tauri-apps/api/menu'
+  import { untrack } from 'svelte'
   import { SvelteSet } from 'svelte/reactivity'
   import { formatSynced, serviceTitle } from './format'
   import { openSettings } from './api'
   import { dragRegion, inTauri, isMac } from './platform'
   import { store } from './store.svelte'
-  import type { Feed, Selection, SmartView } from './types'
+  import type { Feed, Scope } from './types'
+  import { viewInfo, views } from './views'
 
-  const smartViews: { view: SmartView; label: string; icon: typeof Star }[] = [
-    { view: 'unread', label: 'Unread', icon: CircleDot },
-    { view: 'starred', label: 'Starred', icon: Star },
-    { view: 'all', label: 'All Articles', icon: Layers },
-  ]
+  const current = $derived(viewInfo(store.view))
 
   const collapsed = new SvelteSet<string>()
-  const looseFeeds = $derived(store.sidebarFeeds.filter((f) => f.folderId === null))
+
+  // The Unread and Starred views show only the feeds and folders with articles in them.
+  // Feeds that had some when the view or selection was picked, or a sync finished, stay
+  // until the next of those, so rows don't jump while you read (as FR-7a does for the
+  // list). The selected feed or folder always shows.
+  const filtering = $derived(store.view !== 'all')
+  const pinned = $derived.by(() => {
+    void store.view
+    void store.scope
+    void store.status.lastSync
+    return untrack(() => new Set([...store.counts].filter(([, n]) => n > 0).map(([id]) => id)))
+  })
+  const shownFeeds = $derived(
+    store.sidebarFeeds.filter(
+      (f) =>
+        !filtering ||
+        (store.counts.get(f.id) ?? 0) > 0 ||
+        pinned.has(f.id) ||
+        isSelected({ kind: 'feed', id: f.id }),
+    ),
+  )
+  const feedsByFolder = $derived.by(() => {
+    const map = new Map<string | null, Feed[]>()
+    for (const f of shownFeeds) {
+      const list = map.get(f.folderId)
+      if (list) list.push(f)
+      else map.set(f.folderId, [f])
+    }
+    return map
+  })
+  const shownFolders = $derived(
+    store.folders.filter(
+      (f) => !filtering || feedsByFolder.has(f.id) || isSelected({ kind: 'folder', id: f.id }),
+    ),
+  )
+  const looseFeeds = $derived(feedsByFolder.get(null) ?? [])
   const title = $derived(store.account ? serviceTitle(store.account.server) : '')
   const status = $derived.by(() => {
     const s = store.status
@@ -30,10 +61,22 @@
     return s.lastSync ? formatSynced(s.lastSync) : 'Not synced yet'
   })
 
-  function isSelected(sel: Selection): boolean {
-    const cur = store.selection
-    if (cur.kind !== sel.kind) return false
-    return cur.kind === 'smart' ? cur.view === (sel as typeof cur).view : cur.id === (sel as typeof cur).id
+  function isSelected(scope: Scope): boolean {
+    const cur = store.scope
+    if (cur.kind !== scope.kind) return false
+    return cur.kind === 'all' || cur.id === (scope as typeof cur).id
+  }
+
+  let viewButtons: HTMLButtonElement[] = []
+
+  /** Arrow keys move between the views, as in a radio group. */
+  function onViewsKeydown(e: KeyboardEvent) {
+    const step = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key]
+    if (!step) return
+    e.preventDefault()
+    const i = (views.findIndex((v) => v.view === store.view) + step + views.length) % views.length
+    store.setView(views[i].view)
+    viewButtons[i].focus()
   }
 
   function toggleFolder(id: string) {
@@ -83,7 +126,7 @@
 </script>
 
 {#snippet row(
-  sel: Selection,
+  scope: Scope,
   label: string,
   count: number,
   Icon: typeof Star | null,
@@ -93,8 +136,8 @@
   <button
     class="row"
     class:indent
-    class:selected={isSelected(sel)}
-    onclick={() => store.select(sel)}
+    class:selected={isSelected(scope)}
+    onclick={() => store.select(scope)}
     oncontextmenu={feed ? (e) => showFeedMenu(e, feed) : undefined}
   >
     {#if feed}
@@ -107,7 +150,7 @@
       <span class="row-icon"></span>
     {/if}
     <span class="label">{label}</span>
-    {#if count > 0}<span class="count">{count}</span>{/if}
+    {#if count > 0}<span class="count">{count.toLocaleString()}</span>{/if}
   </button>
 {/snippet}
 
@@ -140,41 +183,51 @@
   </header>
   <div class="scroll">
     <section>
-      {#each smartViews as v (v.view)}
-        {@render row(
-          { kind: 'smart', view: v.view },
-          v.label,
-          v.view === 'unread' ? store.unreadTotal : v.view === 'starred' ? store.starredCount : 0,
-          v.icon,
-        )}
-      {/each}
+      {@render row({ kind: 'all' }, current.allLabel, store.countTotal, current.icon)}
     </section>
 
-    <section>
-      <h2>Feeds</h2>
-      {#each store.folders as folder (folder.id)}
-        <div class="folder">
-          <button
-            class="disclosure"
-            class:open={!collapsed.has(folder.id)}
-            aria-label={collapsed.has(folder.id) ? `Expand ${folder.title}` : `Collapse ${folder.title}`}
-            aria-expanded={!collapsed.has(folder.id)}
-            onclick={() => toggleFolder(folder.id)}
-          >
-            <ChevronRight size={16} strokeWidth={2} />
-          </button>
-          {@render row({ kind: 'folder', id: folder.id }, folder.title, store.folderUnread(folder.id), null)}
-        </div>
-        {#if !collapsed.has(folder.id)}
-          {#each store.sidebarFeeds.filter((f) => f.folderId === folder.id) as feed (feed.id)}
-            {@render row({ kind: 'feed', id: feed.id }, feed.title, store.unreadByFeed.get(feed.id) ?? 0, null, true, feed)}
-          {/each}
-        {/if}
-      {/each}
-      {#each looseFeeds as feed (feed.id)}
-        {@render row({ kind: 'feed', id: feed.id }, feed.title, store.unreadByFeed.get(feed.id) ?? 0, null, false, feed)}
-      {/each}
-    </section>
+    {#if shownFolders.length > 0 || looseFeeds.length > 0}
+      <section>
+        <h2>Feeds</h2>
+        {#each shownFolders as folder (folder.id)}
+          <div class="folder">
+            <button
+              class="disclosure"
+              class:open={!collapsed.has(folder.id)}
+              aria-label={collapsed.has(folder.id) ? `Expand ${folder.title}` : `Collapse ${folder.title}`}
+              aria-expanded={!collapsed.has(folder.id)}
+              onclick={() => toggleFolder(folder.id)}
+            >
+              <ChevronRight size={16} strokeWidth={2} />
+            </button>
+            {@render row({ kind: 'folder', id: folder.id }, folder.title, store.folderCounts.get(folder.id) ?? 0, null)}
+          </div>
+          {#if !collapsed.has(folder.id)}
+            {#each feedsByFolder.get(folder.id) ?? [] as feed (feed.id)}
+              {@render row({ kind: 'feed', id: feed.id }, feed.title, store.counts.get(feed.id) ?? 0, null, true, feed)}
+            {/each}
+          {/if}
+        {/each}
+        {#each looseFeeds as feed (feed.id)}
+          {@render row({ kind: 'feed', id: feed.id }, feed.title, store.counts.get(feed.id) ?? 0, null, false, feed)}
+        {/each}
+      </section>
+    {/if}
+  </div>
+  <div class="views" role="radiogroup" aria-label="Show" tabindex="-1" onkeydown={onViewsKeydown}>
+    {#each views as v, i (v.view)}
+      <button
+        role="radio"
+        aria-label={v.label}
+        title={v.label}
+        aria-checked={store.view === v.view}
+        tabindex={store.view === v.view ? 0 : -1}
+        bind:this={viewButtons[i]}
+        onclick={() => store.setView(v.view)}
+      >
+        <v.icon size={16} strokeWidth={2} />
+      </button>
+    {/each}
   </div>
 </nav>
 
@@ -345,5 +398,38 @@
   .count {
     flex: none;
     color: var(--text-3);
+  }
+
+  /* A segmented control: one button per view. */
+  .views {
+    flex: none;
+    display: flex;
+    gap: 2px;
+    margin: 8px 8px 12px;
+    padding: 2px;
+    border-radius: 8px;
+    background: var(--active);
+  }
+
+  .views button {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    height: 24px;
+    border-radius: 6px;
+    color: var(--text-2);
+  }
+
+  .views button:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
+
+  .views button[aria-checked='true'] {
+    background: var(--segment-bg);
+    box-shadow:
+      0 0 0 0.5px var(--thumb-edge),
+      0 0.5px 2px rgb(0 0 0 / 0.15);
+    color: var(--text);
   }
 </style>

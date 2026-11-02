@@ -1,6 +1,7 @@
 //! The local SQLite cache. The UI reads only from here, and local read and star changes
 //! queue here until the next sync.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -178,29 +179,37 @@ pub struct ArticleSummary {
     pub starred: bool,
 }
 
-/// Which articles to list. Serialized like the UI's `Selection` type.
+/// Which articles to list: those in `view` from `scope`. Serialized like the UI's
+/// `Selection` type.
 #[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-pub enum Selection {
-    Smart { view: SmartView },
-    Folder { id: String },
-    Feed { id: String },
+pub struct Selection {
+    pub view: View,
+    pub scope: Scope,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum SmartView {
+pub enum View {
     Unread,
     Starred,
     All,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Scope {
+    All,
+    Folder { id: String },
+    Feed { id: String },
 }
 
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Counts {
     /// Unread articles per feed ID. Feeds without any are left out.
-    pub unread_by_feed: std::collections::HashMap<String, i64>,
-    pub starred: i64,
+    pub unread_by_feed: HashMap<String, i64>,
+    /// Starred articles per feed ID. Feeds without any are left out.
+    pub starred_by_feed: HashMap<String, i64>,
 }
 
 pub struct Db {
@@ -284,18 +293,15 @@ impl Db {
 
     /// Articles for `selection`, newest first.
     pub fn articles(&self, selection: &Selection) -> Result<Vec<ArticleSummary>> {
-        let (filter, param) = match selection {
-            Selection::Smart {
-                view: SmartView::Unread,
-            } => ("NOT read", None),
-            Selection::Smart {
-                view: SmartView::Starred,
-            } => ("starred", None),
-            Selection::Smart {
-                view: SmartView::All,
-            } => ("1", None),
-            Selection::Feed { id } => ("feed_id = ?1", Some(id)),
-            Selection::Folder { id } => (
+        let view = match selection.view {
+            View::Unread => "NOT read",
+            View::Starred => "starred",
+            View::All => "1",
+        };
+        let (scope, param) = match &selection.scope {
+            Scope::All => ("1", None),
+            Scope::Feed { id } => ("feed_id = ?1", Some(id)),
+            Scope::Folder { id } => (
                 "feed_id IN (SELECT id FROM feeds WHERE folder_id = ?1)",
                 Some(id),
             ),
@@ -303,7 +309,7 @@ impl Db {
         let conn = self.read();
         let mut stmt = conn.prepare(&format!(
             "SELECT id, feed_id, title, author, url, published, summary, read, starred
-             FROM articles WHERE {filter} ORDER BY published DESC, id DESC"
+             FROM articles WHERE {view} AND {scope} ORDER BY published DESC, id DESC"
         ))?;
         let params: Vec<&String> = param.into_iter().collect();
         let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
@@ -393,17 +399,16 @@ impl Db {
 
     pub fn counts(&self) -> Result<Counts> {
         let conn = self.read();
-        let mut stmt =
-            conn.prepare("SELECT feed_id, count(*) FROM articles WHERE NOT read GROUP BY feed_id")?;
-        let unread_by_feed = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        let starred = conn.query_row("SELECT count(*) FROM articles WHERE starred", [], |r| {
-            r.get(0)
-        })?;
+        let by_feed = |filter: &str| -> Result<HashMap<String, i64>> {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT feed_id, count(*) FROM articles WHERE {filter} GROUP BY feed_id"
+            ))?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        };
         Ok(Counts {
-            unread_by_feed,
-            starred,
+            unread_by_feed: by_feed("NOT read")?,
+            starred_by_feed: by_feed("starred")?,
         })
     }
 
@@ -1129,24 +1134,34 @@ mod tests {
         .unwrap();
         db.set_read(&[3], true).unwrap();
 
-        let smart = |view| Selection::Smart { view };
-        assert_eq!(ids(&db, smart(SmartView::Unread)), ["1"]);
-        assert_eq!(ids(&db, smart(SmartView::Starred)), ["2"]);
-        assert_eq!(ids(&db, smart(SmartView::All)), ["3", "2", "1"]);
-        assert_eq!(
-            ids(
-                &db,
-                Selection::Feed {
-                    id: "feed/2".into()
-                }
-            ),
-            ["3", "2"]
-        );
-        assert_eq!(ids(&db, Selection::Folder { id: "tech".into() }), ["1"]);
+        let all = |view| Selection {
+            view,
+            scope: Scope::All,
+        };
+        let feed2 = |view| Selection {
+            view,
+            scope: Scope::Feed {
+                id: "feed/2".into(),
+            },
+        };
+        let tech = |view| Selection {
+            view,
+            scope: Scope::Folder { id: "tech".into() },
+        };
+        assert_eq!(ids(&db, all(View::Unread)), ["1"]);
+        assert_eq!(ids(&db, all(View::Starred)), ["2"]);
+        assert_eq!(ids(&db, all(View::All)), ["3", "2", "1"]);
+        assert_eq!(ids(&db, feed2(View::All)), ["3", "2"]);
+        assert_eq!(ids(&db, feed2(View::Starred)), ["2"]);
+        assert!(ids(&db, feed2(View::Unread)).is_empty());
+        assert_eq!(ids(&db, tech(View::All)), ["1"]);
+        assert_eq!(ids(&db, tech(View::Unread)), ["1"]);
+        assert!(ids(&db, tech(View::Starred)).is_empty());
         let counts = db.counts().unwrap();
         assert_eq!(counts.unread_by_feed.get("feed/1"), Some(&1));
         assert_eq!(counts.unread_by_feed.get("feed/2"), None);
-        assert_eq!(counts.starred, 1);
+        assert_eq!(counts.starred_by_feed.get("feed/1"), None);
+        assert_eq!(counts.starred_by_feed.get("feed/2"), Some(&1));
         assert_eq!(db.article_html(1).unwrap(), Some(String::new()));
         assert_eq!(db.article_html(9).unwrap(), None);
         assert_eq!(db.folders().unwrap().len(), 1);
@@ -1170,15 +1185,22 @@ mod tests {
 
     #[test]
     fn selection_parses_the_ui_shape() {
-        let sel: Selection = serde_json::from_str(r#"{"kind":"smart","view":"starred"}"#).unwrap();
+        let sel: Selection =
+            serde_json::from_str(r#"{"view":"starred","scope":{"kind":"all"}}"#).unwrap();
         assert!(matches!(
             sel,
-            Selection::Smart {
-                view: SmartView::Starred
+            Selection {
+                view: View::Starred,
+                scope: Scope::All
             }
         ));
-        let sel: Selection = serde_json::from_str(r#"{"kind":"feed","id":"feed/1"}"#).unwrap();
-        assert!(matches!(sel, Selection::Feed { id } if id == "feed/1"));
+        let sel: Selection =
+            serde_json::from_str(r#"{"view":"unread","scope":{"kind":"feed","id":"feed/1"}}"#)
+                .unwrap();
+        assert!(matches!(
+            sel,
+            Selection { view: View::Unread, scope: Scope::Feed { id } } if id == "feed/1"
+        ));
     }
 
     #[test]

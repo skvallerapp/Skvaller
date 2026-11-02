@@ -33,7 +33,7 @@ export interface Article {
 
 export interface Counts {
   unreadByFeed: Record<string, number>
-  starred: number
+  starredByFeed: Record<string, number>
 }
 
 export interface Library {
@@ -100,9 +100,13 @@ export interface CommandError {
   message: string
 }
 
-export type SmartView = 'unread' | 'starred' | 'all'
+/** Which articles to show, picked with the sidebar's button group. */
+export type View = 'unread' | 'starred' | 'all'
 
-export type Selection =
-  | { kind: 'smart'; view: SmartView }
-  | { kind: 'folder'; id: string }
-  | { kind: 'feed'; id: string }
+/** Where to show them from, picked in the sidebar's tree. */
+export type Scope = { kind: 'all' } | { kind: 'folder'; id: string } | { kind: 'feed'; id: string }
+
+export interface Selection {
+  view: View
+  scope: Scope
+}

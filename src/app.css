@@ -23,6 +23,8 @@
   --destructive: #c4352b;
   --thumb-bg: #ffffff;
   --thumb-edge: rgb(0 0 0 / 0.15);
+  /* The selected segment of a segmented control. */
+  --segment-bg: #ffffff;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -42,6 +44,7 @@
     --error: #f0776c;
     --thumb-bg: #3a3a3d;
     --thumb-edge: rgb(255 255 255 / 0.2);
+    --segment-bg: #4a4a4e;
   }
 }
 

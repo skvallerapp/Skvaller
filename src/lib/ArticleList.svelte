@@ -7,6 +7,7 @@
   import { layout, toggleSidebar } from './layout.svelte'
   import { dragRegion, isMac } from './platform'
   import { store } from './store.svelte'
+  import { viewInfo } from './views'
 
   // Fixed row height keeps the list virtualized and cheap at 5,000+ rows.
   const ROW_HEIGHT = 92
@@ -22,10 +23,10 @@
   const rows = $derived(items.slice(first, last))
 
   const title = $derived.by(() => {
-    const sel = store.selection
-    if (sel.kind === 'smart') return { unread: 'Unread', starred: 'Starred', all: 'All Articles' }[sel.view]
-    if (sel.kind === 'feed') return store.feed(sel.id)?.title ?? ''
-    return store.folders.find((f) => f.id === sel.id)?.title ?? ''
+    const scope = store.scope
+    if (scope.kind === 'all') return viewInfo(store.view).allLabel
+    if (scope.kind === 'feed') return store.feed(scope.id)?.title ?? ''
+    return store.folders.find((f) => f.id === scope.id)?.title ?? ''
   })
 
   const unread = $derived(store.unreadInView)
@@ -100,7 +101,8 @@
 
   // A new selection starts at the top, with no confirmation open.
   $effect(() => {
-    void store.selection
+    void store.view
+    void store.scope
     confirming = false
     if (viewport) viewport.scrollTop = 0
     scrollTop = 0
@@ -173,7 +175,7 @@
     onscroll={() => (scrollTop = viewport.scrollTop)}
   >
     {#if items.length === 0}
-      <p class="empty">No articles</p>
+      <p class="empty">{viewInfo(store.view).empty}</p>
     {:else}
       <div class="spacer" style:height="{items.length * ROW_HEIGHT}px">
         {#each rows as article, i (article.id)}
