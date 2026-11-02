@@ -13,7 +13,7 @@
   import { dragRegion, inTauri, isMac, macWindow } from './platform'
   import { store } from './store.svelte'
   import type { Feed, Scope } from './types'
-  import { type ViewIcon, viewInfo, views } from './views'
+  import { viewInfo, views } from './views'
 
   const current = $derived(viewInfo(store.view))
 
@@ -131,7 +131,6 @@
   scope: Scope,
   label: string,
   count: number,
-  Icon: ViewIcon | null,
   indent = false,
   feed?: Feed,
 )}
@@ -146,8 +145,6 @@
       <span class="row-icon thumb">
         {#if feed.icon}<img src={feed.icon} alt="" />{:else}<Rss size={12} strokeWidth={2.5} />{/if}
       </span>
-    {:else if Icon}
-      <Icon size={18} strokeWidth={2} class="row-icon" />
     {:else}
       <span class="row-icon"></span>
     {/if}
@@ -185,7 +182,7 @@
   </header>
   <div class="scroll">
     <section>
-      {@render row({ kind: 'all' }, current.allLabel, store.countTotal, current.icon)}
+      {@render row({ kind: 'all' }, current.allLabel, store.countTotal)}
     </section>
 
     {#if shownFolders.length > 0 || looseFeeds.length > 0}
@@ -202,18 +199,18 @@
             >
               <ChevronRight size={16} strokeWidth={2} />
             </button>
-            {@render row({ kind: 'folder', id: folder.id }, folder.title, store.folderCounts.get(folder.id) ?? 0, null)}
+            {@render row({ kind: 'folder', id: folder.id }, folder.title, store.folderCounts.get(folder.id) ?? 0)}
           </div>
           {#if !collapsed.has(folder.id)}
             <div transition:slide={{ duration: ms(160) }}>
               {#each feedsByFolder.get(folder.id) ?? [] as feed (feed.id)}
-                {@render row({ kind: 'feed', id: feed.id }, feed.title, store.counts.get(feed.id) ?? 0, null, true, feed)}
+                {@render row({ kind: 'feed', id: feed.id }, feed.title, store.counts.get(feed.id) ?? 0, true, feed)}
               {/each}
             </div>
           {/if}
         {/each}
         {#each looseFeeds as feed (feed.id)}
-          {@render row({ kind: 'feed', id: feed.id }, feed.title, store.counts.get(feed.id) ?? 0, null, false, feed)}
+          {@render row({ kind: 'feed', id: feed.id }, feed.title, store.counts.get(feed.id) ?? 0, false, feed)}
         {/each}
       </section>
     {/if}
