@@ -245,9 +245,10 @@ fn scanned_depth(html: &str) -> usize {
             }
             continue;
         }
-        // `<path/>` and the like open nothing.
-        let tag_end = bytes[start..].iter().position(|&b| b == b'>');
-        if tag_end.is_some_and(|e| bytes[start + e - 1] == b'/') {
+        // `<path/>` and the like open nothing. The search stops at the next `<`, so a
+        // page of tags that never close can't make it quadratic.
+        let tag_end = bytes[start..].iter().position(|&b| b == b'>' || b == b'<');
+        if tag_end.is_some_and(|e| bytes[start + e] == b'>' && bytes[start + e - 1] == b'/') {
             continue;
         }
         open.push(name);

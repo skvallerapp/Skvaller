@@ -414,12 +414,15 @@ impl Db {
 
     /// Empties the cache, for a sign-in to a different account. Queued changes go too.
     pub fn clear(&self) -> Result<()> {
-        self.lock().execute_batch(
-            "BEGIN;
-             DELETE FROM pending; DELETE FROM articles; DELETE FROM feeds;
-             DELETE FROM folders; DELETE FROM meta;
-             COMMIT;",
+        // A transaction that rolls back on error. A failed BEGIN…COMMIT batch would leave
+        // the shared connection inside an open transaction.
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        tx.execute_batch(
+            "DELETE FROM pending; DELETE FROM articles; DELETE FROM feeds;
+             DELETE FROM folders; DELETE FROM meta;",
         )?;
+        tx.commit()?;
         Ok(())
     }
 
