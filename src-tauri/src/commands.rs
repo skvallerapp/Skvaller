@@ -4,6 +4,7 @@
 //! Reader View, while the UI shows the cached feed content.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -36,6 +37,10 @@ pub struct AppState {
     /// Built from the keychain token on first use. `None` until then, and after the
     /// server rejects the token.
     client: Mutex<Option<Client>>,
+    /// The server rejected the saved token. Until the next sign-in, no client is built
+    /// from the keychain again, so the app shows the sign-in screen instead of retrying
+    /// a dead token every sync.
+    token_rejected: AtomicBool,
     sync_gate: SyncGate,
     /// Reader View prefetch, after a sync. Separate, so syncing is not held up by it.
     prefetch_gate: SyncGate,
@@ -57,6 +62,7 @@ impl AppState {
             config: Mutex::new(Config::load(&config_path)),
             config_path,
             client: Mutex::new(None),
+            token_rejected: AtomicBool::new(false),
             sync_gate: SyncGate::default(),
             prefetch_gate: SyncGate::default(),
             interval_changed: Notify::new(),
@@ -143,6 +149,9 @@ async fn blocking<T: Send + 'static>(
 async fn ensure_client(state: &AppState) -> CommandResult<Option<Client>> {
     if let Some(client) = state.client() {
         return Ok(Some(client));
+    }
+    if state.token_rejected.load(Ordering::Relaxed) {
+        return Ok(None);
     }
     let Some(account) = state.config().account else {
         return Ok(None);
@@ -244,6 +253,7 @@ pub async fn sign_in(
         }
         state.update_config(|config| config.account = Some(account.clone()))?;
         *lock(&state.client) = Some(client);
+        state.token_rejected.store(false, Ordering::Relaxed);
     }
 
     let _ = app.emit(SIGNED_IN_EVENT, &account);
@@ -500,6 +510,7 @@ async fn run_sync(app: &AppHandle) {
             Err(e) => {
                 let unauthorized = matches!(e, Error::Unauthorized);
                 if unauthorized {
+                    state.token_rejected.store(true, Ordering::Relaxed);
                     *lock(&state.client) = None;
                 }
                 SyncStatus {
