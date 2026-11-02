@@ -1,3 +1,6 @@
+/** False in a plain browser, as during `bun run dev` with mock data. */
+export const inTauri = '__TAURI_INTERNALS__' in window
+
 /** macOS hides the title bar and draws its window buttons over the sidebar (see
  * tauri.conf.json), so the window has to be draggable from the toolbars instead. */
 export const isMac = /Macintosh/.test(navigator.userAgent)

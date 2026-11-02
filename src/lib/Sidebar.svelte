@@ -9,7 +9,7 @@
   import { SvelteSet } from 'svelte/reactivity'
   import { formatSynced, serviceTitle } from './format'
   import { openSettings } from './api'
-  import { dragRegion, isMac } from './platform'
+  import { dragRegion, inTauri, isMac } from './platform'
   import { store } from './store.svelte'
   import type { Feed, Selection, SmartView } from './types'
 
@@ -70,12 +70,12 @@
 
 <nav class="sidebar" aria-label="Feeds">
   <div class="toolbar" data-tauri-drag-region={dragRegion}>
-    {#if !isMac}
-      <!-- macOS opens Settings from the app menu. -->
+    {#if !isMac || !inTauri}
+      <!-- macOS opens Settings from the app menu, which a browser doesn't have. -->
       <button
         class="icon-button"
         aria-label="Settings"
-        title="Settings (Ctrl+,)"
+        title={isMac ? 'Settings' : 'Settings (Ctrl+,)'}
         onclick={() => openSettings()}
       >
         <SettingsIcon size={18} strokeWidth={2} />
