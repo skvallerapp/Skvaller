@@ -1,9 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import ArticleList from './lib/ArticleList.svelte'
-  import { fontStacks } from './lib/fonts'
-  import { motion } from './lib/motion'
-  import { palette } from './lib/theme'
+  import { styleRoot } from './lib/theme'
   import { openInBrowser, openSettings } from './lib/api'
   import { LIST, SIDEBAR, layout, saveLayout, toggleSidebar } from './lib/layout.svelte'
   import Reader from './lib/Reader.svelte'
@@ -17,11 +15,7 @@
 
   onMount(() => void store.init())
 
-  $effect(() => {
-    document.documentElement.style.fontFamily = fontStacks[store.settings.uiFont]
-    document.documentElement.dataset.theme = palette(store.settings.theme)
-    document.documentElement.dataset.motion = motion(store.settings.animations)
-  })
+  $effect(() => styleRoot(store.settings))
 
   let resizing = $state(false)
 
@@ -50,13 +44,15 @@
     return map
   })
 
-  /** True when the key belongs to the focused element: a text field, a dialog, a
-   * resizer, the view switcher, or arrow keys while reading, which scroll the article. */
+  /** True when the key belongs to the focused element: any key in a text field or a
+   * dialog, and arrow keys on a resizer, in the view switcher or while reading, which
+   * scrolls the article. A clicked view button keeps the focus, so it mustn't take
+   * every key. */
   function ownsKey(e: KeyboardEvent): boolean {
     const target = e.target as Element
-    if (target.closest?.('input, textarea, select, [contenteditable], [role=dialog], [role=separator], [role=radiogroup]'))
-      return true
-    return e.key.startsWith('Arrow') && target.ownerDocument !== document
+    if (target.closest?.('input, textarea, select, [contenteditable], [role=dialog]')) return true
+    if (!e.key.startsWith('Arrow')) return false
+    return target.ownerDocument !== document || !!target.closest?.('[role=separator], [role=radiogroup]')
   }
 
   // Keys the reader frame receives come here too.

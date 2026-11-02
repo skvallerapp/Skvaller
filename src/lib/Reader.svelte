@@ -13,26 +13,26 @@
   import { untrack } from 'svelte'
 
   // Styles for the article frame. The frame has its own document, so app.css
-  // doesn't reach it.
-  const frameCss = $derived(`${bundledFontFaces}
+  // doesn't reach it. Settings reach it through its root; see `frameRoot`.
+  const frameCss = `${bundledFontFaces}
     :root { color-scheme: light; --text: #2e2e2d; --text-2: #61605f; --text-3: #676665; --rule: rgb(0 0 0 / .1); --link: #9a5136; }
     :root[data-theme='dark'] { color-scheme: dark; --text: #e6e6e8; --text-2: #a0a0a6; --text-3: #97979d; --rule: rgb(255 255 255 / .1); --link: #8aa4c8; }
     :root[data-theme='espresso'] { color-scheme: dark; --text: #e0dedd; --text-2: #c1bdbc; --text-3: #9e928d; --rule: rgb(255 236 224 / .12); --link: #cfa080; }
     html { background: transparent; }
     body { margin: 0; padding: 36px 40px 64px; color: var(--text);
-      font: 16px/1.65 ${fontStacks[store.settings.articleFont]}; -webkit-font-smoothing: antialiased; }
+      font: 16px/1.65 var(--article-font); -webkit-font-smoothing: antialiased; }
     article { max-width: 38em; margin: 0 auto; animation: enter 160ms ease-out; }
     @keyframes enter { from { opacity: 0; transform: translateY(4px); } }
     :root[data-motion='off'] article { animation: none; }
     header { margin-bottom: 32px; }
-    header, h1, h2, h3, h4, h5, h6 { font-family: ${fontStacks[store.settings.headlineFont]}; }
+    header, h1, h2, h3, h4, h5, h6 { font-family: var(--headline-font); }
     .date, .source { font-size: 12px; font-weight: 600; line-height: 1.3; text-transform: uppercase; color: var(--text-3); }
     h1 { margin: 2px 0 6px; font-size: 36px; line-height: 1.12; font-weight: 800; letter-spacing: -0.015em; }
     a { color: var(--link); text-decoration: none; }
     blockquote { margin: 1.4em 0; padding-left: 1em; border-left: 3px solid var(--rule); color: var(--text-2); }
     img, video { max-width: 100%; height: auto; }
     pre { overflow-x: auto; }
-  `)
+  `
 
   const article = $derived(store.article)
   // Until Reader View content arrives, or if it fails, the feed's content shows.
@@ -44,14 +44,27 @@
   // bundled fonts; with scripts off, nothing in it can use that access. NEVER add
   // allow-scripts next to it: article scripts would then run as the app, with IPC.
   // Only our own header fields are escaped; the body is shown as the feed sent it.
-  // The theme and motion are set on the frame's root, not written into the HTML, so a
-  // change doesn't reload the article.
-  const theme = $derived(palette(store.settings.theme))
-  const frameMotion = $derived(motion(store.settings.animations))
+  // The settings the frame shows are set on its root, so changing one doesn't reload the
+  // article. The HTML starts with them too, so a new article doesn't flash.
+  const frameRoot = $derived({
+    theme: palette(store.settings.theme),
+    motion: motion(store.settings.animations),
+    articleFont: fontStacks[store.settings.articleFont],
+    headlineFont: fontStacks[store.settings.headlineFont],
+  })
+
+  function styleFrameRoot(root: HTMLElement) {
+    root.dataset.theme = frameRoot.theme
+    root.dataset.motion = frameRoot.motion
+    root.style.setProperty('--article-font', frameRoot.articleFont)
+    root.style.setProperty('--headline-font', frameRoot.headlineFont)
+  }
+
   const srcdoc = $derived.by(() => {
     if (!article) return ''
     const feed = store.feed(article.feedId)?.title ?? ''
-    return `<!doctype html><html data-theme="${untrack(() => theme)}" data-motion="${untrack(() => frameMotion)}"><head><meta charset="utf-8"><style>${frameCss}</style></head><body><article>
+    const root = untrack(() => frameRoot)
+    return `<!doctype html><html data-theme="${root.theme}" data-motion="${root.motion}" style="--article-font: ${root.articleFont}; --headline-font: ${root.headlineFont}"><head><meta charset="utf-8"><style>${frameCss}</style></head><body><article>
       <header>
         <div class="date">${escapeHtml(formatFull(article.published))}</div>
         <h1>${escapeHtml(article.title)}</h1>
@@ -87,9 +100,7 @@
 
   $effect(() => {
     const root = frame?.contentDocument?.documentElement
-    if (!root) return
-    root.dataset.theme = theme
-    root.dataset.motion = frameMotion
+    if (root) styleFrameRoot(root)
   })
 
   // Links in the article open in the system browser, never in the frame. The frame is
@@ -98,6 +109,8 @@
   // Keys pressed while reading go to the app's shortcuts.
   function onFrameLoad() {
     const doc = frame?.contentDocument
+    // A setting changed while the frame loaded went to the blank document before it.
+    if (doc) styleFrameRoot(doc.documentElement)
     doc?.addEventListener('click', onLinkClick)
     doc?.addEventListener('auxclick', onLinkClick)
     doc?.addEventListener('keydown', onkeydown)
