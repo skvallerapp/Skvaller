@@ -8,6 +8,13 @@ use tauri::Manager;
 
 fn main() {
     tauri::Builder::default()
+        // Only article links open in the browser, through the reader. The app's own
+        // window has no external links, so the plugin's click handler is off.
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .setup(|app| {
             let state = commands::AppState::load(app.handle())?;
             app.manage(state);

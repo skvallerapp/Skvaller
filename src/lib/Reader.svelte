@@ -1,10 +1,12 @@
 <script lang="ts">
   import Circle from '@lucide/svelte/icons/circle'
   import CircleDot from '@lucide/svelte/icons/circle-dot'
+  import Compass from '@lucide/svelte/icons/compass'
   import Star from '@lucide/svelte/icons/star'
   import { fontStacks, interFontFaces } from './fonts'
   import { escapeHtml, formatFull } from './format'
   import { dragRegion } from './platform'
+  import { openInBrowser } from './api'
   import { store } from './store.svelte'
 
   // Styles for the article frame. The frame has its own document, so app.css
@@ -46,6 +48,30 @@
       ${store.html ?? ''}
     </article></body></html>`
   })
+
+  let frame = $state<HTMLIFrameElement>()
+
+  // Links in the article open in the system browser, never in the frame. The frame is
+  // same-origin, so the app can listen to its events while its own scripts stay off.
+  // Relative links resolve against the article's URL, since the frame has no base.
+  function onFrameLoad() {
+    const doc = frame?.contentDocument
+    doc?.addEventListener('click', onLinkClick)
+    doc?.addEventListener('auxclick', onLinkClick)
+  }
+
+  function onLinkClick(e: MouseEvent) {
+    if (e.button > 1) return
+    const link = (e.target as Element).closest?.('a, area')
+    if (!link) return
+    const href = (
+      link.getAttribute('href') ?? link.getAttributeNS('http://www.w3.org/1999/xlink', 'href') ?? ''
+    ).trim()
+    // A link within the article scrolls it.
+    if (href.startsWith('#')) return
+    e.preventDefault()
+    if (href) openInBrowser(href, article?.url)
+  }
 </script>
 
 <section class="reader" aria-label="Article">
@@ -72,6 +98,15 @@
       >
         <Star size={18} strokeWidth={2} fill={store.starred.has(article.id) ? 'currentColor' : 'none'} />
       </button>
+      <button
+        class="icon-button"
+        aria-label="Open in Browser"
+        title="Open in Browser"
+        disabled={!article.url}
+        onclick={() => openInBrowser(article.url)}
+      >
+        <Compass size={18} strokeWidth={2} />
+      </button>
     {/if}
   </div>
 
@@ -79,7 +114,7 @@
     <!-- Create the frame only once the HTML is in, so it loads once. Chromium leaves
          a sandboxed frame blank when its srcdoc changes during the first load. -->
     {#if store.html !== null}
-      <iframe title={article.title} sandbox="allow-same-origin" {srcdoc}></iframe>
+      <iframe title={article.title} sandbox="allow-same-origin" {srcdoc} bind:this={frame} onload={onFrameLoad}></iframe>
     {/if}
   {:else}
     <p class="empty">No article selected</p>
