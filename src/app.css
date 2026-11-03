@@ -9,7 +9,7 @@
 
   --sidebar-bg: #f1f0ee;
   --list-bg: #fafaf9;
-  --reader-bg: #ffffff;
+  --reader-bg: #fafaf9;
   --text: #2e2e2d;
   /* Muted text. In every theme, --text-2 and --text-3 keep 4.5:1 contrast (WCAG AA)
      on each pane, hovered rows included. */
@@ -35,7 +35,7 @@
   color-scheme: dark;
   --sidebar-bg: #1b1b1d;
   --list-bg: #202022;
-  --reader-bg: #252527;
+  --reader-bg: #202022;
   --text: #ececee;
   --text-2: #a0a0a6;
   --text-3: #97979d;
