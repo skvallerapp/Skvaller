@@ -51,6 +51,8 @@ class Store {
   #feedById = $derived(new Map(this.feeds.map((f) => [f.id, f])))
   // Responses to older requests are dropped when a newer one was made.
   #listRequest = 0
+  /** The newest list load. An older one resolves with it, once the list is shown. */
+  #listLoad = { request: 0, done: Promise.resolve() }
   /** The selection `visible` was loaded for, as JSON. */
   #listKey = ''
   #htmlRequest = 0
@@ -128,21 +130,22 @@ class Store {
     return sums
   })
 
-  select(scope: Scope) {
+  /** Resolves once the list is loaded. */
+  select(scope: Scope): Promise<void> {
     this.scope = scope
-    this.#showList()
+    return this.#showList()
   }
 
   setView(view: View) {
     this.view = view
-    this.#showList()
+    void this.#showList()
   }
 
   #showList() {
     this.articleId = null
     this.html = null
     this.#resetFullText()
-    void this.#loadList()
+    return this.#loadList()
   }
 
   open(id: string) {
@@ -344,14 +347,23 @@ class Store {
    * articles that left the view stay if `keep` says so, so the list doesn't jump while
    * you read. Only a reload of the same selection keeps any.
    */
-  async #loadList(keep: (a: Article) => boolean = () => false): Promise<void> {
+  #loadList(keep: (a: Article) => boolean = () => false): Promise<void> {
     const request = ++this.#listRequest
+    this.#listLoad = { request, done: this.#fetchList(request, keep) }
+    return this.#listLoad.done
+  }
+
+  async #fetchList(request: number, keep: (a: Article) => boolean): Promise<void> {
     const selection = { view: this.view, scope: $state.snapshot(this.scope) }
     const key = this.#selectionKey()
     const writes = this.#writeCount
     await this.#writes
     let list = await api.articles(selection)
-    if (request !== this.#listRequest) return
+    if (request !== this.#listRequest) {
+      // Not after a sign-out, which drops loads without starting one.
+      if (this.#listLoad.request > request) return this.#listLoad.done
+      return
+    }
     // A change made while this loaded isn't in it, and would be undone. Load again; the
     // next load waits for the change to be saved.
     if (writes !== this.#writeCount) return this.#loadList(keep)

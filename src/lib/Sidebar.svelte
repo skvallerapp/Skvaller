@@ -4,12 +4,12 @@
   import SettingsIcon from '@lucide/svelte/icons/settings'
   import Rss from '@lucide/svelte/icons/rss'
   import { CheckMenuItem, Menu } from '@tauri-apps/api/menu'
-  import { untrack } from 'svelte'
-  import { slide } from 'svelte/transition'
+  import { tick, untrack } from 'svelte'
+  import { slide, type TransitionConfig } from 'svelte/transition'
   import { SvelteSet } from 'svelte/reactivity'
   import { formatSynced, serviceTitle } from './format'
   import { openSettings } from './api'
-  import { ms } from './motion'
+  import { animate, ms } from './motion'
   import { dragRegion, inTauri, isMac, macWindow } from './platform'
   import { store } from './store.svelte'
   import type { Feed, Scope } from './types'
@@ -61,6 +61,44 @@
     if (s.error) return 'Sync failed'
     return s.lastSync ? formatSynced(s.lastSync) : 'Not synced yet'
   })
+
+  // The rows below All, in sidebar order: each folder, then its feeds when open, then
+  // the feeds in no folder.
+  type Row = Exclude<Scope, { kind: 'all' }>
+  const rows: Row[] = $derived([
+    ...shownFolders.flatMap((folder): Row[] => [
+      { kind: 'folder', id: folder.id },
+      ...(collapsed.has(folder.id) ? [] : (feedsByFolder.get(folder.id) ?? [])).map(
+        (f): Row => ({ kind: 'feed', id: f.id }),
+      ),
+    ]),
+    ...looseFeeds.map((f): Row => ({ kind: 'feed', id: f.id })),
+  ])
+
+  // Rows slide closed as they leave only right after a mark-all-read. Other changes, such
+  // as switching views, add and remove many rows, and do so at once.
+  // They fade too, so the row that was selected doesn't look selected next to the new one.
+  let rowsLeaving = false
+  function leave(node: Element): TransitionConfig {
+    // Measuring a row isn't free, and a view switch removes many.
+    if (!rowsLeaving || !animate()) return {}
+    const closing = slide(node, { duration: 220 })
+    return { ...closing, css: (t, u) => `${closing.css?.(t, u)}; opacity: ${t}` }
+  }
+
+  /** After the Unread view's feed or folder is marked read, selects the next row below
+   * with unread articles, or All Unread when there is none. The marked row then hides.
+   * Resolves once the new selection is listed. */
+  export function selectNext(): Promise<void> | undefined {
+    if (store.view !== 'unread') return
+    const i = rows.findIndex(isSelected)
+    if (i === -1) return
+    const unread = (s: Row) =>
+      ((s.kind === 'folder' ? store.folderCounts : store.counts).get(s.id) ?? 0) > 0
+    rowsLeaving = true
+    void tick().then(() => (rowsLeaving = false))
+    return store.select(rows.slice(i + 1).find(unread) ?? { kind: 'all' })
+  }
 
   function isSelected(scope: Scope): boolean {
     const cur = store.scope
@@ -138,6 +176,7 @@
     class="row"
     class:indent
     class:selected={isSelected(scope)}
+    out:leave|global
     onclick={() => store.select(scope)}
     oncontextmenu={feed ? (e) => showFeedMenu(e, feed) : undefined}
   >
@@ -190,7 +229,7 @@
       <section>
         <h2>Feeds</h2>
         {#each shownFolders as folder (folder.id)}
-          <div class="folder">
+          <div class="folder" out:leave>
             <button
               class="disclosure"
               class:open={!collapsed.has(folder.id)}

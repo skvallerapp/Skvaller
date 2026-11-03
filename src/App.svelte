@@ -19,6 +19,7 @@
 
   let resizing = $state(false)
 
+  let sidebar = $state<Sidebar>()
   let list = $state<ArticleList>()
   let reader = $state<Reader>()
 
@@ -93,7 +94,7 @@
       inert={!layout.sidebarOpen}
     >
       <div class="sidebar-inner" style:width="{layout.sidebarWidth}px">
-        <Sidebar />
+        <Sidebar bind:this={sidebar} />
       </div>
     </div>
     {#if layout.sidebarOpen}
@@ -109,7 +110,7 @@
     {/if}
 
     <div class="list" style:width="{layout.listWidth}px">
-      <ArticleList bind:this={list} />
+      <ArticleList bind:this={list} onmarkedall={() => sidebar?.selectNext()} />
     </div>
     <Resizer
       label="Resize article list"
