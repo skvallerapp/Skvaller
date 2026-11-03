@@ -14,13 +14,13 @@
   import { untrack } from 'svelte'
 
   // Styles for the article frame. The frame has its own document, so app.css
-  // doesn't reach it. Settings reach it through its root; see `frameRoot`. The text
-  // colors are app.css's, and must stay the same.
+  // doesn't reach it. Settings reach it through its root; see `frameRoot`. The colors
+  // are app.css's (--bg is --reader-bg), and must stay the same.
   const frameCss = `${bundledFontFaces}
-    :root { color-scheme: light; --text: #2e2e2d; --text-2: #61605f; --text-3: #676665; --rule: rgb(0 0 0 / .1); --link: #9a5136; }
-    :root[data-theme='dark'] { color-scheme: dark; --text: #ececee; --text-2: #a0a0a6; --text-3: #97979d; --rule: rgb(255 255 255 / .1); --link: #8aa4c8; }
-    :root[data-theme='espresso'] { color-scheme: dark; --text: #e0dedd; --text-2: #c1bdbc; --text-3: #9e928d; --rule: rgb(255 236 224 / .12); --link: #cfa080; }
-    html { background: transparent; }
+    :root { color-scheme: light; --bg: #fafaf9; --text: #2e2e2d; --text-2: #61605f; --text-3: #676665; --rule: rgb(0 0 0 / .1); --link: #9a5136; }
+    :root[data-theme='dark'] { color-scheme: dark; --bg: #202022; --text: #ececee; --text-2: #a0a0a6; --text-3: #97979d; --rule: rgb(255 255 255 / .1); --link: #8aa4c8; }
+    :root[data-theme='espresso'] { color-scheme: dark; --bg: #2d211e; --text: #e0dedd; --text-2: #c1bdbc; --text-3: #9e928d; --rule: rgb(255 236 224 / .12); --link: #cfa080; }
+    html { background: var(--bg); }
     body { margin: 0; padding: 36px 40px 64px; color: var(--text);
       font: 16px/1.65 var(--article-font); -webkit-font-smoothing: antialiased; }
     article { max-width: 38em; margin: 0 auto; animation: enter 160ms ease-out; }
@@ -285,6 +285,11 @@
     flex: 1;
     width: 100%;
     border: 0;
+    /* A frame whose color scheme differs from this element's gets an opaque canvas.
+       Before the article document loads, the frame shows a blank one with the light
+       scheme: in a dark theme, WebKit then shows it white. Matching that blank
+       document keeps it transparent. The article paints its own background. */
+    color-scheme: light;
   }
 
   .empty {
