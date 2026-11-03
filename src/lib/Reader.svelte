@@ -30,6 +30,13 @@
     header, h1, h2, h3, h4, h5, h6 { font-family: var(--headline-font); }
     .date, .source { font-size: 12px; font-weight: 600; line-height: 1.3; text-transform: uppercase; color: var(--text-3); }
     h1 { margin: 2px 0 6px; font-size: 36px; line-height: 1.12; font-weight: 800; letter-spacing: -0.015em; }
+    /* Headings in the article body. Without these they keep the body's line height, and
+       the space below them matches the space above, so they float between sections. */
+    article :is(h2, h3, h4, h5, h6) {
+      margin: 1.6em 0 0.4em; line-height: 1.25; letter-spacing: -0.01em; text-wrap: balance; }
+    article h2 { font-size: 1.45em; }
+    article h3 { font-size: 1.2em; }
+    article :is(h4, h5, h6) { font-size: 1em; }
     a { color: var(--link); text-decoration: none; }
     blockquote { margin: 1.4em 0; padding-left: 1em; border-left: 3px solid var(--rule); color: var(--text-2); }
     img, video { max-width: 100%; height: auto; }
