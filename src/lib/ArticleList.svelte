@@ -78,8 +78,13 @@
     if (confirming && !markAll.contains(e.target as Node)) confirming = false
   }
 
+  // Only focus moving to another element closes it here. WebKit doesn't focus a
+  // clicked button, so a click in the confirmation leaves focus with nothing; closing
+  // then would remove the button before its click lands. Clicks outside close it in
+  // onWindowPointerdown.
   function onFocusout(e: FocusEvent) {
-    if (!markAll.contains(e.relatedTarget as Node | null)) confirming = false
+    const next = e.relatedTarget as Node | null
+    if (next && !markAll.contains(next)) confirming = false
   }
 
   // Brings a newly opened article's row into view, such as when stepping through with
