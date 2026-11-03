@@ -2,9 +2,10 @@
   import CircleCheck from '@lucide/svelte/icons/circle-check'
   import PanelLeft from '@lucide/svelte/icons/panel-left'
   import Star from '@lucide/svelte/icons/star'
-  import { untrack } from 'svelte'
+  import { tick, untrack } from 'svelte'
   import { formatTime } from './format'
   import { layout, toggleSidebar } from './layout.svelte'
+  import { animate } from './motion'
   import { dragRegion, macWindow } from './platform'
   import { store } from './store.svelte'
   import { viewInfo } from './views'
@@ -45,9 +46,56 @@
   let trigger: HTMLButtonElement
   let confirmButton = $state<HTMLButtonElement>()
 
+  /** Moves on to the next feed or folder, if there is one; resolves once it's listed. */
+  let { onmarkedall }: { onmarkedall: () => Promise<void> | undefined } = $props()
+
+  let pane: HTMLDivElement
+  /** The copy of the old list, while it's on screen. */
+  let ghost: HTMLElement | null = null
+
+  function markAllAndMoveOn() {
+    ghost?.remove()
+    store.markAllRead()
+    const next = onmarkedall()
+    // The DOM still shows the old list until Svelte updates it, after this returns. A
+    // copy of it slides up and away.
+    if (next && animate()) void slideToNext(viewport.cloneNode(true) as HTMLElement, next)
+  }
+
+  /** As the next list slides in from below, the old one slides up out of sight. */
+  async function slideToNext(copy: HTMLElement, next: Promise<void>) {
+    const scope = store.scope
+    ghost = copy
+    copy.classList.add('ghost')
+    copy.inert = true
+    pane.append(copy)
+    copy.scrollTop = viewport.scrollTop
+    try {
+      await next
+      await tick()
+    } catch {
+      // The list stays as it was. Slide it in anyway, so the copy goes away.
+    }
+    // A newer mark-all replaced this one meanwhile.
+    if (ghost !== copy) return
+    // Something else was selected meanwhile: no next list to slide in.
+    if (store.scope !== scope) {
+      copy.remove()
+      ghost = null
+      return
+    }
+    const timing = { duration: 320, easing: 'cubic-bezier(0.3, 0, 0, 1)' }
+    const leaving = copy.animate({ transform: ['none', 'translateY(-100%)'] }, timing)
+    viewport.animate({ transform: ['translateY(100%)', 'none'] }, timing)
+    leaving.onfinish = leaving.oncancel = () => {
+      copy.remove()
+      if (ghost === copy) ghost = null
+    }
+  }
+
   function onMarkAll() {
     if (store.settings.confirmMarkAllRead) confirming = !confirming
-    else store.markAllRead()
+    else markAllAndMoveOn()
   }
 
   function cancel() {
@@ -57,7 +105,7 @@
 
   function confirmMarkAll() {
     confirming = false
-    store.markAllRead()
+    markAllAndMoveOn()
     // The trigger is disabled now, so focus goes to the list.
     viewport.focus()
   }
@@ -173,39 +221,41 @@
     </div>
   </div>
 
-  <div
-    class="viewport"
-    tabindex="-1"
-    bind:this={viewport}
-    bind:clientHeight={height}
-    onscroll={() => (scrollTop = viewport.scrollTop)}
-  >
-    {#if items.length === 0}
-      <p class="empty">{viewInfo(store.view).empty}</p>
-    {:else}
-      <div class="spacer" style:height="{items.length * ROW_HEIGHT}px">
-        {#each rows as article, i (article.id)}
-          <button
-            class="row"
-            class:selected={article.id === store.articleId}
-            class:unread={!store.read.has(article.id)}
-            style:height="{ROW_HEIGHT}px"
-            style:transform="translateY({(first + i) * ROW_HEIGHT}px)"
-            onclick={() => store.open(article.id)}
-          >
-            <span class="meta">
-              <span class="dot"></span>
-              <span class="feed">{store.feed(article.feedId)?.title}</span>
-              {#if store.starred.has(article.id)}
-                <Star size={11} class="star" fill="currentColor" strokeWidth={0} />
-              {/if}
-              <time>{formatTime(article.published)}</time>
-            </span>
-            <span class="title">{article.title}</span>
-          </button>
-        {/each}
-      </div>
-    {/if}
+  <div class="pane" bind:this={pane}>
+    <div
+      class="viewport"
+      tabindex="-1"
+      bind:this={viewport}
+      bind:clientHeight={height}
+      onscroll={() => (scrollTop = viewport.scrollTop)}
+    >
+      {#if items.length === 0}
+        <p class="empty">{viewInfo(store.view).empty}</p>
+      {:else}
+        <div class="spacer" style:height="{items.length * ROW_HEIGHT}px">
+          {#each rows as article, i (article.id)}
+            <button
+              class="row"
+              class:selected={article.id === store.articleId}
+              class:unread={!store.read.has(article.id)}
+              style:height="{ROW_HEIGHT}px"
+              style:transform="translateY({(first + i) * ROW_HEIGHT}px)"
+              onclick={() => store.open(article.id)}
+            >
+              <span class="meta">
+                <span class="dot"></span>
+                <span class="feed">{store.feed(article.feedId)?.title}</span>
+                {#if store.starred.has(article.id)}
+                  <Star size={11} class="star" fill="currentColor" strokeWidth={0} />
+                {/if}
+                <time>{formatTime(article.published)}</time>
+              </span>
+              <span class="title">{article.title}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </div>
   </div>
 </section>
 
@@ -288,10 +338,25 @@
     gap: 8px;
   }
 
+  /* Clips the lists sliding in and out when all are marked read. */
+  .pane {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
   .viewport {
     flex: 1;
     overflow-y: auto;
     contain: strict;
+  }
+
+  .pane > :global(.ghost) {
+    position: absolute;
+    inset: 0;
+    background: var(--list-bg);
   }
 
   .spacer {
