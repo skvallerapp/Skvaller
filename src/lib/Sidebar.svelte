@@ -145,7 +145,8 @@
       <span class="row-icon thumb">
         {#if feed.icon}<img src={feed.icon} alt="" />{:else}<Rss size={12} strokeWidth={2.5} />{/if}
       </span>
-    {:else}
+    {:else if scope.kind === 'folder'}
+      <!-- Room for the disclosure arrow, which sits over it. -->
       <span class="row-icon"></span>
     {/if}
     <span class="label">{label}</span>
@@ -304,9 +305,10 @@
     margin-top: 18px;
   }
 
+  /* Lined up with the account header and the All row. */
   h2 {
     margin: 0 0 4px;
-    padding: 0 10px;
+    padding: 0 14px;
     font-size: 11px;
     font-weight: 600;
     color: var(--text-3);
