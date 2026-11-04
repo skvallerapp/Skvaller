@@ -98,6 +98,11 @@ class Store {
       // Listen first, so a sync that finishes meanwhile is not missed.
       await api.onSyncStatus((status) => this.#onStatus(status))
       await api.onSettingsChanged((settings) => (this.settings = settings))
+      // From the Settings window's Reader View page.
+      await api.onFeedsChanged((accountId) => {
+        if (accountId === this.activeId)
+          this.#loadLibrary().catch((e) => console.error('Loading the feeds failed', e))
+      })
       await api.onAccountsChanged((session) =>
         this.#applySession(session).catch((e) => console.error('Showing the accounts failed', e)),
       )

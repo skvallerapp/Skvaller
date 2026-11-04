@@ -4,7 +4,10 @@
   import CircleUser from '@lucide/svelte/icons/circle-user'
   import Keyboard from '@lucide/svelte/icons/keyboard'
   import Palette from '@lucide/svelte/icons/palette'
+  import ChevronLeft from '@lucide/svelte/icons/chevron-left'
+  import ChevronRight from '@lucide/svelte/icons/chevron-right'
   import Plus from '@lucide/svelte/icons/plus'
+  import Rss from '@lucide/svelte/icons/rss'
   import { onMount, tick } from 'svelte'
   import * as api from './lib/api'
   import { sentence } from './lib/format'
@@ -14,7 +17,7 @@
   import LocalOption from './lib/LocalOption.svelte'
   import SignIn from './lib/SignIn.svelte'
   import { styleRoot } from './lib/theme'
-  import type { Account, AccountChange, Font, Session, Settings, SyncSchedule, Theme } from './lib/types'
+  import type { Account, AccountChange, Feed, Font, Session, Settings, SyncSchedule, Theme } from './lib/types'
 
   /** A section of the window. An account's is `account:<id>`. */
   type Pane = 'appearance' | 'reading' | 'shortcuts' | 'add-account' | `account:${string}`
@@ -82,11 +85,19 @@
   // While saves are pending, `settings-changed` only echoes older states of this window.
   let pending = 0
 
+  /** A page inside the account's pane: its feeds' Reader View settings. */
+  let subpage = $state<'reader-view' | null>(null)
+  /** The account's subscribed feeds, for the Reader View page. */
+  let feeds = $state.raw<Feed[]>([])
+  let feedsFor = ''
+
   const paneOf = (a: Account): Pane => `account:${a.id}`
   /** The account whose pane shows. */
   const account = $derived(accounts.find((a) => paneOf(a) === pane) ?? null)
   const current = $derived(
-    account
+    account && subpage === 'reader-view'
+      ? { label: 'Reader View' }
+      : account
       ? { label: account.description }
       : pane === 'add-account'
         ? { label: 'Add Account' }
@@ -105,6 +116,9 @@
       if (accountSaves === 0 || session.accounts.length !== accounts.length) setAccounts(session.accounts)
     })
     void api.onSettingsPane((p) => show(p as Pane))
+    void api.onFeedsChanged((id) => {
+      if (subpage === 'reader-view' && id === feedsFor) void loadFeeds(id)
+    })
     void load().then(async () => {
       const asked = await api.takeSettingsPane()
       if (asked) show(asked as Pane)
@@ -126,6 +140,7 @@
     const removed = pane.startsWith('account:') && !next.some((a) => paneOf(a) === pane)
     accounts = next
     if (removed) {
+      subpage = null
       confirmingRemove = false
       removing = false
       pane = next[0] ? paneOf(next[0]) : panes[0].pane
@@ -134,6 +149,7 @@
 
   function show(p: Pane) {
     confirmingRemove = false
+    subpage = null
     opmlNote = null
     pane = p
   }
@@ -217,6 +233,36 @@
     }
   }
 
+  async function openReaderView(id: string) {
+    subpage = 'reader-view'
+    feeds = []
+    await loadFeeds(id)
+  }
+
+  async function loadFeeds(id: string) {
+    feedsFor = id
+    try {
+      const library = await api.library(id)
+      if (feedsFor === id) feeds = library.feeds.filter((f) => f.subscribed)
+    } catch (e) {
+      error = sentence(api.errorMessage(e))
+    }
+  }
+
+  function setReaderView(id: string, feed: Feed, on: boolean) {
+    feeds = feeds.map((f) => (f.id === feed.id ? { ...f, readerView: on } : f))
+    api.setFeedReaderView(id, feed.id, on).catch(async (e) => {
+      error = sentence(api.errorMessage(e))
+      await loadFeeds(id)
+    })
+  }
+
+  async function backToAccount() {
+    subpage = null
+    await tick()
+    main.querySelector<HTMLElement>('#reader-view-row')?.focus()
+  }
+
   async function removeAccount(id: string) {
     removing = true
     try {
@@ -284,7 +330,8 @@
       target.blur()
       return
     }
-    if (confirmingRemove) void cancelRemove()
+    if (subpage) void backToAccount()
+    else if (confirmingRemove) void cancelRemove()
     else void api.closeWindow()
   }
 </script>
@@ -370,8 +417,13 @@
 
   <main bind:this={main}>
     <header data-tauri-drag-region={dragRegion}>
+      {#if account && subpage}
+        <button class="back" onclick={backToAccount}>
+          <ChevronLeft size={16} strokeWidth={2} />{account.description}
+        </button>
+      {/if}
       <h1>{current.label}</h1>
-      {#if account?.kind === 'greader'}<p>{account.username}</p>{/if}
+      {#if account?.kind === 'greader' && !subpage}<p>{account.username}</p>{/if}
     </header>
 
     {#if error}<p class="error" role="alert">{error}</p>{/if}
@@ -514,6 +566,35 @@
               {/if}
             </SignIn>
           </section>
+        {:else if account && subpage === 'reader-view'}
+          {@const a = account}
+          <section>
+            {#if feeds.length > 0}
+              <div class="group">
+                {#each feeds as feed (feed.id)}
+                  <div class="row">
+                    <label class="feed" for="rv-{feed.id}">
+                      <span class="thumb">
+                        {#if feed.icon}<img src={feed.icon} alt="" />{:else}<Rss size={12} strokeWidth={2.5} />{/if}
+                      </span>
+                      <span class="feed-title">{feed.title}</span>
+                    </label>
+                    <input
+                      id="rv-{feed.id}"
+                      type="checkbox"
+                      role="switch"
+                      checked={feed.readerView}
+                      onchange={(e) => setReaderView(a.id, feed, e.currentTarget.checked)}
+                    />
+                  </div>
+                {/each}
+              </div>
+            {/if}
+            <p class="note">
+              Articles of these feeds open in Reader View: the full text, from the article’s web
+              page, instead of what the feed sends.
+            </p>
+          </section>
         {:else if account}
           {@const a = account}
           <section>
@@ -539,6 +620,15 @@
                   <span class="value" title={a.server}>{a.server}</span>
                 </div>
               {/if}
+            </div>
+          </section>
+          <section>
+            <h2>Reading</h2>
+            <div class="group">
+              <button id="reader-view-row" class="row link" onclick={() => openReaderView(a.id)}>
+                <span>Reader View (full-text)</span>
+                <ChevronRight size={16} strokeWidth={2} aria-hidden="true" />
+              </button>
             </div>
           </section>
           <section>
@@ -863,6 +953,65 @@
   /* Apart from Cancel and Remove, at the start. */
   .button.export {
     margin-right: auto;
+  }
+
+  /* A row that opens a page. */
+  .row.link {
+    width: 100%;
+    text-align: left;
+    color: inherit;
+  }
+
+  .row.link:hover {
+    background: var(--hover);
+  }
+
+  .row.link :global(svg) {
+    color: var(--text-3);
+  }
+
+  .back {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin: 0 0 4px -4px;
+    padding: 2px 6px 2px 2px;
+    border-radius: 6px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+
+  .back:hover {
+    background: var(--hover);
+  }
+
+  .feed {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .feed-title {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .thumb {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    overflow: hidden;
+    color: var(--text-3);
+  }
+
+  .thumb img {
+    width: 100%;
+    height: 100%;
   }
 
   /* A whole group's width, as a row of its own. */

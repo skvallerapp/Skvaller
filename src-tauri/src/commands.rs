@@ -31,6 +31,8 @@ const SETTINGS_EVENT: &str = "settings-changed";
 /// Sent to every window with a new `Session` when an account is added, changed or
 /// removed, or another one becomes active.
 const ACCOUNTS_EVENT: &str = "accounts-changed";
+/// Sent to every window with the account's ID when a feed's settings change.
+const FEEDS_EVENT: &str = "feeds-changed";
 /// Sent to the Settings window with the pane to show, when it is asked to open one.
 const SETTINGS_PANE_EVENT: &str = "settings-pane";
 /// The label of the Settings window, in tauri.conf.json.
@@ -835,15 +837,18 @@ pub async fn full_text(
 /// Opens the feed's articles in Reader View, or stops doing so.
 #[tauri::command]
 pub async fn set_feed_reader_view(
+    app: AppHandle,
     state: State<'_, AppState>,
     account_id: String,
     feed_id: String,
     on: bool,
 ) -> CommandResult<()> {
-    Ok(state
+    state
         .runtime(&account_id)?
         .db
-        .set_feed_reader_view(&feed_id, on)?)
+        .set_feed_reader_view(&feed_id, on)?;
+    let _ = app.emit(FEEDS_EVENT, &account_id);
+    Ok(())
 }
 
 #[tauri::command]
