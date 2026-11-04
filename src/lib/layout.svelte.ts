@@ -39,5 +39,14 @@ export function saveLayout() {
 
 export function toggleSidebar() {
   layout.sidebarOpen = !layout.sidebarOpen
+  if (!layout.sidebarOpen) focus.pane = 'list'
   saveLayout()
+}
+
+/** The pane the arrow keys move in: the sidebar's feeds or the article list. */
+export const focus: { pane: 'sidebar' | 'list' } = $state({ pane: 'list' })
+
+/** The pane in focus. The list takes it while the sidebar is hidden. */
+export function activePane(): 'sidebar' | 'list' {
+  return layout.sidebarOpen ? focus.pane : 'list'
 }

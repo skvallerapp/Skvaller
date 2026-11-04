@@ -141,11 +141,14 @@ class Store {
     void this.#showList()
   }
 
+  /** The latest selection's list load. Resolves once it's listed, or replaced. */
+  listShown: Promise<void> = Promise.resolve()
+
   #showList() {
     this.articleId = null
     this.html = null
     this.#resetFullText()
-    return this.#loadList()
+    return (this.listShown = this.#loadList())
   }
 
   open(id: string) {

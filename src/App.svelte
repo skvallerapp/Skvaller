@@ -3,13 +3,13 @@
   import ArticleList from './lib/ArticleList.svelte'
   import { styleRoot } from './lib/theme'
   import { openInBrowser, openSettings } from './lib/api'
-  import { LIST, SIDEBAR, layout, saveLayout, toggleSidebar } from './lib/layout.svelte'
+  import { LIST, SIDEBAR, activePane, focus, layout, saveLayout, toggleSidebar } from './lib/layout.svelte'
   import Reader from './lib/Reader.svelte'
   import Resizer from './lib/Resizer.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import SignIn from './lib/SignIn.svelte'
   import { isMac } from './lib/platform'
-  import { bindings, fixedKeys, keyName } from './lib/shortcuts'
+  import { arrowKeys, bindings, keyName } from './lib/shortcuts'
   import { store } from './lib/store.svelte'
   import type { ShortcutAction } from './lib/types'
 
@@ -24,8 +24,8 @@
   let reader = $state<Reader>()
 
   const actions: Record<ShortcutAction, () => void> = {
-    next: () => store.step(1),
-    previous: () => store.step(-1),
+    next: () => stepList(1),
+    previous: () => stepList(-1),
     readOn: () => reader?.readOn(1),
     readBack: () => reader?.readOn(-1),
     toggleRead: () => store.article && store.toggleRead(store.article.id),
@@ -35,6 +35,31 @@
     sync: () => store.sync(),
     markAllRead: () => list?.markAllRead(),
   }
+  /** j and k move in the list from anywhere, so the list takes the focus. */
+  function stepList(delta: 1 | -1) {
+    focus.pane = 'list'
+    store.step(delta)
+  }
+
+  /** ↑ and ↓ move in the pane in focus. ← and → move the focus; the list, on getting it,
+   * opens its first article if none is open, so the focus shows. */
+  function onArrow(key: string) {
+    // A focused row stays with its pane: Enter mustn't act on the pane left behind.
+    if (key === 'ArrowLeft' || key === 'ArrowRight')
+      (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('.row')?.blur()
+    if (key === 'ArrowLeft') {
+      if (layout.sidebarOpen) focus.pane = 'sidebar'
+    } else if (key === 'ArrowRight') {
+      focus.pane = 'list'
+      // Right after a sidebar step, the new list may still be loading.
+      if (!store.article) void store.listShown.then(() => store.article || store.step(1))
+    } else {
+      const delta = key === 'ArrowDown' ? 1 : -1
+      if (activePane() === 'sidebar') void sidebar?.step(delta)
+      else stepList(delta)
+    }
+  }
+
   /** Actions that run again while their key is held down. The others run once. */
   const repeating = new Set<ShortcutAction>(['next', 'previous', 'readOn', 'readBack'])
 
@@ -72,7 +97,14 @@
     }
     if (!store.signedIn || ownsKey(e)) return
     const key = keyName(e)
-    const action = key === null ? undefined : (fixedKeys[key] ?? actionByKey.get(key))
+    if (key !== null && arrowKeys.has(key)) {
+      e.preventDefault()
+      // ↑ and ↓ repeat in the list only: each sidebar step loads a whole list.
+      const repeats = activePane() === 'list' && (key === 'ArrowUp' || key === 'ArrowDown')
+      if (!e.repeat || repeats) onArrow(key)
+      return
+    }
+    const action = key === null ? undefined : actionByKey.get(key)
     if (!action) return
     e.preventDefault()
     if (!e.repeat || repeating.has(action)) actions[action]()

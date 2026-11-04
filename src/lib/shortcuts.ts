@@ -29,11 +29,9 @@ const defaults: Record<ShortcutAction, string> = {
   markAllRead: 'a',
 }
 
-/** Keys that always do the same and can't be bound to anything else. */
-export const fixedKeys: Partial<Record<string, ShortcutAction>> = {
-  ArrowDown: 'next',
-  ArrowUp: 'previous',
-}
+/** Keys that can't be bound to anything else. ↑ and ↓ move in the sidebar or the article
+ *  list, whichever is in focus; ← and → move the focus between them. */
+export const arrowKeys = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'])
 
 type Overrides = Partial<Record<ShortcutAction, string | null>>
 
@@ -42,7 +40,8 @@ export function bindings(overrides: Overrides): Record<ShortcutAction, string | 
   const result = { ...defaults } as Record<ShortcutAction, string | null>
   for (const { action } of shortcutActions) {
     const key = overrides[action]
-    if (key !== undefined) result[action] = key
+    // An arrow key saved before the arrows were reserved does nothing now: use the default.
+    if (key !== undefined && !(key !== null && arrowKeys.has(key))) result[action] = key
   }
   return result
 }

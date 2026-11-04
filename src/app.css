@@ -20,6 +20,8 @@
   --active: rgb(0 0 0 / 0.07);
   --accent: #9a5136;
   --accent-text: #ffffff;
+  /* The selected row of the pane that isn't in focus. */
+  --accent-muted: color-mix(in srgb, var(--accent) 22%, transparent);
   --unread-dot: #9a5136;
   --star: #e0a21b;
   --error: #c4352b;
