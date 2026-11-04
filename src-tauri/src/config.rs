@@ -195,6 +195,9 @@ pub struct Account {
         deserialize_with = "keep_read_days_or_default"
     )]
     pub keep_read_days: u32,
+    /// Sync when the computer wakes from sleep.
+    #[serde(default, deserialize_with = "or_default")]
+    pub sync_on_wake: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -495,6 +498,7 @@ mod tests {
                 },
                 sync: SyncSchedule::Every(30),
                 keep_read_days: 7,
+                sync_on_wake: false,
             }]
         );
         assert_eq!(config.active.as_deref(), Some(FIRST_ACCOUNT_ID));
@@ -524,6 +528,7 @@ mod tests {
             kind: AccountKind::Local,
             sync: SyncSchedule::OnStart,
             keep_read_days: 14,
+            sync_on_wake: true,
         });
         config.active = Some("3".into());
 

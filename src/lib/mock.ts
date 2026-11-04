@@ -134,6 +134,7 @@ const demoAccount: SavedAccount = {
   username: 'demo',
   sync: 15,
   keepReadDays: 30,
+  syncOnWake: false,
 }
 
 function saved(): SavedAccounts {
@@ -247,7 +248,7 @@ const commands: Record<string, (args: Args) => unknown> = {
   add_local_account: () => {
     const value = saved()
     const id = String(Math.max(0, ...value.accounts.map((a) => Number(a.id))) + 1)
-    value.accounts.push({ id, description: 'Local', kind: 'local', sync: 15, keepReadDays: 30 })
+    value.accounts.push({ id, description: 'Local', kind: 'local', sync: 15, keepReadDays: 30, syncOnWake: false })
     value.active = id
     save(value)
     return session()
@@ -301,10 +302,10 @@ const commands: Record<string, (args: Args) => unknown> = {
     save({ ...saved(), active: id as string })
     return session()
   },
-  update_account: ({ id, description, sync, keepReadDays }) => {
+  update_account: ({ id, description, sync, keepReadDays, syncOnWake }) => {
     const value = saved()
     const change = Object.fromEntries(
-      Object.entries({ description, sync, keepReadDays }).filter(([, v]) => v !== undefined),
+      Object.entries({ description, sync, keepReadDays, syncOnWake }).filter(([, v]) => v !== undefined),
     )
     value.accounts = value.accounts.map((a) => (a.id === id ? { ...a, ...change } : a))
     save(value)
