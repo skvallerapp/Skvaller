@@ -533,6 +533,8 @@ pub async fn sign_in(
         rt.token_rejected.store(false, Ordering::Relaxed);
         *lock(&rt.last_error) = None;
     }
+    // Windows may still have the rejected status: this one replaces it.
+    let _ = app.emit(SYNC_STATUS_EVENT, rt.status());
 
     emit_session(&app).await;
     let sync_app = app.clone();

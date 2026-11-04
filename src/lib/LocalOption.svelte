@@ -1,6 +1,7 @@
 <script lang="ts">
   // Under the sign-in form: the local account, for someone without a sync service.
-  import type { CommandError } from './types'
+  import { errorMessage } from './api'
+  import { sentence } from './format'
 
   let { add, label = 'Use Without an Account' }: { add: () => Promise<void>; label?: string } = $props()
   let busy = $state(false)
@@ -12,7 +13,7 @@
     try {
       await add()
     } catch (e) {
-      error = (e as CommandError).message
+      error = sentence(errorMessage(e))
     } finally {
       busy = false
     }

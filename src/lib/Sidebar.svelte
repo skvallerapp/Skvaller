@@ -212,11 +212,13 @@
       const menu = await Menu.new({ items })
       return { menu, readerView, moves, resources: [...moves.map(([, item]) => item), ...items, menu] }
     })()
-    feedMenu = menu.catch((e) => {
-      if (feedMenu === menu) feedMenu = null
+    // A failed one is made again on the next right-click.
+    const cached: Promise<FeedMenu> = menu.catch((e) => {
+      if (feedMenu === cached) feedMenu = null
       throw e
     })
-    return feedMenu
+    feedMenu = cached
+    return cached
   }
 
   async function showFeedMenu(e: MouseEvent, feed: Feed) {

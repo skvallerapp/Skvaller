@@ -1,6 +1,7 @@
 <script lang="ts">
   import Plus from '@lucide/svelte/icons/plus'
   import { tick } from 'svelte'
+  import { errorMessage } from './api'
   import { sentence } from './format'
   import { store } from './store.svelte'
   import type { CommandError } from './types'
@@ -53,8 +54,9 @@
       busy = false
       close()
     } catch (err) {
-      const { kind, message } = err as CommandError
-      error = messages[kind] ?? sentence(message)
+      // Tauri's own errors are plain strings.
+      error = messages[(err as CommandError | null)?.kind ?? 'other'] ?? sentence(errorMessage(err))
+    } finally {
       busy = false
     }
   }
