@@ -13,6 +13,11 @@ export interface Feed {
   icon: string | null
   /** Open its articles in Reader View. A local setting. */
   readerView: boolean
+  /** The local account's feeds: the feed's address, and its web site's. */
+  url: string | null
+  siteUrl: string | null
+  /** The local account's feeds: why the last fetch failed. */
+  fetchError: string | null
 }
 
 /** An article in the list. The HTML is loaded separately, when the article opens. */
@@ -124,7 +129,7 @@ export type ShortcutAction =
 
 /** An error from a command. */
 export interface CommandError {
-  kind: 'unauthorized' | 'badUrl' | 'network' | 'other'
+  kind: 'unauthorized' | 'badUrl' | 'network' | 'noFeed' | 'other'
   message: string
 }
 

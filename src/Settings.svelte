@@ -10,9 +10,10 @@
   import { slideHighlight } from './lib/highlight.svelte'
   import { dragRegion, macWindow } from './lib/platform'
   import ShortcutList from './lib/ShortcutList.svelte'
+  import LocalOption from './lib/LocalOption.svelte'
   import SignIn from './lib/SignIn.svelte'
   import { styleRoot } from './lib/theme'
-  import type { Account, AccountChange, Font, Settings, SyncSchedule, Theme } from './lib/types'
+  import type { Account, AccountChange, Font, Session, Settings, SyncSchedule, Theme } from './lib/types'
 
   /** A section of the window. An account's is `account:<id>`. */
   type Pane = 'appearance' | 'reading' | 'shortcuts' | 'add-account' | `account:${string}`
@@ -176,7 +177,14 @@
   }
 
   async function addAccount(server: string, username: string, password: string) {
-    const session = await api.signIn(server, username, password)
+    showAdded(await api.signIn(server, username, password))
+  }
+
+  async function addLocalAccount() {
+    showAdded(await api.addLocalAccount())
+  }
+
+  function showAdded(session: Session) {
     setAccounts(session.accounts)
     const added = session.accounts.find((a) => a.id === session.activeId)
     if (added) show(paneOf(added))
@@ -385,7 +393,11 @@
           />
         {:else if pane === 'add-account'}
           <section>
-            <SignIn embedded submit={addAccount} />
+            <SignIn embedded submit={addAccount}>
+              {#if !accounts.some((a) => a.kind === 'local')}
+                <LocalOption add={addLocalAccount} />
+              {/if}
+            </SignIn>
           </section>
         {:else if account}
           {@const a = account}
@@ -446,8 +458,13 @@
               <div class="group confirm" role="alertdialog" aria-labelledby="remove-question">
                 <p id="remove-question">
                   <strong>Remove {a.description}?</strong>
-                  This removes the account and its articles from this computer. Changes that
-                  haven’t synced yet are lost.
+                  {#if a.kind === 'local'}
+                    This removes its subscriptions, folders and articles from this computer.
+                    They are kept nowhere else.
+                  {:else}
+                    This removes the account and its articles from this computer. Changes that
+                    haven’t synced yet are lost.
+                  {/if}
                 </p>
                 <div class="actions">
                   <!-- Cancel takes the focus, so a second Return doesn't remove it. -->

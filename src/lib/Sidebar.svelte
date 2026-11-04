@@ -1,15 +1,17 @@
 <script lang="ts">
   import ChevronRight from '@lucide/svelte/icons/chevron-right'
+  import CircleAlert from '@lucide/svelte/icons/circle-alert'
   import RotateCw from '@lucide/svelte/icons/rotate-cw'
   import SettingsIcon from '@lucide/svelte/icons/settings'
   import Rss from '@lucide/svelte/icons/rss'
-  import { CheckMenuItem, Menu } from '@tauri-apps/api/menu'
+  import { CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu } from '@tauri-apps/api/menu'
   import { tick, untrack } from 'svelte'
   import { slide, type TransitionConfig } from 'svelte/transition'
   import { SvelteSet } from 'svelte/reactivity'
   import AccountSwitcher from './AccountSwitcher.svelte'
+  import AddFeed from './AddFeed.svelte'
   import { formatSynced } from './format'
-  import { openSettings } from './api'
+  import { confirm, openSettings } from './api'
   import { animate, ms } from './motion'
   import { activePane, focus } from './layout.svelte'
   import { dragRegion, inTauri, isMac, macWindow } from './platform'
@@ -157,14 +159,29 @@
   }
 
   // One native menu for every feed, made on first use: menus are app resources that
-  // stay until closed, and on Linux `popup` returns before the menu does.
-  let feedMenu: Promise<{ menu: Menu; readerView: CheckMenuItem }> | null = null
-  // The feed the menu was last opened for. Its action acts on this one.
+  // stay until closed, and on Linux `popup` returns before the menu does. The local
+  // account's menu lists the folders to move to, so it is made again when they change,
+  // and the old one closed then, long after its popup.
+  interface FeedMenu {
+    menu: Menu
+    readerView: CheckMenuItem
+    /** "Move To" items, by folder ID; `null` is no folder. */
+    moves: [string | null, CheckMenuItem][]
+  }
+  let feedMenu: Promise<FeedMenu> | null = null
+  let feedMenuKey = ''
+  // The feed or folder the menu was last opened for. Its actions act on this one.
   let menuFeedId = ''
+  let menuFolderId = ''
   let menuRequest = 0
 
-  function makeFeedMenu() {
-    feedMenu ??= (async () => {
+  function makeFeedMenu(): Promise<FeedMenu> {
+    const key = store.isLocal ? JSON.stringify(store.folders) : ''
+    if (feedMenu && key === feedMenuKey) return feedMenu
+    const old = feedMenu
+    feedMenuKey = key
+    const menu = (async (): Promise<FeedMenu> => {
+      void old?.then(({ menu }) => menu.close()).catch(() => {})
       const readerView = await CheckMenuItem.new({
         text: 'Always Use Reader View',
         action: () => {
@@ -172,9 +189,22 @@
           if (feed) store.setFeedReaderView(feed.id, !feed.readerView)
         },
       })
-      return { menu: await Menu.new({ items: [readerView] }), readerView }
-    })().catch((e) => {
-      feedMenu = null
+      if (!store.isLocal) return { menu: await Menu.new({ items: [readerView] }), readerView, moves: [] }
+      const moves: [string | null, CheckMenuItem][] = []
+      for (const [id, text] of [[null, 'No Folder'], ...store.folders.map((f) => [f.id, f.title])])
+        moves.push([id, await CheckMenuItem.new({ text: text!, action: () => store.moveFeed(menuFeedId, id) })])
+      const items = [
+        readerView,
+        await PredefinedMenuItem.new({ item: 'Separator' }),
+        await MenuItem.new({ text: 'Rename…', action: () => startRename({ kind: 'feed', id: menuFeedId }) }),
+        await Submenu.new({ text: 'Move To', items: moves.map(([, item]) => item) }),
+        await PredefinedMenuItem.new({ item: 'Separator' }),
+        await MenuItem.new({ text: 'Unsubscribe…', action: () => void unsubscribe(menuFeedId) }),
+      ]
+      return { menu: await Menu.new({ items }), readerView, moves }
+    })()
+    feedMenu = menu.catch((e) => {
+      if (feedMenu === menu) feedMenu = null
       throw e
     })
     return feedMenu
@@ -186,15 +216,91 @@
     // Only the latest right-click opens the menu, checked for its own feed.
     const request = ++menuRequest
     try {
-      const { menu, readerView } = await makeFeedMenu()
+      const { menu, readerView, moves } = await makeFeedMenu()
       if (request !== menuRequest) return
       await readerView.setChecked(feed.readerView)
+      for (const [id, item] of moves) await item.setChecked(id === feed.folderId)
       if (request !== menuRequest) return
       menuFeedId = feed.id
       await menu.popup()
     } catch (err) {
       console.warn('Showing the feed menu failed', err)
     }
+  }
+
+  let folderMenu: Promise<Menu> | null = null
+
+  async function showFolderMenu(e: MouseEvent, folderId: string) {
+    if (!inTauri || !store.isLocal) return
+    e.preventDefault()
+    const request = ++menuRequest
+    try {
+      folderMenu ??= (async () =>
+        Menu.new({
+          items: [
+            await MenuItem.new({ text: 'Rename…', action: () => startRename({ kind: 'folder', id: menuFolderId }) }),
+            await MenuItem.new({ text: 'Delete Folder…', action: () => void deleteFolder(menuFolderId) }),
+          ],
+        }))().catch((err) => {
+        folderMenu = null
+        throw err
+      })
+      const menu = await folderMenu
+      if (request !== menuRequest) return
+      menuFolderId = folderId
+      await menu.popup()
+    } catch (err) {
+      console.warn('Showing the folder menu failed', err)
+    }
+  }
+
+  async function unsubscribe(feedId: string) {
+    const feed = store.feed(feedId)
+    if (!feed) return
+    const ok = await confirm(
+      'Its articles are removed from this device, starred ones too.',
+      `Unsubscribe from ${feed.title}?`,
+      'Unsubscribe',
+    )
+    if (ok) store.unsubscribe(feedId)
+  }
+
+  async function deleteFolder(folderId: string) {
+    const folder = store.folders.find((f) => f.id === folderId)
+    if (!folder) return
+    const ok = await confirm('Its feeds stay, in no folder.', `Delete ${folder.title}?`, 'Delete Folder')
+    if (ok) store.deleteFolder(folderId)
+  }
+
+  // Renaming happens in the row itself.
+  type Renamable = { kind: 'feed' | 'folder'; id: string }
+  let renaming = $state<Renamable | null>(null)
+
+  function startRename(target: Renamable) {
+    if (target.kind === 'folder') collapsed.delete(target.id)
+    renaming = target
+  }
+
+  function isRenaming(scope: Scope): boolean {
+    return renaming !== null && scope.kind === renaming.kind && 'id' in scope && scope.id === renaming.id
+  }
+
+  function finishRename(input: HTMLInputElement, save: boolean) {
+    const target = renaming
+    if (!target) return
+    renaming = null
+    const title = input.value.trim()
+    const old = target.kind === 'feed' ? store.feed(target.id)?.title : store.folders.find((f) => f.id === target.id)?.title
+    if (save && title && title !== old) {
+      if (target.kind === 'feed') store.renameFeed(target.id, title)
+      else store.renameFolder(target.id, title)
+    }
+  }
+
+  /** Focuses and selects the rename field as it appears. */
+  function renameField(input: HTMLInputElement) {
+    input.focus()
+    input.select()
   }
 </script>
 
@@ -205,6 +311,32 @@
   indent = false,
   feed?: Feed,
 )}
+  {#if isRenaming(scope)}
+    <div class="row renaming" class:indent>
+      {#if feed}
+        <span class="row-icon thumb">
+          {#if feed.icon}<img src={feed.icon} alt="" />{:else}<Rss size={12} strokeWidth={2.5} />{/if}
+        </span>
+      {:else}
+        <span class="row-icon"></span>
+      {/if}
+      <input
+        class="label"
+        value={label}
+        aria-label="Name"
+        spellcheck="false"
+        use:renameField
+        onblur={(e) => finishRename(e.currentTarget, true)}
+        onkeydown={(e) => {
+          if (e.key === 'Enter') finishRename(e.currentTarget, true)
+          else if (e.key === 'Escape') finishRename(e.currentTarget, false)
+          else return
+          e.preventDefault()
+          e.stopPropagation()
+        }}
+      />
+    </div>
+  {:else}
   <button
     class="row"
     class:indent
@@ -215,7 +347,11 @@
       focus.pane = 'sidebar'
       void store.select(scope)
     }}
-    oncontextmenu={feed ? (e) => showFeedMenu(e, feed) : undefined}
+    oncontextmenu={feed
+      ? (e) => showFeedMenu(e, feed)
+      : scope.kind === 'folder'
+        ? (e) => showFolderMenu(e, scope.id)
+        : undefined}
   >
     <span class="highlight"></span>
     {#if feed}
@@ -227,12 +363,19 @@
       <span class="row-icon"></span>
     {/if}
     <span class="label">{label}</span>
+    {#if feed?.fetchError}
+      <span class="fetch-error" title="Can’t update: {feed.fetchError}">
+        <CircleAlert size={13} strokeWidth={2.25} aria-label="Can’t update" />
+      </span>
+    {/if}
     {#if count > 0}<span class="count">{count.toLocaleString()}</span>{/if}
   </button>
+  {/if}
 {/snippet}
 
 <nav class="sidebar" class:active={activePane() === 'sidebar'} aria-label="Feeds" bind:this={nav}>
   <div class="toolbar" data-tauri-drag-region={dragRegion}>
+    {#if store.isLocal}<AddFeed />{/if}
     {#if store.accounts.length > 1}<AccountSwitcher />{/if}
     <!-- On macOS, ⌘, comes from the app menu, which a browser doesn't have. -->
     <button
@@ -528,6 +671,30 @@
   .count {
     flex: none;
     color: var(--text-3);
+  }
+
+  /* A feed the last refresh couldn't fetch. */
+  .fetch-error {
+    display: grid;
+    flex: none;
+    color: var(--error);
+  }
+
+  .active .row.selected .fetch-error {
+    color: inherit;
+  }
+
+  input.label {
+    height: 24px;
+    margin-left: -6px;
+    padding: 0 5px;
+    border: 0;
+    border-radius: 5px;
+    background: var(--reader-bg);
+    font: inherit;
+    font-weight: 500;
+    color: var(--text);
+    outline: 2px solid var(--accent);
   }
 
   /* A segmented control: one button per view, over an indicator that slides to the

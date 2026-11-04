@@ -1,13 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default permissions, dragging the window from the toolbars on macOS, and opening web links in the system browser",
+  "description": "Default permissions, dragging the window from the toolbars on macOS, opening web links in the system browser, and asking before unsubscribing",
   "windows": [
     "main"
   ],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
+    "dialog:allow-ask",
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "https://*" }, { "url": "http://*" }]
