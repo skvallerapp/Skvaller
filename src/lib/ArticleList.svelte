@@ -20,6 +20,7 @@
   let height = $state(0)
 
   const items = $derived(store.visible)
+  const selectedIndex = $derived(items.findIndex((a) => a.id === store.articleId))
   const first = $derived(Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN))
   const last = $derived(Math.min(items.length, Math.ceil((scrollTop + height) / ROW_HEIGHT) + OVERSCAN))
   const rows = $derived(items.slice(first, last))
@@ -237,6 +238,16 @@
         <p class="empty">{viewInfo(store.view).empty}</p>
       {:else}
         <div class="spacer" style:height="{items.length * ROW_HEIGHT}px">
+          <!-- The selection's background: one for the list, behind every row's text, so
+               it can slide between rows. It goes when the selection does, so a new list's
+               first selection appears in place. -->
+          {#if selectedIndex !== -1}
+            <div
+              class="highlight"
+              style:height="{ROW_HEIGHT}px"
+              style:transform="translateY({selectedIndex * ROW_HEIGHT}px)"
+            ></div>
+          {/if}
           {#each rows as article, i (article.id)}
             <button
               class="row"
@@ -386,15 +397,35 @@
     flex-direction: column;
     padding: 11px 20px 0 22px;
     text-align: left;
-    overflow: hidden;
+    transition: color 120ms ease-out;
   }
 
   .row:hover {
     background: var(--hover);
   }
 
-  .row.selected {
+  .highlight {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
     background: var(--accent-muted);
+    transition: transform 120ms ease-out;
+  }
+
+  .active .highlight {
+    background: var(--accent);
+  }
+
+  /* The highlight shows the focused selection; a ring would show ahead of its slide.
+     Forced colors (High Contrast) override the color, so the ring shows there. */
+  .row.selected:focus-visible {
+    outline-color: transparent;
+  }
+
+  .meta,
+  .title {
+    transition: color 120ms ease-out;
   }
 
   /* The tint lowers the contrast of dimmer text, so it takes the full text color. */
@@ -404,7 +435,6 @@
   }
 
   .active .row.selected {
-    background: var(--accent);
     color: var(--accent-text);
   }
 
@@ -425,6 +455,7 @@
     width: 7px;
     height: 7px;
     border-radius: 50%;
+    transition: background-color 120ms ease-out;
   }
 
   .row.unread .dot {

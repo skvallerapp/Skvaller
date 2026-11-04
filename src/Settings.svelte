@@ -8,6 +8,7 @@
   import { onMount, tick } from 'svelte'
   import * as api from './lib/api'
   import { serviceTitle } from './lib/format'
+  import { slideHighlight } from './lib/highlight.svelte'
   import { dragRegion, macWindow } from './lib/platform'
   import ShortcutList from './lib/ShortcutList.svelte'
   import { styleRoot } from './lib/theme'
@@ -129,8 +130,33 @@
     signOutButton?.focus()
   }
 
+  let nav: HTMLElement
+  let main: HTMLElement
+
+  slideHighlight(() => nav, () => pane)
+
+  /** The sections in the order they're listed. */
+  const order = $derived<Pane[]>([...panes.map((p) => p.pane), ...(account ? ['account' as const] : [])])
+
+  /** Selects the section above or below. A focused section row passes the focus on. */
+  async function stepPane(delta: 1 | -1) {
+    const next = order[order.indexOf(pane) + delta]
+    if (!next) return
+    const hadFocus = nav.contains(document.activeElement)
+    pane = next
+    await tick()
+    if (hadFocus) nav.querySelector<HTMLElement>('.selected')?.focus({ preventScroll: true })
+  }
+
   // Recording a shortcut takes Escape before it gets here.
   function onkeydown(e: KeyboardEvent) {
+    // ↑ and ↓ switch sections, unless the focus is in the form, whose controls use them.
+    const plain = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
+    if (plain && (e.key === 'ArrowDown' || e.key === 'ArrowUp') && !main.contains(e.target as Node)) {
+      e.preventDefault()
+      void stepPane(e.key === 'ArrowDown' ? 1 : -1)
+      return
+    }
     if (e.key !== 'Escape') return
     if (confirmingSignOut) void cancelSignOut()
     else void api.closeWindow()
@@ -165,7 +191,7 @@
 {/snippet}
 
 <div class="settings" class:mac={macWindow}>
-  <nav aria-label="Settings">
+  <nav aria-label="Settings" bind:this={nav}>
     <div class="drag" data-tauri-drag-region={dragRegion}></div>
     <ul>
       {#each panes as p (p.pane)}
@@ -176,6 +202,7 @@
             aria-current={pane === p.pane ? 'page' : undefined}
             onclick={() => (pane = p.pane)}
           >
+            <span class="highlight"></span>
             <p.icon size={18} strokeWidth={2} />
             {p.label}
           </button>
@@ -189,6 +216,7 @@
         aria-current={pane === 'account' ? 'page' : undefined}
         onclick={() => (pane = 'account')}
       >
+        <span class="highlight"></span>
         <CircleUser size={28} strokeWidth={1.5} />
         <span>
           <strong>{serviceTitle(account.server)}</strong>
@@ -198,7 +226,7 @@
     {/if}
   </nav>
 
-  <main>
+  <main bind:this={main}>
     <header data-tauri-drag-region={dragRegion}>
       <h1>{current.label}</h1>
       {#if pane === 'account' && account}<p>{account.username}</p>{/if}
@@ -379,6 +407,8 @@
     width: 200px;
     padding: 0 8px 10px;
     background: var(--sidebar-bg);
+    /* The row highlights' stacking context: under every row's text, over the background. */
+    isolation: isolate;
   }
 
   /* Room for the window buttons on macOS, which draws them over the window. */
@@ -407,15 +437,45 @@
     padding: 0 10px;
     border-radius: 6px;
     text-align: left;
+    position: relative;
+    transition: color 120ms ease-out;
   }
 
   .nav-row:hover {
     background: var(--hover);
   }
 
+  /* The selection's background, behind every row's text (see nav), so it can slide past
+     other rows. */
+  .highlight {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+  }
+
   .nav-row.selected {
-    background: var(--accent);
     color: var(--accent-text);
+  }
+
+  .nav-row.selected .highlight {
+    background: var(--accent);
+  }
+
+  /* While the form has the focus, the section is muted, as a pane out of focus is in the
+     main window. The tint lowers the contrast of dimmer text, so it takes the full color. */
+  .settings:has(main:focus-within) .nav-row.selected {
+    color: var(--text);
+  }
+
+  .settings:has(main:focus-within) .nav-row.selected .highlight {
+    background: var(--accent-muted);
+  }
+
+  /* The highlight shows the focused selection; a ring would show ahead of its slide.
+     Forced colors (High Contrast) override the color, so the ring shows there. */
+  .nav-row.selected:focus-visible {
+    outline-color: transparent;
   }
 
   .nav-row.account {
@@ -438,6 +498,7 @@
   .account small {
     font-size: 12px;
     color: var(--text-2);
+    transition: color 120ms ease-out;
   }
 
   .account.selected small {
