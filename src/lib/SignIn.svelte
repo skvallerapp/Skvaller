@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
-  import { apiUrl } from './format'
+  import { errorMessage } from './api'
+  import { apiUrl, sentence } from './format'
   import { macWindow } from './platform'
   import type { CommandError } from './types'
 
@@ -46,8 +47,8 @@
       await signIn(server, username, password)
       password = ''
     } catch (err) {
-      const { kind, message } = err as CommandError
-      error = messages[kind] || message
+      // Tauri's own errors are plain strings.
+      error = messages[(err as CommandError | null)?.kind ?? 'other'] || sentence(errorMessage(err))
     } finally {
       busy = false
     }

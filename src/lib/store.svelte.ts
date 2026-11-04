@@ -145,7 +145,8 @@ class Store {
       this.activeId = session.activeId
       // A sync's status may have come while the session was on its way.
       this.status = (session.activeId && this.#statuses.get(session.activeId)) || session.status
-      this.signedIn = session.signedIn
+      // A rejected sign-in that came meanwhile wins.
+      this.signedIn = session.signedIn && !this.status.unauthorized
       if (this.signedIn) await this.#reload()
     }
   }
@@ -159,7 +160,7 @@ class Store {
   }
 
   sync() {
-    if (this.activeId) void api.syncNow(this.activeId)
+    if (this.activeId) api.syncNow(this.activeId).catch((e) => console.error('Syncing failed', e))
   }
 
   feed(id: string): Feed | undefined {

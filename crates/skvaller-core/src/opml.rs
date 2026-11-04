@@ -2,6 +2,8 @@
 //! exported; the local account's can be imported, since a sync account's live on its
 //! server.
 
+use std::collections::HashMap;
+
 use opml::{Body, Head, OPML, Outline};
 use reqwest::Url;
 use serde::Serialize;
@@ -106,75 +108,101 @@ pub fn import(db: &Db, xml: &str) -> Result<ImportReport> {
         return Err(Error::Local("the OPML file nests too deeply".into()));
     }
     let document = OPML::from_str(xml).map_err(|_| Error::Local("not an OPML file".into()))?;
-    let mut report = ImportReport::default();
+    let mut import = Import {
+        db,
+        folders: HashMap::new(),
+        report: ImportReport::default(),
+    };
     for outline in &document.body.outlines {
-        add(db, outline, None, &mut report)?;
+        import.add(outline, None)?;
     }
-    Ok(report)
+    Ok(import.report)
 }
 
-fn add(db: &Db, outline: &Outline, folder: Option<&str>, report: &mut ImportReport) -> Result<()> {
-    let name = || {
-        outline
-            .title
-            .as_deref()
-            .filter(|t| !t.trim().is_empty())
-            .unwrap_or(&outline.text)
-            .trim()
-            .to_owned()
-    };
-    if let Some(xml_url) = &outline.xml_url {
-        if report.added >= MAX_FEEDS {
-            report.skipped += 1;
-            return Ok(());
-        }
-        let Some(url) = Url::parse(xml_url.trim())
-            .ok()
-            .filter(|u| matches!(u.scheme(), "http" | "https"))
-        else {
-            report.skipped += 1;
-            return Ok(());
+struct Import<'a> {
+    db: &'a Db,
+    /// Folder IDs by title, made as the first feed goes in, so no folder is left empty.
+    folders: HashMap<String, String>,
+    report: ImportReport,
+}
+
+impl Import<'_> {
+    /// Adds the outline's feed, or its feeds, into the folder titled `folder`.
+    fn add(&mut self, outline: &Outline, folder: Option<&str>) -> Result<()> {
+        let (db, report) = (self.db, &mut self.report);
+        let name = || {
+            outline
+                .title
+                .as_deref()
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or(&outline.text)
+                .trim()
+                .to_owned()
         };
-        // Subscribed already, maybe by the address after a redirect.
-        if db.feed_by_url(&[url.as_str(), xml_url.trim()])?.is_some() {
-            report.skipped += 1;
+        if let Some(xml_url) = &outline.xml_url {
+            if report.added >= MAX_FEEDS {
+                report.skipped += 1;
+                return Ok(());
+            }
+            let Some(url) = Url::parse(xml_url.trim())
+                .ok()
+                .filter(|u| matches!(u.scheme(), "http" | "https"))
+            else {
+                report.skipped += 1;
+                return Ok(());
+            };
+            // Subscribed already, maybe by the address after a redirect.
+            if db.feed_by_url(&[url.as_str(), xml_url.trim()])?.is_some() {
+                report.skipped += 1;
+                return Ok(());
+            }
+            let site = outline
+                .html_url
+                .as_deref()
+                .and_then(|u| Url::parse(u).ok())
+                .filter(|u| matches!(u.scheme(), "http" | "https"));
+            let icon = site.as_ref().and_then(|s| s.join("/favicon.ico").ok());
+            let title = Some(name()).filter(|t| !t.is_empty());
+            let folder_id = match folder {
+                Some(folder) => match self.folders.get(folder) {
+                    Some(id) => Some(id.clone()),
+                    None => {
+                        let id = db.create_folder(folder)?;
+                        self.folders.insert(folder.to_owned(), id.clone());
+                        Some(id)
+                    }
+                },
+                None => None,
+            };
+            let added = db.add_local_feed(&NewFeed {
+                id: &format!("feed/{url}"),
+                url: url.as_str(),
+                title: title.as_deref().or(url.host_str()).unwrap_or(url.as_str()),
+                site_url: site.as_ref().map(Url::as_str),
+                folder_id: folder_id.as_deref(),
+                icon_url: icon.as_ref().map(Url::as_str),
+            })?;
+            if added {
+                self.report.added += 1;
+            } else {
+                self.report.skipped += 1;
+            }
             return Ok(());
         }
-        let site = outline
-            .html_url
-            .as_deref()
-            .and_then(|u| Url::parse(u).ok())
-            .filter(|u| matches!(u.scheme(), "http" | "https"));
-        let icon = site.as_ref().and_then(|s| s.join("/favicon.ico").ok());
-        let title = Some(name()).filter(|t| !t.is_empty());
-        let added = db.add_local_feed(&NewFeed {
-            id: &format!("feed/{url}"),
-            url: url.as_str(),
-            title: title.as_deref().or(url.host_str()).unwrap_or(url.as_str()),
-            site_url: site.as_ref().map(Url::as_str),
-            folder_id: folder,
-            icon_url: icon.as_ref().map(Url::as_str),
-        })?;
-        if added {
-            report.added += 1;
-        } else {
-            report.skipped += 1;
+        if outline.outlines.is_empty() {
+            return Ok(());
         }
-        return Ok(());
+        let title = name();
+        let inner = match folder {
+            Some(folder) => Some(folder.to_owned()),
+            None if title.is_empty() => None,
+            None => Some(title),
+        };
+        for child in &outline.outlines {
+            self.add(child, inner.as_deref())?;
+        }
+        Ok(())
     }
-    if outline.outlines.is_empty() {
-        return Ok(());
-    }
-    let title = name();
-    let inner = match folder {
-        Some(folder) => Some(folder.to_owned()),
-        None if title.is_empty() => None,
-        None => Some(db.create_folder(&title)?),
-    };
-    for child in &outline.outlines {
-        add(db, child, inner.as_deref(), report)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -266,6 +294,13 @@ mod tests {
                 .collect::<String>()
         );
         assert_eq!(import(&db, &arrows).unwrap().added, 150);
+
+        // A folder only with a feed in it.
+        let other = Db::open_in_memory().unwrap();
+        let empty = r#"<opml version="2.0"><body><outline text="Empty"><outline text=""/></outline>
+            <outline text="Bad"><outline xmlUrl="file:///x"/></outline></body></opml>"#;
+        import(&other, empty).unwrap();
+        assert!(other.folders().unwrap().is_empty());
         // Many feeds side by side are not deep.
         let flat = format!(
             "<opml version=\"2.0\"><body><outline text=\"F\">{}</outline></body></opml>",

@@ -20,6 +20,8 @@ use crate::{Db, Error, Result, SyncReport};
 
 /// Larger feeds are not read. Big ones, with full articles, are a few megabytes.
 const MAX_FEED_BYTES: usize = 10 * 1024 * 1024;
+/// How much of a web page is looked through for a link to its feed.
+const MAX_HEAD_BYTES: usize = 64 * 1024;
 /// Feeds fetched at the same time.
 const PARALLEL: usize = 6;
 /// For the whole response. Generous: a big feed on a slow line takes a while.
@@ -258,11 +260,19 @@ async fn discover_off_runtime(page: &Page) -> Option<Url> {
 /// The feed a web page links to with `<link rel="alternate">`, the first one. `None`
 /// for a page that nests too deeply to parse in good time, like Reader View's guard.
 fn discover(body: &[u8], content_type: &str, base: &Url) -> Option<Url> {
-    let html = decode(body, content_type);
-    if scanned_depth(&html) > MAX_SCANNED_DEPTH {
+    // The links are in the head. Only its start is parsed: however a page nests, so
+    // little can't take long.
+    let start = &body[..body.len().min(MAX_HEAD_BYTES)];
+    let html = decode(start, content_type);
+    let end = html
+        .to_ascii_lowercase()
+        .find("<body")
+        .unwrap_or(html.len());
+    let html = &html[..end];
+    if scanned_depth(html) > MAX_SCANNED_DEPTH {
         return None;
     }
-    let document = Document::from(html.as_str());
+    let document = Document::from(html);
     let types = [
         "application/rss+xml",
         "application/atom+xml",

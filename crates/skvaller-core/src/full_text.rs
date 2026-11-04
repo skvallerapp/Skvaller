@@ -221,15 +221,31 @@ pub(crate) fn scanned_depth(html: &str) -> usize {
     let mut i = 0;
     while let Some(offset) = bytes[i..].iter().position(|&b| b == b'<') {
         i += offset + 1;
-        // Tags in comments and CDATA are text: an end tag there must not close a real
-        // element, or a crafted page reads as flat.
-        for (open, close) in [(&b"!--"[..], &b"-->"[..]), (b"![CDATA[", b"]]>")] {
-            if bytes[i..].starts_with(open) {
-                match find(&bytes[i..], close) {
-                    Some(end) => i += end,
-                    None => return max,
-                }
+        // Tags in comments are text: an end tag there must not close a real element, or
+        // a crafted page reads as flat. Each skip ends at the earliest point a parser
+        // could end it, so nothing a parser reads as a tag goes uncounted.
+        if bytes[i..].starts_with(b"!--") {
+            let body = &bytes[i + 3..];
+            if body.starts_with(b">") || body.starts_with(b"->") {
+                continue;
             }
+            match [&b"-->"[..], b"--!>"]
+                .iter()
+                .filter_map(|end| find(body, end))
+                .min()
+            {
+                Some(end) => i += 3 + end,
+                None => return max,
+            }
+            continue;
+        }
+        // Any other `<!` or `<?`, CDATA included, is a comment to the next `>`.
+        if matches!(bytes.get(i), Some(b'!' | b'?')) {
+            match bytes[i..].iter().position(|&b| b == b'>') {
+                Some(end) => i += end,
+                None => return max,
+            }
+            continue;
         }
         let closing = bytes.get(i) == Some(&b'/');
         let start = i + usize::from(closing);
@@ -255,10 +271,16 @@ pub(crate) fn scanned_depth(html: &str) -> usize {
             }
             continue;
         }
-        // `<path/>` and the like open nothing. The search stops at the next `<`, so a
-        // page of tags that never close can't make it quadratic.
+        // Inside SVG and MathML, `<path/>` and the like open nothing; in HTML, `/>` closes
+        // nothing. The search stops at the next `<`, so a page of tags that never close
+        // can't make it quadratic.
+        let foreign = open
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case("svg") || n.eq_ignore_ascii_case("math"));
         let tag_end = bytes[start..].iter().position(|&b| b == b'>' || b == b'<');
-        if tag_end.is_some_and(|e| bytes[start + e] == b'>' && bytes[start + e - 1] == b'/') {
+        let self_closing =
+            tag_end.is_some_and(|e| bytes[start + e] == b'>' && bytes[start + e - 1] == b'/');
+        if foreign && self_closing {
             continue;
         }
         open.push(name);
@@ -266,8 +288,9 @@ pub(crate) fn scanned_depth(html: &str) -> usize {
         if max > MAX_SCANNED_DEPTH {
             break;
         }
-        // Their content is text up to their own end tag, end tags of others included.
-        if RAW_TEXT.iter().any(|r| r.eq_ignore_ascii_case(name)) {
+        // Their content is text up to their own end tag, end tags of others included;
+        // not in SVG or MathML, where they are elements like any other.
+        if !foreign && RAW_TEXT.iter().any(|r| r.eq_ignore_ascii_case(name)) {
             let end = format!("</{name}");
             let found = bytes[start..]
                 .windows(end.len())
@@ -281,8 +304,9 @@ pub(crate) fn scanned_depth(html: &str) -> usize {
     max
 }
 
-/// Elements whose content a browser reads as text, not tags.
-const RAW_TEXT: [&str; 6] = ["script", "style", "textarea", "title", "xmp", "noscript"];
+/// Elements whose content a browser reads as text, not tags. Not `noscript`: the
+/// parser runs with scripting off, which reads its content as markup.
+const RAW_TEXT: [&str; 5] = ["script", "style", "textarea", "title", "xmp"];
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
@@ -378,6 +402,22 @@ mod tests {
             let crafted = format!("<div>{hidden}").repeat(MAX_SCANNED_DEPTH + 10);
             assert!(scanned_depth(&crafted) > MAX_SCANNED_DEPTH, "{hidden}");
         }
+        // Nor do openings that a parser ends sooner than they seem to, or tags that
+        // look closed or raw but aren't.
+        let divs = "<div>".repeat(MAX_SCANNED_DEPTH + 10);
+        for start in [
+            "<![CDATA[>",
+            "<!-- --!>",
+            "<!-->",
+            "<!--->",
+            "<noscript>",
+            "<svg><title>",
+            "<svg><style>",
+        ] {
+            let page = format!("{start}{divs}");
+            assert!(scanned_depth(&page) > MAX_SCANNED_DEPTH, "{start}");
+        }
+        assert!(scanned_depth(&"<div/>".repeat(MAX_SCANNED_DEPTH + 10)) > MAX_SCANNED_DEPTH);
     }
 
     #[test]
