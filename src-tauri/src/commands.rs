@@ -284,7 +284,7 @@ impl AppState {
 }
 
 /// The name an account gets until the user changes it: "FreshRSS" or the server's host
-/// name, or where the local account's feeds are.
+/// name, or Local.
 fn default_description(kind: &AccountKind) -> String {
     match kind {
         AccountKind::Greader { server, .. } => {
@@ -299,8 +299,7 @@ fn default_description(kind: &AccountKind) -> String {
                 host.split(':').next().unwrap_or(host).to_owned()
             }
         }
-        AccountKind::Local if cfg!(target_os = "macos") => "On This Mac".to_owned(),
-        AccountKind::Local => "On This Device".to_owned(),
+        AccountKind::Local => "Local".to_owned(),
     }
 }
 
@@ -1281,7 +1280,7 @@ mod tests {
             default_description(&greader("https://reader.example.org:8443/reader/api/0")),
             "reader.example.org"
         );
-        assert!(default_description(&AccountKind::Local).starts_with("On This "));
+        assert_eq!(default_description(&AccountKind::Local), "Local");
     }
 
     #[test]
