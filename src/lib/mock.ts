@@ -247,7 +247,7 @@ const commands: Record<string, (args: Args) => unknown> = {
   add_local_account: () => {
     const value = saved()
     const id = String(Math.max(0, ...value.accounts.map((a) => Number(a.id))) + 1)
-    value.accounts.push({ id, description: 'On This Device', kind: 'local', sync: 15, keepReadDays: 30 })
+    value.accounts.push({ id, description: 'Local', kind: 'local', sync: 15, keepReadDays: 30 })
     value.active = id
     save(value)
     return session()

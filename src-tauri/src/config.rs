@@ -479,7 +479,7 @@ mod tests {
         let mut config = Config::default();
         config.accounts.push(Account {
             id: "3".into(),
-            description: "On This Device".into(),
+            description: "Local".into(),
             kind: AccountKind::Local,
             sync: SyncSchedule::OnStart,
             keep_read_days: 14,

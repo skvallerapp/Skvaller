@@ -317,7 +317,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         import(&db, DOC).unwrap();
 
-        let xml = export(&db, "On This Device").unwrap();
+        let xml = export(&db, "Local").unwrap();
         let other = Db::open_in_memory().unwrap();
         assert_eq!(
             import(&other, &xml).unwrap(),
@@ -345,6 +345,6 @@ mod tests {
             feeds
         };
         assert_eq!(summary(&db), summary(&other));
-        assert!(xml.contains("<title>On This Device</title>"));
+        assert!(xml.contains("<title>Local</title>"));
     }
 }
