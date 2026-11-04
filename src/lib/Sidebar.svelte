@@ -14,6 +14,7 @@
   import { dragRegion, inTauri, isMac, macWindow } from './platform'
   import { store } from './store.svelte'
   import type { Feed, Scope } from './types'
+  import { slideHighlight } from './highlight.svelte'
   import { viewInfo, views } from './views'
 
   const current = $derived(viewInfo(store.view))
@@ -103,6 +104,14 @@
 
   let nav: HTMLElement
 
+  // The selection scrolls into view, before its highlight slides there. Each row has its
+  // own highlight, since rows move as folders open and close.
+  $effect(() => {
+    void store.scope
+    untrack(() => nav.querySelector('.row.selected')?.scrollIntoView({ block: 'nearest' }))
+  })
+  slideHighlight(() => nav, () => store.scope)
+
   /** Selects the row above or below, as the arrow keys do while the sidebar is in focus. */
   export async function step(delta: 1 | -1) {
     const all: Scope[] = [{ kind: 'all' }, ...rows]
@@ -120,9 +129,7 @@
     const hadFocus = nav.contains(document.activeElement)
     void store.select(next)
     await tick()
-    const row = nav.querySelector<HTMLElement>('.row.selected')
-    row?.scrollIntoView({ block: 'nearest' })
-    if (hadFocus) row?.focus({ preventScroll: true })
+    if (hadFocus) nav.querySelector<HTMLElement>('.row.selected')?.focus({ preventScroll: true })
   }
 
   function isSelected(scope: Scope): boolean {
@@ -209,6 +216,7 @@
     }}
     oncontextmenu={feed ? (e) => showFeedMenu(e, feed) : undefined}
   >
+    <span class="highlight"></span>
     {#if feed}
       <span class="row-icon thumb">
         {#if feed.icon}<img src={feed.icon} alt="" />{:else}<Rss size={12} strokeWidth={2.5} />{/if}
@@ -369,6 +377,8 @@
   .scroll {
     flex: 1;
     overflow-y: auto;
+    /* The row highlights' stacking context: under every row's text, over the background. */
+    isolation: isolate;
     padding: 0 8px 12px;
   }
 
@@ -424,6 +434,8 @@
     border-radius: 6px;
     text-align: left;
     color: var(--text);
+    position: relative;
+    transition: color 120ms ease-out;
   }
 
   /* Lines the feed's icon up with its folder's title. */
@@ -435,9 +447,24 @@
     background: var(--hover);
   }
 
+  /* The selection's background, behind every row's text (see .scroll), so it can slide
+     past other rows. */
+  .highlight {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+  }
+
   /* The tint lowers the contrast of dimmer text, so it takes the full text color. */
-  .row.selected {
+  .row.selected .highlight {
     background: var(--accent-muted);
+  }
+
+  /* The highlight shows the focused selection; a ring would show ahead of its slide.
+     Forced colors (High Contrast) override the color, so the ring shows there. */
+  .row.selected:focus-visible {
+    outline-color: transparent;
   }
 
   .row.selected .count {
@@ -445,8 +472,11 @@
   }
 
   .active .row.selected {
-    background: var(--accent);
     color: var(--accent-text);
+  }
+
+  .active .row.selected .highlight {
+    background: var(--accent);
   }
 
   .row :global(.row-icon) {
@@ -483,6 +513,11 @@
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+
+  .count,
+  .disclosure {
+    transition: color 120ms ease-out;
   }
 
   .count {
