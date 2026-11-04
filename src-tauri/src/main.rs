@@ -12,8 +12,8 @@ const SETTINGS_MENU_ITEM: &str = "settings";
 
 fn main() {
     let builder = tauri::Builder::default();
-    // macOS has an app menu, so Settings goes there. Windows and Linux have no menu bar;
-    // the UI opens Settings from a button and Ctrl+, instead.
+    // macOS has an app menu, so Settings is there too, with ⌘,. Windows and Linux have no
+    // menu bar; they open Settings from the sidebar button and Ctrl+, only.
     #[cfg(target_os = "macos")]
     let builder = builder.menu(menu);
     builder
