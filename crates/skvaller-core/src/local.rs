@@ -59,11 +59,15 @@ pub async fn refresh(db: &Db, now: i64, keep_read_days: u32) -> Result<SyncRepor
             (feed, fetched, permit)
         });
     }
-    let mut fetched = 0;
+    let (mut fetched, mut tried, mut reached) = (0, 0, 0);
     while let Some(done) = fetches.join_next().await {
         let Ok((feed, result, _permit)) = done else {
             continue;
         };
+        tried += 1;
+        if !matches!(result, Err(FetchError::Unreachable(_))) {
+            reached += 1;
+        }
         match result {
             Ok(Some(page)) => match parse(&page) {
                 Some(parsed) => {
@@ -72,8 +76,13 @@ pub async fn refresh(db: &Db, now: i64, keep_read_days: u32) -> Result<SyncRepor
                 None => db.set_fetch_error(&feed.id, Some("not a feed"))?,
             },
             Ok(None) => db.set_fetch_error(&feed.id, None)?,
-            Err(message) => db.set_fetch_error(&feed.id, Some(&message))?,
+            Err(e) => db.set_fetch_error(&feed.id, Some(&e.message()))?,
         }
+    }
+    // Every feed out of reach is more likely the network than every site down: a
+    // failure, so it is tried again, as a sync account's would be.
+    if tried > 0 && reached == 0 {
+        return Err(Error::Local("could not reach any feed".into()));
     }
     let pruned = db.prune((now - i64::from(keep_read_days) * DAY) * 1000)?;
     fetch_icons(db, |url| Url::parse(url).ok(), None).await?;
@@ -93,7 +102,7 @@ pub async fn subscribe(db: &Db, url: &str, folder_id: Option<&str>, now: i64) ->
     let url = with_scheme(url).ok_or(Error::BadUrl)?;
     let page = fetch(&http, url.as_str(), None)
         .await
-        .map_err(Error::Local)?
+        .map_err(|e| Error::Local(e.message()))?
         .ok_or(Error::NoFeed)?;
     let (page, parsed) = match parse(&page) {
         Some(parsed) => (page, parsed),
@@ -101,7 +110,7 @@ pub async fn subscribe(db: &Db, url: &str, folder_id: Option<&str>, now: i64) ->
             let link = discover_off_runtime(&page).await.ok_or(Error::NoFeed)?;
             let page = fetch(&http, link.as_str(), None)
                 .await
-                .map_err(Error::Local)?
+                .map_err(|e| Error::Local(e.message()))?
                 .ok_or(Error::NoFeed)?;
             let parsed = parse(&page).ok_or(Error::NoFeed)?;
             (page, parsed)
@@ -153,10 +162,10 @@ async fn fetch(
     http: &reqwest::Client,
     url: &str,
     known: Option<&LocalFeed>,
-) -> Result<Option<Page>, String> {
-    let url = Url::parse(url).map_err(|_| "not a valid address".to_owned())?;
+) -> Result<Option<Page>, FetchError> {
+    let url = Url::parse(url).map_err(|_| FetchError::Refused("not a valid address".to_owned()))?;
     if !matches!(url.scheme(), "http" | "https") {
-        return Err("not an http or https address".into());
+        return Err(FetchError::Refused("not an http or https address".into()));
     }
     let mut req = http.get(url);
     if let Some(feed) = known {
@@ -173,16 +182,16 @@ async fn fetch(
         return Ok(None);
     }
     if !status.is_success() {
-        return Err(match status.canonical_reason() {
+        return Err(FetchError::Refused(match status.canonical_reason() {
             Some(reason) => format!("the server answered {} {reason}", status.as_u16()),
             None => format!("the server answered {}", status.as_u16()),
-        });
+        }));
     }
     if res
         .content_length()
         .is_some_and(|n| n > MAX_FEED_BYTES as u64)
     {
-        return Err("the feed is too large".into());
+        return Err(FetchError::Refused("the feed is too large".into()));
     }
     let header = |name| {
         res.headers()
@@ -200,7 +209,7 @@ async fn fetch(
     while let Some(chunk) = res.chunk().await.map_err(|e| network_error(&e))? {
         body.extend_from_slice(&chunk);
         if body.len() > MAX_FEED_BYTES {
-            return Err("the feed is too large".into());
+            return Err(FetchError::Refused("the feed is too large".into()));
         }
     }
     Ok(Some(Page {
@@ -212,14 +221,30 @@ async fn fetch(
     }))
 }
 
-fn network_error(e: &reqwest::Error) -> String {
-    if e.is_timeout() {
+/// Why a fetch failed, said for the user.
+enum FetchError {
+    /// No answer: likely the network, so a refresh that gets only these is offline.
+    Unreachable(String),
+    /// An answer that can't be used.
+    Refused(String),
+}
+
+impl FetchError {
+    fn message(self) -> String {
+        match self {
+            FetchError::Unreachable(m) | FetchError::Refused(m) => m,
+        }
+    }
+}
+
+fn network_error(e: &reqwest::Error) -> FetchError {
+    FetchError::Unreachable(if e.is_timeout() {
         "the server took too long to answer".into()
     } else if e.is_connect() {
         "could not reach the server".into()
     } else {
         e.to_string()
-    }
+    })
 }
 
 /// The page as an RSS, Atom or JSON feed, if it is one.
