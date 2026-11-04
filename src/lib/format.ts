@@ -36,16 +36,6 @@ export function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 }
 
-/** "FreshRSS" for FreshRSS's API path, the host name for other servers. */
-export function serviceTitle(server: string): string {
-  try {
-    const url = new URL(server)
-    return url.pathname.endsWith('/api/greader.php') ? 'FreshRSS' : url.hostname
-  } catch {
-    return server
-  }
-}
-
 /**
  * Completes what the user typed into an API URL: `https://` when no scheme is given,
  * and FreshRSS's `/api/greader.php` when there is no path.

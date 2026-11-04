@@ -291,6 +291,8 @@ const commands: Record<string, (args: Args) => unknown> = {
     d.folders = d.folders.filter((f) => f.id !== folderId)
     for (const f of d.feeds) if (f.folderId === folderId) f.folderId = null
   },
+  import_opml: () => ({ added: 3, skipped: 1 }),
+  export_opml: () => true,
   set_active_account: ({ id }) => save({ ...saved(), active: id as string }),
   update_account: ({ id, description, sync, keepReadDays }) => {
     const value = saved()

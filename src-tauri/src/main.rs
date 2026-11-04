@@ -70,6 +70,8 @@ fn main() {
             commands::create_folder,
             commands::rename_folder,
             commands::delete_folder,
+            commands::import_opml,
+            commands::export_opml,
             commands::open_settings,
             commands::take_settings_pane,
         ])

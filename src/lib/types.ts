@@ -13,7 +13,7 @@ export interface Feed {
   icon: string | null
   /** Open its articles in Reader View. A local setting. */
   readerView: boolean
-  /** The local account's feeds: the feed's address, and its web site's. */
+  /** The feed's address and its web site's, if known. */
   url: string | null
   siteUrl: string | null
   /** The local account's feeds: why the last fetch failed. */

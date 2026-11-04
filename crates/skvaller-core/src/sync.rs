@@ -197,6 +197,8 @@ fn feed_row(sub: Subscription) -> FeedRow {
         title: sub.title,
         folder,
         icon_url: sub.icon_url,
+        url: sub.url,
+        site_url: sub.html_url,
     }
 }
 
