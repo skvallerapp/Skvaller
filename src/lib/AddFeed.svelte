@@ -1,6 +1,7 @@
 <script lang="ts">
   import Plus from '@lucide/svelte/icons/plus'
   import { tick } from 'svelte'
+  import { sentence } from './format'
   import { store } from './store.svelte'
   import type { CommandError } from './types'
 
@@ -21,6 +22,7 @@
   const messages: Partial<Record<CommandError['kind'], string>> = {
     noFeed: 'No feed found at this address.',
     badUrl: 'Enter a web address, such as example.com or example.com/feed.xml.',
+    network: 'Could not reach the site. Check the address and your connection.',
   }
 
   async function toggle() {
@@ -52,7 +54,7 @@
       close()
     } catch (err) {
       const { kind, message } = err as CommandError
-      error = messages[kind] ?? message
+      error = messages[kind] ?? sentence(message)
       busy = false
     }
   }

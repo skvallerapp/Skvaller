@@ -94,6 +94,7 @@ ALTER TABLE feeds ADD COLUMN site_url TEXT;
 ALTER TABLE feeds ADD COLUMN etag TEXT;
 ALTER TABLE feeds ADD COLUMN last_modified TEXT;
 ALTER TABLE feeds ADD COLUMN fetch_error TEXT; -- why the last fetch failed
+CREATE INDEX feeds_by_url ON feeds (url);
 -- The local account's entries the feed still lists. One pruned from `articles` stays
 -- here, so the next fetch doesn't bring it back as new.
 CREATE TABLE seen (

@@ -32,6 +32,14 @@ export function formatFull(ms: number): string {
   return full.format(ms)
 }
 
+/** A message as a sentence: capitalized, with a full stop. Rust's errors are written
+ * lowercase, to follow other text. */
+export function sentence(message: string): string {
+  const s = message.trim()
+  if (!s) return s
+  return s[0].toUpperCase() + s.slice(1) + (/[.!?]$/.test(s) ? '' : '.')
+}
+
 export function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 }

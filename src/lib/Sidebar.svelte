@@ -182,6 +182,9 @@
     if (feedMenu && key === feedMenuKey) return feedMenu
     const old = feedMenu
     feedMenuKey = key
+    // As of now: the account may change while the menu is made.
+    const local = store.isLocal
+    const folders = store.folders
     const menu = (async (): Promise<FeedMenu> => {
       void old?.then(closeAll).catch(() => {})
       const readerView = await CheckMenuItem.new({
@@ -191,12 +194,12 @@
           if (feed) store.setFeedReaderView(feed.id, !feed.readerView)
         },
       })
-      if (!store.isLocal) {
+      if (!local) {
         const menu = await Menu.new({ items: [readerView] })
         return { menu, readerView, moves: [], resources: [readerView, menu] }
       }
       const moves: [string | null, CheckMenuItem][] = []
-      for (const [id, text] of [[null, 'No Folder'], ...store.folders.map((f) => [f.id, f.title])])
+      for (const [id, text] of [[null, 'No Folder'], ...folders.map((f) => [f.id, f.title])])
         moves.push([id, await CheckMenuItem.new({ text: text!, action: () => store.moveFeed(menuFeedId, id) })])
       const items = [
         readerView,
