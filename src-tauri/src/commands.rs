@@ -303,6 +303,31 @@ fn default_description(kind: &AccountKind) -> String {
     }
 }
 
+/// Shows the unread articles of every account on the app icon, or nothing when the
+/// setting is off or there are none. Windows has no such badge.
+pub fn update_badge(app: &AppHandle) {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let state = app.state::<AppState>();
+        let count: i64 = if state.config().settings.unread_badge {
+            state
+                .runtimes()
+                .iter()
+                .filter_map(|rt| rt.db.unread_total().ok())
+                .sum()
+        } else {
+            0
+        };
+        if let Some(window) = app.get_webview_window("main")
+            && let Err(e) = window.set_badge_count((count > 0).then_some(count))
+        {
+            eprintln!("Setting the unread badge failed: {e}");
+        }
+    }
+    #[cfg(target_os = "windows")]
+    let _ = app;
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -722,6 +747,7 @@ pub async fn remove_account(
             e.message
         );
     }
+    update_badge(&app);
     if !remove_db_files(&state.accounts_dir, &id) {
         let _ = state.update_config(|config| config.removed.push(id.clone()));
     }
@@ -822,15 +848,18 @@ pub async fn set_feed_reader_view(
 
 #[tauri::command]
 pub async fn set_read(
+    app: AppHandle,
     state: State<'_, AppState>,
     account_id: String,
     ids: Vec<String>,
     read: bool,
 ) -> CommandResult<()> {
-    Ok(state
+    state
         .runtime(&account_id)?
         .db
-        .set_read(&parse_ids(&ids)?, read)?)
+        .set_read(&parse_ids(&ids)?, read)?;
+    update_badge(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -880,11 +909,14 @@ pub async fn subscribe(
 /// Removes a feed of the local account, with its articles.
 #[tauri::command]
 pub async fn unsubscribe(
+    app: AppHandle,
     state: State<'_, AppState>,
     account_id: String,
     feed_id: String,
 ) -> CommandResult<()> {
-    Ok(local(&state, &account_id)?.db.unsubscribe(&feed_id)?)
+    local(&state, &account_id)?.db.unsubscribe(&feed_id)?;
+    update_badge(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1056,13 +1088,17 @@ pub async fn set_settings(
     state: State<'_, AppState>,
     settings: Settings,
 ) -> CommandResult<()> {
-    let mut theme_changed = false;
+    let (mut theme_changed, mut badge_changed) = (false, false);
     state.update_config(|config| {
         theme_changed = config.settings.theme != settings.theme;
+        badge_changed = config.settings.unread_badge != settings.unread_badge;
         config.settings = settings.clone();
     })?;
     if theme_changed {
         app.set_theme(settings.theme.native());
+    }
+    if badge_changed {
+        update_badge(&app);
     }
     let _ = app.emit(SETTINGS_EVENT, settings);
     Ok(())
@@ -1228,6 +1264,7 @@ async fn run_sync(app: &AppHandle, rt: &Arc<Runtime>) {
         *lock(&rt.last_error) = status.error.clone();
         let synced = status.error.is_none();
         emit(status);
+        update_badge(app);
         Some(synced)
     };
 
