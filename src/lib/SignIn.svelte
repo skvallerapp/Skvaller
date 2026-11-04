@@ -1,18 +1,33 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte'
   import { apiUrl } from './format'
   import { macWindow } from './platform'
-  import { store } from './store.svelte'
   import type { CommandError } from './types'
 
-  let server = $state(store.account?.server ?? '')
-  let username = $state(store.account?.username ?? '')
+  interface Props {
+    /** Signs in. A thrown `CommandError` shows under the form. */
+    submit: (server: string, username: string, password: string) => Promise<void>
+    /** Fills in the form, to sign in to this account again. */
+    account?: { server: string; username: string } | null
+    /** Shown until the next attempt. */
+    initialError?: string | null
+    /** In the Settings window, instead of the whole main window. */
+    embedded?: boolean
+    /** Under the form, such as other ways to add an account. */
+    children?: Snippet
+  }
+
+  let { submit: signIn, account = null, initialError = null, embedded = false, children }: Props = $props()
+
+  // Filled in once; the user's typing wins after that.
+  // svelte-ignore state_referenced_locally
+  let server = $state(account?.server ?? '')
+  // svelte-ignore state_referenced_locally
+  let username = $state(account?.username ?? '')
   let password = $state('')
   let busy = $state(false)
-  let error = $state<string | null>(
-    store.status.unauthorized
-      ? 'The server no longer accepts the sign-in. Sign in again.'
-      : store.status.error,
-  )
+  // svelte-ignore state_referenced_locally
+  let error = $state<string | null>(initialError)
 
   const messages: Record<CommandError['kind'], string> = {
     unauthorized: 'Wrong username or API password.',
@@ -27,7 +42,8 @@
     error = null
     try {
       server = apiUrl(server)
-      await store.signIn(server, username, password)
+      await signIn(server, username, password)
+      password = ''
     } catch (err) {
       const { kind, message } = err as CommandError
       error = messages[kind] || message
@@ -37,14 +53,14 @@
   }
 </script>
 
-{#if macWindow}
+{#if macWindow && !embedded}
   <!-- The title bar is hidden on macOS: an empty strip to drag the window by. Not the
        whole screen, so text stays selectable and the scrollbar keeps working. -->
   <div class="drag-strip" data-tauri-drag-region></div>
 {/if}
-<main class="sign-in">
+<svelte:element this={embedded ? 'div' : 'main'} class="sign-in" class:embedded>
   <form onsubmit={submit}>
-    <h1>Sign in to your sync service</h1>
+    {#if !embedded}<h1>Sign in to your sync service</h1>{/if}
     <p class="intro">
       Skvaller reads your feeds from a service that speaks the Google Reader API, such as FreshRSS.
     </p>
@@ -76,8 +92,9 @@
     {#if error}<p class="error" role="alert">{error}</p>{/if}
 
     <button class="primary" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+    {@render children?.()}
   </form>
-</main>
+</svelte:element>
 
 <style>
   .drag-strip {
@@ -95,6 +112,18 @@
     padding: 24px;
     background: var(--sidebar-bg);
     overflow-y: auto;
+  }
+
+  .sign-in.embedded {
+    display: block;
+    height: auto;
+    padding: 0;
+    background: none;
+    overflow: visible;
+  }
+
+  .embedded form {
+    max-width: none;
   }
 
   form {

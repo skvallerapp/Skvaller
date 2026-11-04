@@ -2,8 +2,6 @@
 import type { Settings, SyncStatus } from './types'
 
 export const defaultSettings: Settings = {
-  syncIntervalMinutes: 15,
-  keepReadDays: 30,
   confirmMarkAllRead: true,
   theme: 'system',
   animations: true,
@@ -13,4 +11,4 @@ export const defaultSettings: Settings = {
   shortcuts: {},
 }
 
-export const idleStatus: SyncStatus = { syncing: false, lastSync: null, error: null, unauthorized: false }
+export const idleStatus: SyncStatus = { accountId: '', syncing: false, lastSync: null, error: null, unauthorized: false }

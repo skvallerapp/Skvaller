@@ -1,15 +1,15 @@
 // A stand-in for the Tauri commands, so the UI runs in a plain browser during
 // `bun run dev`. It is loaded only in development and outside Tauri (see api.ts).
 import { defaultSettings } from './defaults'
-import type { Article, Feed, Folder, Library, Selection, Session, Settings, SyncStatus } from './types'
+import type { Account, Article, Feed, Folder, Library, Selection, Session, Settings, SyncStatus } from './types'
 
-const folders: Folder[] = [
+const allFolders: Folder[] = [
   { id: 'f-tech', title: 'Technology' },
   { id: 'f-design', title: 'Design' },
   { id: 'f-news', title: 'News' },
 ]
 
-const feeds: Feed[] = [
+const allFeeds: Feed[] = [
   { id: 'hn', title: 'Hacker News', folderId: 'f-tech', subscribed: true, icon: null, readerView: false },
   { id: 'lwn', title: 'LWN.net', folderId: 'f-tech', subscribed: true, icon: null, readerView: true },
   { id: 'rust', title: 'This Week in Rust', folderId: 'f-tech', subscribed: true, icon: null, readerView: false },
@@ -35,13 +35,38 @@ const icons: Record<string, string> = {
   daring: icon('#4a525a', '★'),
   bbc: icon('#bb1919', 'B'),
 }
-for (const f of feeds) f.icon = icons[f.id] ?? null
+for (const f of allFeeds) f.icon = icons[f.id] ?? null
 
 const now = Date.now()
-const articles: Article[] = Array.from({ length: 5000 }, (_, i) => {
+
+interface Data {
+  folders: Folder[]
+  feeds: Feed[]
+  articles: Article[]
+}
+
+/** Each account's feeds and articles. The first has them all; others have some, so
+ * switching shows a difference. */
+const data = new Map<string, Data>()
+function dataOf(id: string): Data {
+  let d = data.get(id)
+  if (!d) {
+    const first = id === '1'
+    const feeds = first ? allFeeds : allFeeds.filter((_, i) => i % 2 === 1).map((f) => ({ ...f }))
+    const folders = allFolders.filter((f) => feeds.some((feed) => feed.folderId === f.id))
+    d = { folders, feeds, articles: makeArticles(feeds, first ? 5000 : 300, Number(id) * 100_000) }
+    data.set(id, d)
+  }
+  return d
+}
+
+// 5,000 articles for the first account, to test scrolling. Deterministic, so reloads
+// look the same.
+const makeArticles = (feeds: Feed[], count: number, idBase: number): Article[] =>
+  Array.from({ length: count }, (_, i) => {
   const feed = feeds[i % feeds.length]
   return {
-    id: String(1_000_000 + i),
+    id: String(idBase + 1_000_000 + i),
     feedId: feed.id,
     title: `${feed.title} article ${5000 - i}: a headline long enough to wrap onto a second line`,
     author: i % 3 === 0 ? '' : `Author ${i % 17}`,
@@ -54,7 +79,12 @@ const articles: Article[] = Array.from({ length: 5000 }, (_, i) => {
   }
 })
 
-const status: SyncStatus = { syncing: false, lastSync: now - 5 * 60_000, error: null, unauthorized: false }
+const statuses = new Map<string, SyncStatus>()
+function statusOf(id: string): SyncStatus {
+  let s = statuses.get(id)
+  if (!s) statuses.set(id, (s = { accountId: id, syncing: false, lastSync: now - 5 * 60_000, error: null, unauthorized: false }))
+  return s
+}
 
 // Events reach every window of the app, like Tauri's, through a BroadcastChannel.
 // Settings live in localStorage, so the Settings window and the main window share them.
@@ -75,7 +105,60 @@ export async function listen(event: string, handler: Handler): Promise<() => voi
 }
 
 const SETTINGS_KEY = 'skvaller.mock.settings'
-const SIGNED_OUT_KEY = 'skvaller.mock.signedOut'
+/** `{ accounts, active }`, as config.json has them. Missing: one FreshRSS account. */
+const ACCOUNTS_KEY = 'skvaller.mock.accounts'
+const PANE_KEY = 'skvaller.mock.settingsPane'
+
+// Omit on each member of the union, so `kind` still tells them apart.
+type SavedAccount = Account extends infer A ? (A extends Account ? Omit<A, 'unread'> : never) : never
+interface SavedAccounts {
+  accounts: SavedAccount[]
+  active: string | null
+}
+
+const demoAccount: SavedAccount = {
+  id: '1',
+  description: 'FreshRSS',
+  kind: 'greader',
+  server: 'https://rss.example.com/api/greader.php',
+  username: 'demo',
+  sync: 15,
+  keepReadDays: 30,
+}
+
+function saved(): SavedAccounts {
+  try {
+    const value = localStorage.getItem(ACCOUNTS_KEY)
+    if (value) return JSON.parse(value)
+  } catch {
+    // The default below.
+  }
+  return { accounts: [demoAccount], active: '1' }
+}
+
+function save(value: SavedAccounts) {
+  localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(value))
+  emit('accounts-changed', session())
+}
+
+function active(): Data {
+  return dataOf(saved().active ?? '1')
+}
+
+function accounts(): Account[] {
+  return saved().accounts.map((a) => ({ ...a, unread: dataOf(a.id).articles.filter((x) => !x.read).length }) as Account)
+}
+
+function session(): Session {
+  const { active } = saved()
+  return {
+    accounts: accounts(),
+    activeId: active,
+    signedIn: active !== null,
+    status: active ? { ...statusOf(active) } : { accountId: '', syncing: false, lastSync: null, error: null, unauthorized: false },
+    settings: settings(),
+  }
+}
 function settings(): Settings {
   try {
     return { ...defaultSettings, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') }
@@ -84,7 +167,7 @@ function settings(): Settings {
   }
 }
 
-function matches(a: Article, { view, scope }: Selection): boolean {
+function matches(a: Article, { view, scope }: Selection, feeds: Feed[]): boolean {
   if (view === 'unread' ? a.read : view === 'starred' && !a.starred) return false
   switch (scope.kind) {
     case 'all':
@@ -96,23 +179,30 @@ function matches(a: Article, { view, scope }: Selection): boolean {
   }
 }
 
-function byFeed(keep: (a: Article) => boolean): Record<string, number> {
+function byFeed(articles: Article[], keep: (a: Article) => boolean): Record<string, number> {
   const counts: Record<string, number> = {}
   for (const a of articles) if (keep(a)) counts[a.feedId] = (counts[a.feedId] ?? 0) + 1
   return counts
 }
 
 function library(): Library {
-  const counts = { unreadByFeed: byFeed((a) => !a.read), starredByFeed: byFeed((a) => a.starred) }
+  const { folders, feeds, articles } = active()
+  const counts = {
+    unreadByFeed: byFeed(articles, (a) => !a.read),
+    starredByFeed: byFeed(articles, (a) => a.starred),
+  }
   return { folders, feeds, counts }
 }
 
 function update(ids: string[], change: Partial<Article>) {
   const set = new Set(ids)
-  for (const a of articles) if (set.has(a.id)) Object.assign(a, change)
+  for (const a of active().articles) if (set.has(a.id)) Object.assign(a, change)
 }
 
 function sync() {
+  const id = saved().active
+  if (!id) return
+  const status = statusOf(id)
   status.syncing = true
   emit('sync-status', { ...status })
   setTimeout(() => {
@@ -125,23 +215,45 @@ function sync() {
 type Args = Record<string, unknown>
 
 const commands: Record<string, (args: Args) => unknown> = {
-  session: (): Session => ({
-    account: { server: 'https://rss.example.com/api/greader.php', username: 'demo' },
-    signedIn: localStorage.getItem(SIGNED_OUT_KEY) === null,
-    status: { ...status },
-    settings: settings(),
-  }),
-  sign_in: () => {
-    localStorage.removeItem(SIGNED_OUT_KEY)
-    const session = commands.session({}) as Session
-    emit('signed-in', session.account)
-    return session
+  session,
+  accounts,
+  sign_in: ({ server, username }) => {
+    const value = saved()
+    let account = value.accounts.find((a) => a.kind === 'greader' && a.server === server && a.username === username)
+    if (!account) {
+      const id = String(Math.max(0, ...value.accounts.map((a) => Number(a.id))) + 1)
+      account = { ...demoAccount, id, server: server as string, username: username as string, description: new URL(server as string).hostname }
+      value.accounts.push(account)
+    }
+    value.active = account.id
+    save(value)
+    return session()
+  },
+  set_active_account: ({ id }) => save({ ...saved(), active: id as string }),
+  update_account: ({ id, description, sync, keepReadDays }) => {
+    const value = saved()
+    const change = Object.fromEntries(
+      Object.entries({ description, sync, keepReadDays }).filter(([, v]) => v !== undefined),
+    )
+    value.accounts = value.accounts.map((a) => (a.id === id ? { ...a, ...change } : a))
+    save(value)
+  },
+  remove_account: ({ id }) => {
+    const value = saved()
+    value.accounts = value.accounts.filter((a) => a.id !== id)
+    if (value.active === id) value.active = value.accounts[0]?.id ?? null
+    data.delete(id as string)
+    save(value)
+    if (value.accounts.length === 0) window.close()
   },
   sync_now: () => sync(),
   library,
-  articles: ({ selection }) => articles.filter((a) => matches(a, selection as Selection)).map((a) => ({ ...a })),
+  articles: ({ selection }) => {
+    const { articles, feeds } = active()
+    return articles.filter((a) => matches(a, selection as Selection, feeds)).map((a) => ({ ...a }))
+  },
   article_html: ({ id }) => {
-    const a = articles.find((x) => x.id === id)
+    const a = active().articles.find((x) => x.id === id)
     return a
       ? `<p>${a.summary}</p><h2>A subheading</h2><p>Mock article body for <a href="${a.url}">${a.title}</a>.</p>` +
           '<blockquote>A quoted passage.</blockquote><pre><code>let x = 42;</code></pre>'
@@ -150,7 +262,7 @@ const commands: Record<string, (args: Args) => unknown> = {
   // Takes a moment, like fetching a page. xkcd's pages have nothing readable.
   full_text: async ({ id }) => {
     await new Promise((r) => setTimeout(r, 800))
-    const a = articles.find((x) => x.id === id)
+    const a = active().articles.find((x) => x.id === id)
     if (!a || a.feedId === 'xkcd') throw { kind: 'other', message: 'Nothing to show in Reader View' }
     return (
       `<p>${a.summary}</p><p>This is the <strong>Reader View</strong> of the article: the full text ` +
@@ -160,7 +272,7 @@ const commands: Record<string, (args: Args) => unknown> = {
     )
   },
   set_feed_reader_view: ({ feedId, on }) => {
-    const feed = feeds.find((f) => f.id === feedId)
+    const feed = active().feeds.find((f) => f.id === feedId)
     if (feed) feed.readerView = on as boolean
   },
   set_read: ({ ids, read }) => update(ids as string[], { read: read as boolean }),
@@ -169,12 +281,18 @@ const commands: Record<string, (args: Args) => unknown> = {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
     emit('settings-changed', settings)
   },
-  sign_out: () => {
-    localStorage.setItem(SIGNED_OUT_KEY, '1')
-    emit('signed-out', null)
-    window.close()
+  open_settings: ({ pane }) => {
+    if (pane) {
+      localStorage.setItem(PANE_KEY, pane as string)
+      emit('settings-pane', pane)
+    }
+    window.open('/settings.html', 'settings', 'width=720,height=520')
   },
-  open_settings: () => void window.open('/settings.html', 'settings', 'width=720,height=520'),
+  take_settings_pane: () => {
+    const pane = localStorage.getItem(PANE_KEY)
+    localStorage.removeItem(PANE_KEY)
+    return pane
+  },
 }
 
 export async function invoke<T>(cmd: string, args: Args = {}): Promise<T> {

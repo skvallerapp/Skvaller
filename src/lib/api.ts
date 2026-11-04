@@ -4,7 +4,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { inTauri } from './platform'
-import type { Account, Article, Library, Selection, Session, Settings, SyncStatus } from './types'
+import type { AccountChange, Article, Library, Selection, Session, Settings, SyncStatus } from './types'
 
 // Outside Tauri (a plain browser during `bun run dev`), use mock data instead.
 const mock = import.meta.env.DEV && !inTauri ? import('./mock') : null
@@ -14,10 +14,22 @@ const call = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
 
 export const session = () => call<Session>('session')
 
+/** Adds the account and makes it active, or signs in again to one already added. */
 export const signIn = (server: string, username: string, password: string) =>
   call<Session>('sign_in', { server, username, password })
 
-/** Starts a sync. The outcome arrives through `onSyncStatus`. */
+export const accounts = () => call<Session['accounts']>('accounts')
+
+/** Shows another account in the main window. Every window gets `onAccountsChanged`. */
+export const setActiveAccount = (id: string) => call<void>('set_active_account', { id })
+
+export const updateAccount = (id: string, change: AccountChange) =>
+  call<void>('update_account', { id, ...change })
+
+/** Removes the account and its articles. Closes the Settings window when it was the last. */
+export const removeAccount = (id: string) => call<void>('remove_account', { id })
+
+/** Starts a sync of the active account. The outcome arrives through `onSyncStatus`. */
 export const syncNow = () => call<void>('sync_now')
 
 export const library = () => call<Library>('library')
@@ -55,10 +67,11 @@ export function openInBrowser(url: string, base?: string) {
 
 export const setSettings = (settings: Settings) => call<void>('set_settings', { settings })
 
-/** Signs out and removes the account's articles. Closes the Settings window. */
-export const signOut = () => call<void>('sign_out')
+/** Opens the Settings window, at `pane` if given. */
+export const openSettings = (pane?: string) => call<void>('open_settings', { pane })
 
-export const openSettings = () => call<void>('open_settings')
+/** The pane `openSettings` asked for, once. */
+export const takeSettingsPane = () => call<string | null>('take_settings_pane')
 
 function on<T>(event: string, handler: (payload: T) => void): Promise<UnlistenFn> {
   return mock
@@ -72,9 +85,11 @@ export const onSyncStatus = (handler: (status: SyncStatus) => void) => on('sync-
 export const onSettingsChanged = (handler: (settings: Settings) => void) =>
   on('settings-changed', handler)
 
-export const onSignedIn = (handler: (account: Account) => void) => on('signed-in', handler)
+/** Accounts were added, changed or removed, or another one became active. */
+export const onAccountsChanged = (handler: (session: Session) => void) => on('accounts-changed', handler)
 
-export const onSignedOut = (handler: () => void) => on('signed-out', handler)
+/** The Settings window, open already, is asked to show a pane. */
+export const onSettingsPane = (handler: (pane: string) => void) => on('settings-pane', handler)
 
 /** The message of a command error, or of anything else thrown. */
 export const errorMessage = (e: unknown): string =>

@@ -7,6 +7,7 @@ import type {
   Feed,
   Folder,
   Scope,
+  Session,
   Settings,
   SyncStatus,
   View,
@@ -17,8 +18,11 @@ import type {
 class Store {
   /** False until the session is known, so the app doesn't flash the sign-in screen. */
   ready = $state(false)
+  /** The active account can sync. */
   signedIn = $state(false)
-  account = $state<Account | null>(null)
+  accounts = $state.raw<Account[]>([])
+  activeId = $state<string | null>(null)
+  readonly account: Account | null = $derived(this.accounts.find((a) => a.id === this.activeId) ?? null)
   status = $state<SyncStatus>({ ...idleStatus })
   /** Until `init` loads them. */
   settings = $state<Settings>({ ...defaultSettings })
@@ -89,13 +93,8 @@ class Store {
       // Listen first, so a sync that finishes meanwhile is not missed.
       await api.onSyncStatus((status) => this.#onStatus(status))
       await api.onSettingsChanged((settings) => (this.settings = settings))
-      await api.onSignedOut(() => this.#onSignedOut())
-      const session = await api.session()
-      this.account = session.account
-      this.status = session.status
-      this.settings = session.settings
-      this.signedIn = session.signedIn
-      if (this.signedIn) await this.#reload()
+      await api.onAccountsChanged((session) => void this.#applySession(session))
+      await this.#applySession(await api.session())
     } catch (e) {
       // Such as no keychain available. The sign-in screen shows it.
       this.status = { ...this.status, error: api.errorMessage(e) }
@@ -104,14 +103,34 @@ class Store {
   }
 
   async signIn(server: string, username: string, password: string) {
-    const session = await api.signIn(server, username, password)
-    // After a rejected token, maybe as someone else: nothing of the old session stays.
-    this.#reset()
-    this.account = session.account
-    this.status = session.status
+    await this.#applySession(await api.signIn(server, username, password))
+  }
+
+  /** Shows another account. Local changes reach the old account's cache first. */
+  async switchAccount(id: string) {
+    if (id === this.activeId) return
+    await this.#writes
+    await api.setActiveAccount(id)
+  }
+
+  /** Takes in the accounts, from the start, a sign-in or any window's change. Another
+   * active account drops everything of the old one and loads its own. */
+  async #applySession(session: Session) {
+    const switched = session.activeId !== this.activeId
+    this.accounts = session.accounts
     this.settings = session.settings
-    this.signedIn = true
-    await this.#reload()
+    if (switched || session.signedIn !== this.signedIn) {
+      this.#reset()
+      this.activeId = session.activeId
+      this.status = session.status
+      this.signedIn = session.signedIn
+      if (this.signedIn) await this.#reload()
+    }
+  }
+
+  /** Unread counts of every account, for the account switcher. */
+  async refreshAccounts() {
+    this.accounts = await api.accounts()
   }
 
   sync() {
@@ -287,14 +306,6 @@ class Store {
     void saved.then(() => this.#loadLibrary()).catch((e) => console.error('Loading the feeds failed', e))
   }
 
-  /** Signing out happens in the Settings window; the cache is empty by now. */
-  #onSignedOut() {
-    this.#reset()
-    this.signedIn = false
-    this.account = null
-    this.status = { ...idleStatus }
-  }
-
   /** Forgets the account's feeds and articles, and drops responses still on the way. */
   #reset() {
     this.#session++
@@ -313,9 +324,11 @@ class Store {
     this.#resetFullText()
     this.read.clear()
     this.starred.clear()
+    this.status = { ...idleStatus }
   }
 
   #onStatus(status: SyncStatus) {
+    if (status.accountId !== this.activeId) return
     this.status = status
     if (status.unauthorized) this.signedIn = false
     // After a sync, the Unread view keeps what was read since it opened (FR-7a), and the

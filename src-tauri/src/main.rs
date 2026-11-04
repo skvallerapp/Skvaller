@@ -47,7 +47,11 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::session,
+            commands::accounts,
             commands::sign_in,
+            commands::set_active_account,
+            commands::update_account,
+            commands::remove_account,
             commands::sync_now,
             commands::library,
             commands::articles,
@@ -57,8 +61,8 @@ fn main() {
             commands::set_read,
             commands::set_starred,
             commands::set_settings,
-            commands::sign_out,
             commands::open_settings,
+            commands::take_settings_pane,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Skvaller");
