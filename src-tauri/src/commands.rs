@@ -694,6 +694,8 @@ pub async fn update_account(
                 account.keep_read_days = days.max(1);
             }
             if let Some(on) = sync_on_wake {
+                // So a sync after waking it asked for stops at once.
+                schedule_changed |= account.sync_on_wake != on;
                 account.sync_on_wake = on;
             }
         }
@@ -1244,9 +1246,11 @@ fn start_sync_loop(app: AppHandle, rt: Arc<Runtime>) {
                     _ => false,
                 };
                 let synced_lately = last_ok.is_some_and(|l| ago(l) < WAKE_SLACK);
+                // The schedule's own sync may have run on waking, before the network.
+                let failed_lately = last.is_some_and(|l| ago(l) < WAKE_SLACK) && last != last_ok;
                 if account.sync_on_wake && !synced_lately {
                     wake_sync = Some((WAKE_RETRIES, true));
-                } else if overdue {
+                } else if overdue || failed_lately {
                     wake_sync = Some((WAKE_RETRIES, false));
                 }
             }

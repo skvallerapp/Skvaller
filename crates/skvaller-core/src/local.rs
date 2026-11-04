@@ -237,14 +237,16 @@ impl FetchError {
     }
 }
 
+/// Only no answer at all counts as unreachable; a broken one, such as a redirect loop, is
+/// an answer.
 fn network_error(e: &reqwest::Error) -> FetchError {
-    FetchError::Unreachable(if e.is_timeout() {
-        "the server took too long to answer".into()
+    if e.is_timeout() {
+        FetchError::Unreachable("the server took too long to answer".into())
     } else if e.is_connect() {
-        "could not reach the server".into()
+        FetchError::Unreachable("could not reach the server".into())
     } else {
-        e.to_string()
-    })
+        FetchError::Refused(e.to_string())
+    }
 }
 
 /// The page as an RSS, Atom or JSON feed, if it is one.

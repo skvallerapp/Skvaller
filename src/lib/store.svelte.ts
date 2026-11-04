@@ -16,8 +16,9 @@ import type {
 /** How long an article is open before it is marked read, with `markReadOn: 'delay'`. */
 const MARK_READ_DELAY = 2000
 
-/** How long `markRead` waits for more before saving. */
+/** How long `markRead` waits for more before saving, and how old a batch gets at most. */
 const READ_SAVE_DELAY = 300
+const READ_SAVE_MAX_AGE = 1500
 
 /** All UI state. Everything comes from the local cache through `api`; nothing here
  * waits for the network. */
@@ -203,6 +204,8 @@ class Store {
   listShown: Promise<void> = Promise.resolve()
 
   #showList() {
+    // The new list waits only for marks made so far to save.
+    this.#saveRead()
     this.articleId = null
     this.html = null
     this.#resetFullText()
@@ -386,14 +389,18 @@ class Store {
   /** Marks these listed articles read, the unread ones: at once on screen, and saved
    * together once the marking pauses, as while scrolling. */
   markRead(ids: string[]) {
+    // A list on its way out marks nothing, as scrolling may go on after picking another.
+    if (this.#selectionKey() !== this.#listKey) return
     const wanted = new Set(ids)
     const articles = this.visible.filter((a) => wanted.has(a.id) && !this.read.has(a.id))
     if (articles.length === 0) return
     this.unreadByFeed = adjusted(this.unreadByFeed, articles, -1)
     // The batch is a queued write from the start, so loads wait for it and changes made
     // meanwhile come after it; the timer only lets it go.
+    // A long scroll saves as it goes, so loads behind it don't wait for its end.
+    if (this.#readBatch && Date.now() - this.#readBatch.started > READ_SAVE_MAX_AGE) this.#saveRead()
     if (!this.#readBatch) {
-      const batch = { ids: new Set<string>(), release: () => {} }
+      const batch = { ids: new Set<string>(), release: () => {}, started: Date.now() }
       const released = new Promise<void>((resolve) => (batch.release = resolve))
       this.#write(async (account) => {
         await released
@@ -409,7 +416,7 @@ class Store {
     this.#readSaveTimer = setTimeout(() => this.#saveRead(), READ_SAVE_DELAY)
   }
 
-  #readBatch: { ids: Set<string>; release: () => void } | null = null
+  #readBatch: { ids: Set<string>; release: () => void; started: number } | null = null
   #readSaveTimer: ReturnType<typeof setTimeout> | undefined
 
   /** Lets the pending batch of marks save now. */

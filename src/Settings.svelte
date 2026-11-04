@@ -255,7 +255,7 @@
       if (request === feedsRequest && subpage === 'reader-view' && feedsFor === id)
         feeds = library.feeds.filter((f) => f.subscribed)
     } catch (e) {
-      error = sentence(api.errorMessage(e))
+      if (request === feedsRequest && subpage === 'reader-view') error = sentence(api.errorMessage(e))
     }
   }
 
@@ -264,7 +264,10 @@
     feedSaves++
     api
       .setFeedReaderView(id, feed.id, on)
-      .catch((e) => (error = sentence(api.errorMessage(e))))
+      .then(
+        () => (error = null),
+        (e) => (error = sentence(api.errorMessage(e))),
+      )
       .finally(() => {
         // The last save reloads, so the page shows what was saved.
         if (--feedSaves === 0 && subpage === 'reader-view' && feedsFor === id) void loadFeeds(id)
