@@ -9,6 +9,10 @@ export const defaultSettings: Settings = {
   headlineFont: 'inter',
   articleFont: 'literata',
   shortcuts: {},
+  sortSubscriptions: 'foldersFirst',
+  markReadOn: 'open',
+  markReadOnScroll: false,
+  unreadBadge: true,
 }
 
 export const idleStatus: SyncStatus = { accountId: '', syncing: false, lastSync: null, error: null, unauthorized: false }
