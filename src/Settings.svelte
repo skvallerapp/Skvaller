@@ -645,6 +645,16 @@
                 )}
               </div>
               <div class="row">
+                <label for="sync-on-wake">Sync on wake up from sleep</label>
+                <input
+                  id="sync-on-wake"
+                  type="checkbox"
+                  role="switch"
+                  checked={a.syncOnWake}
+                  onchange={(e) => changeAccount(a.id, { syncOnWake: e.currentTarget.checked })}
+                />
+              </div>
+              <div class="row">
                 <label for="keep-read">Keep read items</label>
                 {@render select(
                   'keep-read',

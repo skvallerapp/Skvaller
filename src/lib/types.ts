@@ -64,6 +64,8 @@ export type Account = AccountKind & {
   sync: SyncSchedule
   /** How long read, unstarred articles stay in the cache. */
   keepReadDays: number
+  /** Sync when the computer wakes from sleep. */
+  syncOnWake: boolean
   /** Unread articles in its cache. */
   unread: number
 }
@@ -96,7 +98,7 @@ export interface Session {
 }
 
 /** What `updateAccount` changes. */
-export type AccountChange = Partial<Pick<Account, 'description' | 'sync' | 'keepReadDays'>>
+export type AccountChange = Partial<Pick<Account, 'description' | 'sync' | 'keepReadDays' | 'syncOnWake'>>
 
 /** Settings for every account, from config.json, changed in the Settings window. */
 export interface Settings {

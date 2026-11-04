@@ -74,6 +74,8 @@ pub struct Runtime {
     wake: Notify,
     /// The account is gone. Work that still holds the runtime stops at its next check.
     removed: AtomicBool,
+    /// The computer woke from sleep since the background sync last looked.
+    woke: AtomicBool,
 }
 
 impl Runtime {
@@ -88,6 +90,7 @@ impl Runtime {
             prefetch_gate: SyncGate::default(),
             wake: Notify::new(),
             removed: AtomicBool::new(false),
+            woke: AtomicBool::new(false),
         })
     }
 
@@ -613,6 +616,7 @@ fn add_account(
             kind: kind.clone(),
             sync: SyncSchedule::default(),
             keep_read_days: skvaller_core::DEFAULT_KEEP_READ_DAYS,
+            sync_on_wake: false,
         });
         config.active = Some(id.clone());
         Ok(())
@@ -671,6 +675,7 @@ pub async fn update_account(
     description: Option<String>,
     sync: Option<SyncSchedule>,
     keep_read_days: Option<u32>,
+    sync_on_wake: Option<bool>,
 ) -> CommandResult<()> {
     let rt = state.runtime(&id)?;
     let mut schedule_changed = false;
@@ -687,6 +692,9 @@ pub async fn update_account(
             }
             if let Some(days) = keep_read_days {
                 account.keep_read_days = days.max(1);
+            }
+            if let Some(on) = sync_on_wake {
+                account.sync_on_wake = on;
             }
         }
     })?;
@@ -1164,27 +1172,65 @@ pub fn start_background_sync(app: AppHandle) {
     for rt in app.state::<AppState>().runtimes() {
         start_sync_loop(app.clone(), rt);
     }
+    start_wake_watch(app);
+}
+
+/// How often the clock is checked for a sleep.
+const WAKE_CHECK: Duration = Duration::from_secs(30);
+/// More time than this past a check's wait means the computer slept.
+const WAKE_SLACK: Duration = Duration::from_secs(60);
+
+/// Whether the wall clock moved on so much more than a wait of `waited` that the
+/// computer must have slept. A timer doesn't run while it sleeps; the clock does.
+fn slept(before: SystemTime, now: SystemTime, waited: Duration) -> bool {
+    now.duration_since(before)
+        .is_ok_and(|passed| passed > waited + WAKE_SLACK)
+}
+
+/// Tells every account's background sync when the computer wakes, as no system event
+/// says so on every platform: those with sync on wake sync, and the others catch up
+/// on a schedule the sleep held up.
+fn start_wake_watch(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut before = SystemTime::now();
+        loop {
+            tokio::time::sleep(WAKE_CHECK).await;
+            let now = SystemTime::now();
+            if slept(before, now, WAKE_CHECK) {
+                for rt in app.state::<AppState>().runtimes() {
+                    rt.woke.store(true, Ordering::Relaxed);
+                    rt.wake.notify_one();
+                }
+            }
+            before = now;
+        }
+    });
 }
 
 /// When the account's schedule says: on start, and then every so many minutes after
-/// the last automatic sync. A changed schedule applies at once. Ends when the account
-/// is removed.
+/// the last automatic sync, by the wall clock so a sleep doesn't push it back. Also on
+/// waking from sleep, when the account asks for it. A changed schedule applies at
+/// once. Ends when the account is removed.
 fn start_sync_loop(app: AppHandle, rt: Arc<Runtime>) {
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
-        let mut last: Option<Instant> = None;
+        let mut last: Option<SystemTime> = None;
         loop {
             if rt.removed.load(Ordering::Relaxed) {
                 break;
             }
-            let Some(schedule) = state.config().account(&rt.id).map(|a| a.sync) else {
+            let Some(account) = state.config().account(&rt.id).cloned() else {
                 break;
             };
-            let due = match (schedule, last) {
+            let woke = rt.woke.swap(false, Ordering::Relaxed);
+            let due = match (account.sync, last) {
+                _ if woke && account.sync_on_wake => Some(Instant::now()),
                 (SyncSchedule::Manual, _) | (SyncSchedule::OnStart, Some(_)) => None,
                 (_, None) => Some(Instant::now()),
                 (SyncSchedule::Every(m), Some(last)) => {
-                    Some(last + Duration::from_secs(u64::from(m) * 60))
+                    let since = SystemTime::now().duration_since(last).unwrap_or_default();
+                    let every = Duration::from_secs(u64::from(m) * 60);
+                    Some(Instant::now() + every.saturating_sub(since))
                 }
             };
             let wait = async {
@@ -1196,7 +1242,7 @@ fn start_sync_loop(app: AppHandle, rt: Arc<Runtime>) {
             tokio::select! {
                 () = wait => {
                     run_sync(&app, &rt).await;
-                    last = Some(Instant::now());
+                    last = Some(SystemTime::now());
                 }
                 () = rt.wake.notified() => {}
             }
@@ -1323,6 +1369,18 @@ mod tests {
             "reader.example.org"
         );
         assert_eq!(default_description(&AccountKind::Local), "Local");
+    }
+
+    #[test]
+    fn a_clock_far_ahead_of_the_wait_means_the_computer_slept() {
+        let before = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let after = |secs| before + Duration::from_secs(secs);
+        assert!(!slept(before, after(30), WAKE_CHECK));
+        assert!(!slept(before, after(80), WAKE_CHECK));
+        assert!(slept(before, after(91), WAKE_CHECK));
+        assert!(slept(before, after(8 * 3600), WAKE_CHECK));
+        // A clock set back is no sleep.
+        assert!(!slept(after(100), before, WAKE_CHECK));
     }
 
     #[test]
