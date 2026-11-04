@@ -16,7 +16,7 @@
   import { activePane, focus } from './layout.svelte'
   import { dragRegion, inTauri, isMac, macWindow } from './platform'
   import { store } from './store.svelte'
-  import type { Feed, Scope } from './types'
+  import type { Feed, Folder, Scope } from './types'
   import { slideHighlight } from './highlight.svelte'
   import { viewInfo, views } from './views'
 
@@ -67,18 +67,32 @@
     return s.lastSync ? formatSynced(s.lastSync) : 'Not synced yet'
   })
 
-  // The rows below All, in sidebar order: each folder, then its feeds when open, then
-  // the feeds in no folder.
+  // The folders and the feeds in no folder, in the order the setting asks: folders first,
+  // or all A–Z together. Each list is A–Z already.
+  type Entry = { kind: 'folder'; id: string; folder: Folder } | { kind: 'feed'; id: string; feed: Feed }
+  const entries: Entry[] = $derived.by(() => {
+    const folders = shownFolders.map((folder): Entry => ({ kind: 'folder', id: folder.id, folder }))
+    const feeds = looseFeeds.map((feed): Entry => ({ kind: 'feed', id: feed.id, feed }))
+    if (store.settings.sortSubscriptions !== 'alphabetical') return [...folders, ...feeds]
+    const title = (e: Entry) => (e.kind === 'folder' ? e.folder.title : e.feed.title)
+    return [...folders, ...feeds].sort((a, b) => title(a).localeCompare(title(b), undefined, { sensitivity: 'base' }))
+  })
+
+  // The rows below All, in sidebar order: each folder, then its feeds when open, and the
+  // feeds in no folder.
   type Row = Exclude<Scope, { kind: 'all' }>
-  const rows: Row[] = $derived([
-    ...shownFolders.flatMap((folder): Row[] => [
-      { kind: 'folder', id: folder.id },
-      ...(collapsed.has(folder.id) ? [] : (feedsByFolder.get(folder.id) ?? [])).map(
-        (f): Row => ({ kind: 'feed', id: f.id }),
-      ),
-    ]),
-    ...looseFeeds.map((f): Row => ({ kind: 'feed', id: f.id })),
-  ])
+  const rows: Row[] = $derived(
+    entries.flatMap((entry): Row[] =>
+      entry.kind === 'feed'
+        ? [{ kind: 'feed', id: entry.id }]
+        : [
+            { kind: 'folder', id: entry.id },
+            ...(collapsed.has(entry.id) ? [] : (feedsByFolder.get(entry.id) ?? [])).map(
+              (f): Row => ({ kind: 'feed', id: f.id }),
+            ),
+          ],
+    ),
+  )
 
   // Rows slide closed as they leave only right after a mark-all-read. Other changes, such
   // as switching views, add and remove many rows, and do so at once.
@@ -454,7 +468,11 @@
     {#if shownFolders.length > 0 || looseFeeds.length > 0}
       <section>
         <h2>Feeds</h2>
-        {#each shownFolders as folder (folder.id)}
+        {#each entries as entry (`${entry.kind}:${entry.id}`)}
+          {#if entry.kind === 'feed'}
+            {@render row({ kind: 'feed', id: entry.id }, entry.feed.title, store.counts.get(entry.id) ?? 0, false, entry.feed)}
+          {:else}
+          {@const folder = entry.folder}
           <div class="folder" out:leave>
             <button
               class="disclosure"
@@ -474,9 +492,7 @@
               {/each}
             </div>
           {/if}
-        {/each}
-        {#each looseFeeds as feed (feed.id)}
-          {@render row({ kind: 'feed', id: feed.id }, feed.title, store.counts.get(feed.id) ?? 0, false, feed)}
+          {/if}
         {/each}
       </section>
     {/if}

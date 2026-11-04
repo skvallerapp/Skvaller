@@ -49,6 +49,39 @@ pub struct Settings {
     /// The UI knows the actions and the defaults.
     #[serde(deserialize_with = "or_default")]
     pub shortcuts: BTreeMap<String, Option<String>>,
+    #[serde(deserialize_with = "or_default")]
+    pub sort_subscriptions: SortSubscriptions,
+    #[serde(deserialize_with = "or_default")]
+    pub mark_read_on: MarkReadOn,
+    /// Mark articles read as they scroll out of the top of the list.
+    #[serde(deserialize_with = "or_default")]
+    pub mark_read_on_scroll: bool,
+    /// The unread count of every account on the app icon, where the system shows one.
+    #[serde(deserialize_with = "unread_badge_or_default")]
+    pub unread_badge: bool,
+}
+
+/// How the sidebar orders folders and the feeds in no folder.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SortSubscriptions {
+    /// Folders, then the feeds in no folder, each A–Z.
+    #[default]
+    FoldersFirst,
+    /// Folders and the feeds in no folder in one A–Z list.
+    Alphabetical,
+}
+
+/// When opening an article marks it read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MarkReadOn {
+    #[default]
+    Open,
+    /// Once it has been open a moment, so stepping past it doesn't.
+    Delay,
+    /// Never on its own.
+    Manual,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,6 +153,10 @@ fn confirm_mark_all_read_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<b
     or_else(d, |s| s.confirm_mark_all_read)
 }
 
+fn unread_badge_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    or_else(d, |s| s.unread_badge)
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -130,6 +167,10 @@ impl Default for Settings {
             headline_font: Font::default(),
             article_font: Font::Literata,
             shortcuts: BTreeMap::new(),
+            sort_subscriptions: SortSubscriptions::default(),
+            mark_read_on: MarkReadOn::default(),
+            mark_read_on_scroll: false,
+            unread_badge: true,
         }
     }
 }
@@ -493,6 +534,29 @@ mod tests {
         assert_eq!(back.accounts, config.accounts);
         assert_eq!(back.active, config.active);
         assert_eq!(AccountKind::Local.keychain_key(), None);
+    }
+
+    #[test]
+    fn reading_settings_default_and_round_trip() {
+        let config =
+            Config::parse(br#"{ "markReadOn": "later", "sortSubscriptions": "alphabetical" }"#)
+                .unwrap();
+        assert_eq!(config.settings.mark_read_on, MarkReadOn::Open);
+        assert_eq!(
+            config.settings.sort_subscriptions,
+            SortSubscriptions::Alphabetical
+        );
+        assert!(!config.settings.mark_read_on_scroll);
+        assert!(config.settings.unread_badge);
+
+        let mut config = Config::default();
+        config.settings.mark_read_on = MarkReadOn::Delay;
+        config.settings.unread_badge = false;
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["markReadOn"], "delay");
+        assert_eq!(json["sortSubscriptions"], "foldersFirst");
+        let back = Config::parse(&serde_json::to_vec(&json).unwrap()).unwrap();
+        assert_eq!(back.settings, config.settings);
     }
 
     #[test]

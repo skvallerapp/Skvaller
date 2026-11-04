@@ -165,7 +165,31 @@
     confirming = false
     if (viewport) viewport.scrollTop = 0
     scrollTop = 0
+    scrolledTo = 0
   })
+
+  // With markReadOnScroll, rows that leave the top of the list while scrolling down are
+  // marked read, once a frame. Scrolling up marks none.
+  let scrolledTo = 0
+  let passed: string[] = []
+  let frame = 0
+
+  function onScroll() {
+    const top = viewport.scrollTop
+    if (store.settings.markReadOnScroll && top > scrolledTo) {
+      const end = Math.min(items.length, Math.floor(top / ROW_HEIGHT))
+      for (let i = Math.floor(scrolledTo / ROW_HEIGHT); i < end; i++) passed.push(items[i].id)
+      if (passed.length > 0 && frame === 0)
+        frame = requestAnimationFrame(() => {
+          frame = 0
+          const ids = passed
+          passed = []
+          store.markRead(ids)
+        })
+    }
+    scrolledTo = top
+    scrollTop = top
+  }
 </script>
 
 <svelte:window
@@ -232,7 +256,7 @@
       tabindex="-1"
       bind:this={viewport}
       bind:clientHeight={height}
-      onscroll={() => (scrollTop = viewport.scrollTop)}
+      onscroll={onScroll}
     >
       {#if items.length === 0}
         <p class="empty">{viewInfo(store.view).empty}</p>

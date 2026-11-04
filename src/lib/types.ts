@@ -112,6 +112,14 @@ export interface Settings {
   articleFont: Font
   /** Shortcut keys that differ from the defaults. `null` means no key. */
   shortcuts: Partial<Record<ShortcutAction, string | null>>
+  /** How the sidebar orders folders and the feeds in no folder. */
+  sortSubscriptions: 'foldersFirst' | 'alphabetical'
+  /** When opening an article marks it read: at once, after a moment, or never. */
+  markReadOn: 'open' | 'delay' | 'manual'
+  /** Mark articles read as they scroll out of the top of the list. */
+  markReadOnScroll: boolean
+  /** The unread count of every account on the app icon, where the system shows one. */
+  unreadBadge: boolean
 }
 
 export type Theme = 'system' | 'light' | 'dark' | 'espresso'

@@ -9,7 +9,7 @@
   import * as api from './lib/api'
   import { sentence } from './lib/format'
   import { slideHighlight } from './lib/highlight.svelte'
-  import { dragRegion, macWindow } from './lib/platform'
+  import { dragRegion, isWindows, macWindow } from './lib/platform'
   import ShortcutList from './lib/ShortcutList.svelte'
   import LocalOption from './lib/LocalOption.svelte'
   import SignIn from './lib/SignIn.svelte'
@@ -39,6 +39,17 @@
     { days: 14, label: '2 Weeks' },
     { days: 30, label: '1 Month' },
     { days: 90, label: '3 Months' },
+  ]
+
+  const sortOrders: { value: Settings['sortSubscriptions']; label: string }[] = [
+    { value: 'foldersFirst', label: 'Folders First' },
+    { value: 'alphabetical', label: 'Alphabetical' },
+  ]
+
+  const markReadModes: { value: Settings['markReadOn']; label: string }[] = [
+    { value: 'open', label: 'On Open' },
+    { value: 'delay', label: 'After a Delay' },
+    { value: 'manual', label: 'Manually' },
   ]
 
   const themes: { value: Theme; label: string }[] = [
@@ -377,6 +388,24 @@
               </div>
             </div>
           </section>
+          {#if !isWindows}
+            <section>
+              <h2>App Icon</h2>
+              <div class="group">
+                <div class="row">
+                  <label for="badge">Unread count badge</label>
+                  <input
+                    id="badge"
+                    type="checkbox"
+                    role="switch"
+                    checked={settings.unreadBadge}
+                    onchange={(e) => change({ unreadBadge: e.currentTarget.checked })}
+                  />
+                </div>
+              </div>
+              <p class="note">The unread articles of every account.</p>
+            </section>
+          {/if}
           <section>
             <h2>Motion</h2>
             <div class="group">
@@ -427,8 +456,35 @@
           </section>
         {:else if pane === 'reading'}
           <section>
+            <h2>Subscriptions</h2>
+            <div class="group">
+              <div class="row">
+                <label for="sort">Sort subscriptions</label>
+                {@render select('sort', settings.sortSubscriptions, sortOrders, (sortSubscriptions) =>
+                  change({ sortSubscriptions }),
+                )}
+              </div>
+            </div>
+          </section>
+          <section>
             <h2>Marking as Read</h2>
             <div class="group">
+              <div class="row">
+                <label for="mark-read-on">Mark article as read</label>
+                {@render select('mark-read-on', settings.markReadOn, markReadModes, (markReadOn) =>
+                  change({ markReadOn }),
+                )}
+              </div>
+              <div class="row">
+                <label for="mark-on-scroll">Mark as read on scroll</label>
+                <input
+                  id="mark-on-scroll"
+                  type="checkbox"
+                  role="switch"
+                  checked={settings.markReadOnScroll}
+                  onchange={(e) => change({ markReadOnScroll: e.currentTarget.checked })}
+                />
+              </div>
               <div class="row">
                 <label for="confirm-mark-all">Ask before marking all as read</label>
                 <input
@@ -440,6 +496,10 @@
                 />
               </div>
             </div>
+            <p class="note">
+              On scroll, articles are marked read as they leave the top of the list. Scrolling
+              back up doesn’t mark any.
+            </p>
           </section>
         {:else if pane === 'shortcuts'}
           <ShortcutList

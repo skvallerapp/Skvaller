@@ -13,6 +13,9 @@ import type {
   View,
 } from './types'
 
+/** How long an article is open before it is marked read, with `markReadOn: 'delay'`. */
+const MARK_READ_DELAY = 2000
+
 /** All UI state. Everything comes from the local cache through `api`; nothing here
  * waits for the network. */
 class Store {
@@ -218,8 +221,17 @@ class Store {
         this.#loadFullText(id, { retry: false, hold: true })
       }
     }
-    if (!this.read.has(id)) this.toggleRead(id)
+    clearTimeout(this.#markReadTimer)
+    if (this.read.has(id)) return
+    if (this.settings.markReadOn === 'open') this.toggleRead(id)
+    // Stepping on before then, as with j and k, leaves it unread.
+    else if (this.settings.markReadOn === 'delay')
+      this.#markReadTimer = setTimeout(() => {
+        if (this.articleId === id && !this.read.has(id)) this.toggleRead(id)
+      }, MARK_READ_DELAY)
   }
+
+  #markReadTimer: ReturnType<typeof setTimeout> | undefined
 
   /** Switches the open article between Reader View and the feed's content. */
   toggleReaderView() {
@@ -351,12 +363,24 @@ class Store {
   }
 
   toggleRead(id: string) {
+    // The user's own choice wins over a pending mark.
+    clearTimeout(this.#markReadTimer)
     const article = this.visible.find((a) => a.id === id)
     const read = !this.read.has(id)
     if (read) this.read.add(id)
     else this.read.delete(id)
     if (article) this.unreadByFeed = adjusted(this.unreadByFeed, [article], read ? -1 : 1)
     this.#write((account) => api.setRead(account, [id], read))
+  }
+
+  /** Marks these listed articles read, the unread ones, in one change. */
+  markRead(ids: string[]) {
+    const wanted = new Set(ids)
+    const articles = this.visible.filter((a) => wanted.has(a.id) && !this.read.has(a.id))
+    if (articles.length === 0) return
+    for (const a of articles) this.read.add(a.id)
+    this.unreadByFeed = adjusted(this.unreadByFeed, articles, -1)
+    this.#write((account) => api.setRead(account, articles.map((a) => a.id), true))
   }
 
   /** Marks every article in the current list read. Unlike reading one by one, the
