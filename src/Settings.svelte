@@ -244,11 +244,16 @@
     await loadFeeds(id)
   }
 
+  let feedsRequest = 0
+
   async function loadFeeds(id: string) {
     feedsFor = id
+    const request = ++feedsRequest
     try {
       const library = await api.library(id)
-      if (feedsFor === id) feeds = library.feeds.filter((f) => f.subscribed)
+      // Only the newest load, for the page still showing.
+      if (request === feedsRequest && subpage === 'reader-view' && feedsFor === id)
+        feeds = library.feeds.filter((f) => f.subscribed)
     } catch (e) {
       error = sentence(api.errorMessage(e))
     }
@@ -262,7 +267,7 @@
       .catch((e) => (error = sentence(api.errorMessage(e))))
       .finally(() => {
         // The last save reloads, so the page shows what was saved.
-        if (--feedSaves === 0) void loadFeeds(id)
+        if (--feedSaves === 0 && subpage === 'reader-view' && feedsFor === id) void loadFeeds(id)
       })
   }
 

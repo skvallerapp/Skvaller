@@ -101,6 +101,8 @@ class Store {
       // Listen first, so a sync that finishes meanwhile is not missed.
       await api.onSyncStatus((status) => this.#onStatus(status))
       await api.onSettingsChanged((settings) => (this.settings = settings))
+      // Closing the window: what is marked gets its chance to be saved.
+      window.addEventListener('pagehide', () => this.#saveRead())
       // From the Settings window's Reader View page.
       await api.onFeedsChanged((accountId) => {
         if (accountId === this.activeId)
@@ -387,22 +389,35 @@ class Store {
     const wanted = new Set(ids)
     const articles = this.visible.filter((a) => wanted.has(a.id) && !this.read.has(a.id))
     if (articles.length === 0) return
+    this.unreadByFeed = adjusted(this.unreadByFeed, articles, -1)
+    // The batch is a queued write from the start, so loads wait for it and changes made
+    // meanwhile come after it; the timer only lets it go.
+    if (!this.#readBatch) {
+      const batch = { ids: new Set<string>(), release: () => {} }
+      const released = new Promise<void>((resolve) => (batch.release = resolve))
+      this.#write(async (account) => {
+        await released
+        await api.setRead(account, [...batch.ids], true)
+      })
+      this.#readBatch = batch
+    }
     for (const a of articles) {
       this.read.add(a.id)
-      this.#readToSave.add(a.id)
+      this.#readBatch.ids.add(a.id)
     }
-    this.unreadByFeed = adjusted(this.unreadByFeed, articles, -1)
     clearTimeout(this.#readSaveTimer)
     this.#readSaveTimer = setTimeout(() => this.#saveRead(), READ_SAVE_DELAY)
   }
 
-  #readToSave = new Set<string>()
+  #readBatch: { ids: Set<string>; release: () => void } | null = null
   #readSaveTimer: ReturnType<typeof setTimeout> | undefined
 
+  /** Lets the pending batch of marks save now. */
   #saveRead() {
-    const ids = [...this.#readToSave]
-    this.#readToSave.clear()
-    if (ids.length > 0) this.#write((account) => api.setRead(account, ids, true))
+    clearTimeout(this.#readSaveTimer)
+    const batch = this.#readBatch
+    this.#readBatch = null
+    batch?.release()
   }
 
   /** Marks every article in the current list read. Unlike reading one by one, the
@@ -434,6 +449,8 @@ class Store {
    * counts never stay wrong. The reload is not part of `#writes`: it waits for it.
    */
   #write(save: (account: string) => Promise<void>) {
+    // Marks waiting to be saved go first, in the order they were made.
+    this.#saveRead()
     this.#writeCount++
     // The account shown when the change was made, even if another shows by the time
     // it's saved.
@@ -462,8 +479,7 @@ class Store {
     this.read.clear()
     this.starred.clear()
     this.status = { ...idleStatus }
-    // Marks not saved yet belong to the account that goes.
-    clearTimeout(this.#readSaveTimer)
+    // Marks not saved yet belong to the account that goes; their write named it.
     this.#saveRead()
   }
 

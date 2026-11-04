@@ -1223,9 +1223,11 @@ fn start_wake_watch(app: AppHandle) {
 fn start_sync_loop(app: AppHandle, rt: Arc<Runtime>) {
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
-        let mut last: Option<SystemTime> = None;
-        // A sync on wake still due, with the retries it has left.
-        let mut wake_sync: Option<u32> = None;
+        // The last automatic sync, and the last that worked.
+        let (mut last, mut last_ok): (Option<SystemTime>, Option<SystemTime>) = (None, None);
+        // A sync after waking still due: the retries it has left, and whether the account's
+        // sync on wake asked for it, rather than a schedule the sleep held up.
+        let mut wake_sync: Option<(u32, bool)> = None;
         loop {
             if rt.removed.load(Ordering::Relaxed) {
                 break;
@@ -1233,12 +1235,24 @@ fn start_sync_loop(app: AppHandle, rt: Arc<Runtime>) {
             let Some(account) = state.config().account(&rt.id).cloned() else {
                 break;
             };
-            let woke = rt.woke.swap(false, Ordering::Relaxed);
-            let synced_lately = last.is_some_and(|l| {
-                SystemTime::now().duration_since(l).unwrap_or_default() < WAKE_SLACK
-            });
-            if woke && account.sync_on_wake && !synced_lately {
-                wake_sync = Some(WAKE_RETRIES);
+            let ago = |t: SystemTime| SystemTime::now().duration_since(t).unwrap_or_default();
+            if rt.woke.swap(false, Ordering::Relaxed) {
+                let overdue = match (account.sync, last) {
+                    (SyncSchedule::Every(m), Some(l)) => {
+                        ago(l) >= Duration::from_secs(u64::from(m) * 60)
+                    }
+                    _ => false,
+                };
+                let synced_lately = last_ok.is_some_and(|l| ago(l) < WAKE_SLACK);
+                if account.sync_on_wake && !synced_lately {
+                    wake_sync = Some((WAKE_RETRIES, true));
+                } else if overdue {
+                    wake_sync = Some((WAKE_RETRIES, false));
+                }
+            }
+            // Turned off meanwhile.
+            if !account.sync_on_wake {
+                wake_sync = wake_sync.filter(|&(_, asked)| !asked);
             }
             let due = match (account.sync, last) {
                 _ if wake_sync.is_some() => Some(Instant::now() + WAKE_DELAY),
@@ -1258,13 +1272,23 @@ fn start_sync_loop(app: AppHandle, rt: Arc<Runtime>) {
             };
             tokio::select! {
                 () = wait => {
-                    run_sync(&app, &rt).await;
-                    last = Some(SystemTime::now());
-                    // A failure other than a rejected sign-in is likely the network,
-                    // not back yet: try again in a moment.
-                    let offline = lock(&rt.last_error).is_some()
-                        && !rt.token_rejected.load(Ordering::Relaxed);
-                    wake_sync = wake_sync.filter(|_| offline).and_then(|n| n.checked_sub(1));
+                    let ran = run_sync(&app, &rt).await;
+                    // Another sync running: a sync after waking waits for its turn.
+                    if ran == Ran::Busy && wake_sync.is_some() {
+                        continue;
+                    }
+                    let now = SystemTime::now();
+                    last = Some(now);
+                    wake_sync = match ran {
+                        Ran::Synced => {
+                            last_ok = Some(now);
+                            None
+                        }
+                        // Likely the network, not back yet after waking: again in a moment.
+                        Ran::Failed { retry: true } => wake_sync
+                            .and_then(|(n, asked)| Some((n.checked_sub(1)?, asked))),
+                        Ran::Failed { retry: false } | Ran::Busy | Ran::Skipped => None,
+                    };
                 }
                 () = rt.wake.notified() => {}
             }
@@ -1272,9 +1296,24 @@ fn start_sync_loop(app: AppHandle, rt: Arc<Runtime>) {
     });
 }
 
+/// How a sync went, for the background sync's retries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ran {
+    Synced,
+    /// `retry`: worth trying again soon, as anything but a rejected sign-in may be the
+    /// network.
+    Failed {
+        retry: bool,
+    },
+    /// Another sync of the account was running.
+    Busy,
+    /// Signed out, removed, or stopped.
+    Skipped,
+}
+
 /// One sync of the account, reported through `sync-status`. Does nothing while another
 /// sync of it runs or when it is signed out.
-async fn run_sync(app: &AppHandle, rt: &Arc<Runtime>) {
+async fn run_sync(app: &AppHandle, rt: &Arc<Runtime>) -> Ran {
     let state = app.state::<AppState>();
     let status = |patch: SyncStatus| SyncStatus {
         account_id: rt.id.clone(),
@@ -1335,22 +1374,29 @@ async fn run_sync(app: &AppHandle, rt: &Arc<Runtime>) {
     let work = async {
         let status = sync_once.await?;
         *lock(&rt.last_error) = status.error.clone();
-        let synced = status.error.is_none();
+        let ran = match status.error {
+            None => Ran::Synced,
+            Some(_) => Ran::Failed {
+                retry: !status.unauthorized,
+            },
+        };
         emit(status);
         update_badge(app);
-        Some(synced)
+        Some(ran)
     };
 
     match rt.sync_gate.run(work).await {
-        Outcome::Done(Some(synced)) => {
-            if synced {
+        Outcome::Done(Some(ran)) => {
+            if ran == Ran::Synced {
                 let rt = rt.clone();
                 tauri::async_runtime::spawn(async move { prefetch(&rt).await });
             }
+            ran
         }
+        Outcome::Busy => Ran::Busy,
         // What stops a sync reports the status after it: a sign-in its fresh one, and a
         // removed account needs none.
-        Outcome::Stopped | Outcome::Done(None) | Outcome::Busy => {}
+        Outcome::Stopped | Outcome::Done(None) => Ran::Skipped,
     }
 }
 
