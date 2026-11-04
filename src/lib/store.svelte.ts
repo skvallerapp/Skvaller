@@ -23,6 +23,8 @@ class Store {
   accounts = $state.raw<Account[]>([])
   activeId = $state<string | null>(null)
   readonly account: Account | null = $derived(this.accounts.find((a) => a.id === this.activeId) ?? null)
+  /** The active account is the local one, whose feeds and folders are managed here. */
+  readonly isLocal: boolean = $derived(this.account?.kind === 'local')
   status = $state<SyncStatus>({ ...idleStatus })
   /** Until `init` loads them. */
   settings = $state<Settings>({ ...defaultSettings })
@@ -104,6 +106,10 @@ class Store {
 
   async signIn(server: string, username: string, password: string) {
     await this.#applySession(await api.signIn(server, username, password))
+  }
+
+  async addLocalAccount() {
+    await this.#applySession(await api.addLocalAccount())
   }
 
   /** Shows another account. Local changes reach the old account's cache first. */
@@ -209,6 +215,62 @@ class Store {
     this.feeds = this.feeds.map((f) => (f.id === feedId ? { ...f, readerView: on } : f))
     this.#write(() => api.setFeedReaderView(feedId, on))
     if (this.article?.feedId === feedId && this.readerView !== on) this.toggleReaderView()
+  }
+
+  // The local account's feeds and folders.
+
+  /** Subscribes and shows the feed. Fetching it can take seconds; a failure throws. */
+  async subscribe(url: string, folderId: string | null) {
+    await this.#writes
+    const id = await api.subscribe(url, folderId)
+    await this.#loadLibrary()
+    await this.select({ kind: 'feed', id })
+  }
+
+  /** The folder with this title, or else a new one. Returns its ID. */
+  async createFolder(title: string): Promise<string> {
+    await this.#writes
+    const id = await api.createFolder(title)
+    await this.#loadLibrary()
+    return id
+  }
+
+  unsubscribe(feedId: string) {
+    this.feeds = this.feeds.filter((f) => f.id !== feedId)
+    this.#write(() => api.unsubscribe(feedId))
+    this.#afterRemoving({ kind: 'feed', id: feedId })
+  }
+
+  renameFeed(feedId: string, title: string) {
+    this.feeds = this.feeds.map((f) => (f.id === feedId ? { ...f, title } : f))
+    this.#write(() => api.renameFeed(feedId, title))
+  }
+
+  moveFeed(feedId: string, folderId: string | null) {
+    this.feeds = this.feeds.map((f) => (f.id === feedId ? { ...f, folderId } : f))
+    this.#write(() => api.moveFeed(feedId, folderId))
+    // A folder's list gains or loses the feed's articles.
+    if (this.scope.kind === 'folder') void this.#loadList()
+  }
+
+  renameFolder(folderId: string, title: string) {
+    this.folders = this.folders.map((f) => (f.id === folderId ? { ...f, title } : f))
+    this.#write(() => api.renameFolder(folderId, title))
+  }
+
+  deleteFolder(folderId: string) {
+    this.folders = this.folders.filter((f) => f.id !== folderId)
+    this.feeds = this.feeds.map((f) => (f.folderId === folderId ? { ...f, folderId: null } : f))
+    this.#write(() => api.deleteFolder(folderId))
+    this.#afterRemoving({ kind: 'folder', id: folderId })
+  }
+
+  /** A removed feed or folder that is selected gives way to All. Any other list
+   * reloads, as it may have shown the feed's articles. */
+  #afterRemoving(removed: Scope) {
+    if (this.scope.kind === removed.kind && 'id' in this.scope && 'id' in removed && this.scope.id === removed.id)
+      void this.select({ kind: 'all' })
+    else if (removed.kind === 'feed') void this.#loadList()
   }
 
   /** Fetching can take seconds. Until it's done, the reader shows the feed's content;

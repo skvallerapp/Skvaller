@@ -24,6 +24,7 @@ fn main() {
                 .open_js_links_on_click(false)
                 .build(),
         )
+        .plugin(tauri_plugin_dialog::init())
         .on_menu_event(|app, event| {
             if event.id() == SETTINGS_MENU_ITEM {
                 let _ = commands::show_settings_window(app);

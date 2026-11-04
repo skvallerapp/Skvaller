@@ -33,6 +33,7 @@
     unauthorized: 'Wrong username or API password.',
     badUrl: 'Enter the server address, such as https://rss.example.com.',
     network: 'Could not reach the server. Check the address and your connection.',
+    noFeed: '',
     other: '',
   }
 

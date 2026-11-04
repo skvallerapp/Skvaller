@@ -10,15 +10,15 @@ const allFolders: Folder[] = [
 ]
 
 const allFeeds: Feed[] = [
-  { id: 'hn', title: 'Hacker News', folderId: 'f-tech', subscribed: true, icon: null, readerView: false },
-  { id: 'lwn', title: 'LWN.net', folderId: 'f-tech', subscribed: true, icon: null, readerView: true },
-  { id: 'rust', title: 'This Week in Rust', folderId: 'f-tech', subscribed: true, icon: null, readerView: false },
-  { id: 'daring', title: 'Daring Fireball', folderId: 'f-design', subscribed: true, icon: null, readerView: false },
-  { id: 'sidebar', title: 'Sidebar', folderId: 'f-design', subscribed: true, icon: null, readerView: false },
-  { id: 'bbc', title: 'BBC News — World', folderId: 'f-news', subscribed: true, icon: null, readerView: false },
-  { id: 'xkcd', title: 'xkcd', folderId: null, subscribed: true, icon: null, readerView: false },
-  { id: 'kottke', title: 'kottke.org', folderId: null, subscribed: true, icon: null, readerView: false },
-]
+  { id: 'hn', title: 'Hacker News', folderId: 'f-tech' },
+  { id: 'lwn', title: 'LWN.net', folderId: 'f-tech', readerView: true },
+  { id: 'rust', title: 'This Week in Rust', folderId: 'f-tech' },
+  { id: 'daring', title: 'Daring Fireball', folderId: 'f-design' },
+  { id: 'sidebar', title: 'Sidebar', folderId: 'f-design' },
+  { id: 'bbc', title: 'BBC News — World', folderId: 'f-news' },
+  { id: 'xkcd', title: 'xkcd', folderId: null },
+  { id: 'kottke', title: 'kottke.org', folderId: null },
+].map((f) => ({ subscribed: true, icon: null, readerView: false, url: null, siteUrl: null, fetchError: null, ...f }))
 
 // 5,000 articles, to test scrolling. Deterministic, so reloads look the same.
 // Stand-in favicons: a coloured tile with a letter. Three feeds have none, for the fallback.
@@ -37,6 +37,15 @@ const icons: Record<string, string> = {
 }
 for (const f of allFeeds) f.icon = icons[f.id] ?? null
 
+/** For a local account: feeds with addresses, one failing. */
+const localFeeds = (feeds: Feed[]): Feed[] =>
+  feeds.map((f, i) => ({
+    ...f,
+    url: `https://${f.id}.example/feed.xml`,
+    siteUrl: `https://${f.id}.example/`,
+    fetchError: i === 1 ? 'the server answered 404 Not Found' : null,
+  }))
+
 const now = Date.now()
 
 interface Data {
@@ -52,7 +61,8 @@ function dataOf(id: string): Data {
   let d = data.get(id)
   if (!d) {
     const first = id === '1'
-    const feeds = first ? allFeeds : allFeeds.filter((_, i) => i % 2 === 1).map((f) => ({ ...f }))
+    let feeds = first ? allFeeds : allFeeds.filter((_, i) => i % 2 === 1).map((f) => ({ ...f }))
+    if (saved().accounts.find((a) => a.id === id)?.kind === 'local') feeds = localFeeds(feeds)
     const folders = allFolders.filter((f) => feeds.some((feed) => feed.folderId === f.id))
     d = { folders, feeds, articles: makeArticles(feeds, first ? 5000 : 300, Number(id) * 100_000) }
     data.set(id, d)
@@ -191,7 +201,8 @@ function library(): Library {
     unreadByFeed: byFeed(articles, (a) => !a.read),
     starredByFeed: byFeed(articles, (a) => a.starred),
   }
-  return { folders, feeds, counts }
+  // Copies, as from Tauri: the store sees a new list as a change.
+  return { folders: folders.map((f) => ({ ...f })), feeds: feeds.map((f) => ({ ...f })), counts }
 }
 
 function update(ids: string[], change: Partial<Article>) {
@@ -228,6 +239,57 @@ const commands: Record<string, (args: Args) => unknown> = {
     value.active = account.id
     save(value)
     return session()
+  },
+  add_local_account: () => {
+    const value = saved()
+    const id = String(Math.max(0, ...value.accounts.map((a) => Number(a.id))) + 1)
+    value.accounts.push({ id, description: 'On This Device', kind: 'local', sync: 15, keepReadDays: 30 })
+    value.active = id
+    save(value)
+    return session()
+  },
+  // Takes a moment, like fetching the feed. An address with "nofeed" in it has none.
+  subscribe: async ({ url, folderId }) => {
+    await new Promise((r) => setTimeout(r, 600))
+    if (String(url).includes('nofeed')) throw { kind: 'noFeed', message: 'no feed found at this address' }
+    const d = active()
+    const id = `feed/${url}`
+    if (!d.feeds.some((f) => f.id === id)) {
+      const title = String(url).replace(/^https?:\/\//, '').split('/')[0]
+      d.feeds.push({ id, title, folderId: (folderId as string | null) ?? null, subscribed: true, icon: null, readerView: false, url: String(url), siteUrl: null, fetchError: null })
+      d.articles.unshift(...makeArticles([d.feeds.at(-1)!], 5, 50_000_000 + (Date.now() % 1_000_000) * 10))
+    }
+    return id
+  },
+  unsubscribe: ({ feedId }) => {
+    const d = active()
+    d.feeds = d.feeds.filter((f) => f.id !== feedId)
+    d.articles = d.articles.filter((a) => a.feedId !== feedId)
+  },
+  rename_feed: ({ feedId, title }) => {
+    const feed = active().feeds.find((f) => f.id === feedId)
+    if (feed) feed.title = title as string
+  },
+  move_feed: ({ feedId, folderId }) => {
+    const feed = active().feeds.find((f) => f.id === feedId)
+    if (feed) feed.folderId = folderId as string | null
+  },
+  create_folder: ({ title }) => {
+    const d = active()
+    const existing = d.folders.find((f) => f.title.toLowerCase() === String(title).toLowerCase())
+    if (existing) return existing.id
+    const id = `folder/${d.folders.length + 1}`
+    d.folders = [...d.folders, { id, title: title as string }]
+    return id
+  },
+  rename_folder: ({ folderId, title }) => {
+    const d = active()
+    d.folders = d.folders.map((f) => (f.id === folderId ? { ...f, title: title as string } : f))
+  },
+  delete_folder: ({ folderId }) => {
+    const d = active()
+    d.folders = d.folders.filter((f) => f.id !== folderId)
+    for (const f of d.feeds) if (f.folderId === folderId) f.folderId = null
   },
   set_active_account: ({ id }) => save({ ...saved(), active: id as string }),
   update_account: ({ id, description, sync, keepReadDays }) => {

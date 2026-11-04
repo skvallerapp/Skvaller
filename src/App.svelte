@@ -8,6 +8,7 @@
   import Resizer from './lib/Resizer.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import AccountSwitcher from './lib/AccountSwitcher.svelte'
+  import LocalOption from './lib/LocalOption.svelte'
   import SignIn from './lib/SignIn.svelte'
   import { isMac } from './lib/platform'
   import { arrowKeys, bindings, keyName } from './lib/shortcuts'
@@ -125,7 +126,11 @@
       initialError={store.status.unauthorized
         ? `${store.account?.description} no longer accepts the sign-in. Sign in again.`
         : store.status.error}
-    />
+    >
+      {#if !store.accounts.some((a) => a.kind === 'local')}
+        <LocalOption add={() => store.addLocalAccount()} />
+      {/if}
+    </SignIn>
   {/key}
   {#if store.accounts.length > 1}
     <!-- The other accounts still work. -->

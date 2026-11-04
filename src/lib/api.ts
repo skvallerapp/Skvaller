@@ -18,6 +18,9 @@ export const session = () => call<Session>('session')
 export const signIn = (server: string, username: string, password: string) =>
   call<Session>('sign_in', { server, username, password })
 
+/** Adds the local account, whose feeds Skvaller fetches itself, and makes it active. */
+export const addLocalAccount = () => call<Session>('add_local_account')
+
 export const accounts = () => call<Session['accounts']>('accounts')
 
 /** Shows another account in the main window. Every window gets `onAccountsChanged`. */
@@ -50,6 +53,35 @@ export const setRead = (ids: string[], read: boolean) => call<void>('set_read', 
 
 export const setStarred = (ids: string[], starred: boolean) =>
   call<void>('set_starred', { ids, starred })
+
+// The local account's feeds and folders. A sync account's are managed on its server.
+
+/** Subscribes to the feed at `url`, or the one a web page there links to. Fetches it, so
+ * it can take seconds. Returns the feed's ID. */
+export const subscribe = (url: string, folderId: string | null) =>
+  call<string>('subscribe', { url, folderId })
+
+export const unsubscribe = (feedId: string) => call<void>('unsubscribe', { feedId })
+
+export const renameFeed = (feedId: string, title: string) => call<void>('rename_feed', { feedId, title })
+
+export const moveFeed = (feedId: string, folderId: string | null) => call<void>('move_feed', { feedId, folderId })
+
+/** The folder with this title, or else a new one. Returns its ID. */
+export const createFolder = (title: string) => call<string>('create_folder', { title })
+
+export const renameFolder = (folderId: string, title: string) =>
+  call<void>('rename_folder', { folderId, title })
+
+/** Removes the folder. Its feeds stay, in no folder. */
+export const deleteFolder = (folderId: string) => call<void>('delete_folder', { folderId })
+
+/** Asks a yes-or-no question in a native dialog. */
+export async function confirm(message: string, title: string, okLabel: string): Promise<boolean> {
+  if (mock) return window.confirm(`${title}\n\n${message}`)
+  const { ask } = await import('@tauri-apps/plugin-dialog')
+  return ask(message, { title, kind: 'warning', okLabel, cancelLabel: 'Cancel' })
+}
 
 /** Opens an http(s) URL in the system browser, resolving a relative one against `base`.
  * Anything else is ignored. */
