@@ -473,7 +473,8 @@
             {@render row({ kind: 'feed', id: entry.id }, entry.feed.title, store.counts.get(entry.id) ?? 0, false, entry.feed)}
           {:else}
           {@const folder = entry.folder}
-          <div class="folder" out:leave>
+          <!-- global: inside the if block, a local outro wouldn't run as the row goes. -->
+          <div class="folder" out:leave|global>
             <button
               class="disclosure"
               class:open={!collapsed.has(folder.id)}

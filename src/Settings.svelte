@@ -88,8 +88,10 @@
   /** A page inside the account's pane: its feeds' Reader View settings. */
   let subpage = $state<'reader-view' | null>(null)
   /** The account's subscribed feeds, for the Reader View page. */
-  let feeds = $state.raw<Feed[]>([])
+  let feeds = $state.raw<Feed[] | null>(null)
   let feedsFor = ''
+  /** Reader View changes this window is saving: their echoes would show older states. */
+  let feedSaves = 0
 
   const paneOf = (a: Account): Pane => `account:${a.id}`
   /** The account whose pane shows. */
@@ -117,7 +119,7 @@
     })
     void api.onSettingsPane((p) => show(p as Pane))
     void api.onFeedsChanged((id) => {
-      if (subpage === 'reader-view' && id === feedsFor) void loadFeeds(id)
+      if (subpage === 'reader-view' && id === feedsFor && feedSaves === 0) void loadFeeds(id)
     })
     void load().then(async () => {
       const asked = await api.takeSettingsPane()
@@ -235,7 +237,10 @@
 
   async function openReaderView(id: string) {
     subpage = 'reader-view'
-    feeds = []
+    feeds = null
+    // The row that opened the page goes: focus moves to the way back.
+    await tick()
+    main.querySelector<HTMLElement>('.back')?.focus()
     await loadFeeds(id)
   }
 
@@ -250,11 +255,15 @@
   }
 
   function setReaderView(id: string, feed: Feed, on: boolean) {
-    feeds = feeds.map((f) => (f.id === feed.id ? { ...f, readerView: on } : f))
-    api.setFeedReaderView(id, feed.id, on).catch(async (e) => {
-      error = sentence(api.errorMessage(e))
-      await loadFeeds(id)
-    })
+    feeds = (feeds ?? []).map((f) => (f.id === feed.id ? { ...f, readerView: on } : f))
+    feedSaves++
+    api
+      .setFeedReaderView(id, feed.id, on)
+      .catch((e) => (error = sentence(api.errorMessage(e))))
+      .finally(() => {
+        // The last save reloads, so the page shows what was saved.
+        if (--feedSaves === 0) void loadFeeds(id)
+      })
   }
 
   async function backToAccount() {
@@ -569,7 +578,9 @@
         {:else if account && subpage === 'reader-view'}
           {@const a = account}
           <section>
-            {#if feeds.length > 0}
+            {#if feeds?.length === 0}
+              <p class="intro">No subscriptions yet.</p>
+            {:else if feeds}
               <div class="group">
                 {#each feeds as feed (feed.id)}
                   <div class="row">
@@ -645,7 +656,7 @@
                 )}
               </div>
               <div class="row">
-                <label for="sync-on-wake">Sync on wake up from sleep</label>
+                <label for="sync-on-wake">Sync after waking from sleep</label>
                 <input
                   id="sync-on-wake"
                   type="checkbox"
@@ -993,6 +1004,11 @@
 
   .back:hover {
     background: var(--hover);
+  }
+
+  .intro {
+    margin: 0 0 10px;
+    color: var(--text-2);
   }
 
   .feed {

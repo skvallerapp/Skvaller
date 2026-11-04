@@ -16,6 +16,9 @@ import type {
 /** How long an article is open before it is marked read, with `markReadOn: 'delay'`. */
 const MARK_READ_DELAY = 2000
 
+/** How long `markRead` waits for more before saving. */
+const READ_SAVE_DELAY = 300
+
 /** All UI state. Everything comes from the local cache through `api`; nothing here
  * waits for the network. */
 class Store {
@@ -378,14 +381,28 @@ class Store {
     this.#write((account) => api.setRead(account, [id], read))
   }
 
-  /** Marks these listed articles read, the unread ones, in one change. */
+  /** Marks these listed articles read, the unread ones: at once on screen, and saved
+   * together once the marking pauses, as while scrolling. */
   markRead(ids: string[]) {
     const wanted = new Set(ids)
     const articles = this.visible.filter((a) => wanted.has(a.id) && !this.read.has(a.id))
     if (articles.length === 0) return
-    for (const a of articles) this.read.add(a.id)
+    for (const a of articles) {
+      this.read.add(a.id)
+      this.#readToSave.add(a.id)
+    }
     this.unreadByFeed = adjusted(this.unreadByFeed, articles, -1)
-    this.#write((account) => api.setRead(account, articles.map((a) => a.id), true))
+    clearTimeout(this.#readSaveTimer)
+    this.#readSaveTimer = setTimeout(() => this.#saveRead(), READ_SAVE_DELAY)
+  }
+
+  #readToSave = new Set<string>()
+  #readSaveTimer: ReturnType<typeof setTimeout> | undefined
+
+  #saveRead() {
+    const ids = [...this.#readToSave]
+    this.#readToSave.clear()
+    if (ids.length > 0) this.#write((account) => api.setRead(account, ids, true))
   }
 
   /** Marks every article in the current list read. Unlike reading one by one, the
@@ -445,6 +462,9 @@ class Store {
     this.read.clear()
     this.starred.clear()
     this.status = { ...idleStatus }
+    // Marks not saved yet belong to the account that goes.
+    clearTimeout(this.#readSaveTimer)
+    this.#saveRead()
   }
 
   #onStatus(status: SyncStatus) {
