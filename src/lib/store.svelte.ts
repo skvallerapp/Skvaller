@@ -95,7 +95,9 @@ class Store {
       // Listen first, so a sync that finishes meanwhile is not missed.
       await api.onSyncStatus((status) => this.#onStatus(status))
       await api.onSettingsChanged((settings) => (this.settings = settings))
-      await api.onAccountsChanged((session) => void this.#applySession(session))
+      await api.onAccountsChanged((session) =>
+        this.#applySession(session).catch((e) => console.error('Showing the accounts failed', e)),
+      )
       const session = await api.session()
       this.settings = session.settings
       await this.#applySession(session)
@@ -116,6 +118,8 @@ class Store {
 
   /** The newest session taken in. */
   #revision = -1
+  /** The latest sync status of each account, also those not showing. */
+  #statuses = new Map<string, SyncStatus>()
 
   /** The active account's ID, for the commands. */
   #account(): string {
@@ -139,7 +143,8 @@ class Store {
     if (switched || session.signedIn !== this.signedIn) {
       this.#reset()
       this.activeId = session.activeId
-      this.status = session.status
+      // A sync's status may have come while the session was on its way.
+      this.status = (session.activeId && this.#statuses.get(session.activeId)) || session.status
       this.signedIn = session.signedIn
       if (this.signedIn) await this.#reload()
     }
@@ -147,7 +152,10 @@ class Store {
 
   /** Unread counts of every account, for the account switcher. */
   async refreshAccounts() {
-    this.accounts = await api.accounts()
+    const revision = this.#revision
+    const accounts = await api.accounts()
+    // A session that came meanwhile is newer.
+    if (revision === this.#revision) this.accounts = accounts
   }
 
   sync() {
@@ -410,6 +418,7 @@ class Store {
   }
 
   #onStatus(status: SyncStatus) {
+    this.#statuses.set(status.accountId, status)
     if (status.accountId !== this.activeId) return
     this.status = status
     if (status.unauthorized) this.signedIn = false

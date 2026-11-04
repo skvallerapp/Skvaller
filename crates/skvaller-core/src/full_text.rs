@@ -221,6 +221,16 @@ pub(crate) fn scanned_depth(html: &str) -> usize {
     let mut i = 0;
     while let Some(offset) = bytes[i..].iter().position(|&b| b == b'<') {
         i += offset + 1;
+        // Tags in comments and CDATA are text: an end tag there must not close a real
+        // element, or a crafted page reads as flat.
+        for (open, close) in [(&b"!--"[..], &b"-->"[..]), (b"![CDATA[", b"]]>")] {
+            if bytes[i..].starts_with(open) {
+                match find(&bytes[i..], close) {
+                    Some(end) => i += end,
+                    None => return max,
+                }
+            }
+        }
         let closing = bytes.get(i) == Some(&b'/');
         let start = i + usize::from(closing);
         let len = bytes[start..]
@@ -256,8 +266,26 @@ pub(crate) fn scanned_depth(html: &str) -> usize {
         if max > MAX_SCANNED_DEPTH {
             break;
         }
+        // Their content is text up to their own end tag, end tags of others included.
+        if RAW_TEXT.iter().any(|r| r.eq_ignore_ascii_case(name)) {
+            let end = format!("</{name}");
+            let found = bytes[start..]
+                .windows(end.len())
+                .position(|w| w.eq_ignore_ascii_case(end.as_bytes()));
+            match found {
+                Some(at) => i = start + at,
+                None => return max,
+            }
+        }
     }
     max
+}
+
+/// Elements whose content a browser reads as text, not tags.
+const RAW_TEXT: [&str; 6] = ["script", "style", "textarea", "title", "xmp", "noscript"];
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 /// How deeply the nodes under `root` nest.
@@ -341,6 +369,15 @@ mod tests {
         assert!(extract(&page, "https://example.com/").is_some());
         assert!(extract(&nested(50), "https://example.com/").is_some());
         assert!(scanned_depth(ARTICLE) < 20);
+        // End tags in comments, CDATA and scripts are text, not ends of the divs.
+        for hidden in [
+            "<!--</div>-->",
+            "<![CDATA[</div>]]>",
+            "<script>'</div>'</script>",
+        ] {
+            let crafted = format!("<div>{hidden}").repeat(MAX_SCANNED_DEPTH + 10);
+            assert!(scanned_depth(&crafted) > MAX_SCANNED_DEPTH, "{hidden}");
+        }
     }
 
     #[test]

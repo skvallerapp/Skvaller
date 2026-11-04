@@ -7,6 +7,7 @@
   import Plus from '@lucide/svelte/icons/plus'
   import { onMount, tick } from 'svelte'
   import * as api from './lib/api'
+  import { sentence } from './lib/format'
   import { slideHighlight } from './lib/highlight.svelte'
   import { dragRegion, macWindow } from './lib/platform'
   import ShortcutList from './lib/ShortcutList.svelte'
@@ -105,7 +106,7 @@
       settings = session.settings
       setAccounts(session.accounts)
     } catch (e) {
-      error = api.errorMessage(e)
+      error = sentence(api.errorMessage(e))
     }
   }
 
@@ -143,7 +144,7 @@
         error = null
       } catch (e) {
         await load()
-        error = api.errorMessage(e)
+        error = sentence(api.errorMessage(e))
       } finally {
         pending--
       }
@@ -163,7 +164,7 @@
       .updateAccount(id, change)
       .then(
         () => (error = null),
-        (e) => (error = api.errorMessage(e)),
+        (e) => (error = sentence(api.errorMessage(e))),
       )
       .finally(async () => {
         // The last save reloads the accounts, so the form shows what was saved.
@@ -192,7 +193,7 @@
       opmlNote = { id, text }
       error = null
     } catch (e) {
-      error = api.errorMessage(e)
+      error = sentence(api.errorMessage(e))
     }
   }
 
@@ -201,7 +202,7 @@
       if (await api.exportOpml(id)) opmlNote = { id, text: 'Subscriptions exported.' }
       error = null
     } catch (e) {
-      error = api.errorMessage(e)
+      error = sentence(api.errorMessage(e))
     }
   }
 
@@ -210,7 +211,7 @@
     try {
       await api.removeAccount(id)
     } catch (e) {
-      error = api.errorMessage(e)
+      error = sentence(api.errorMessage(e))
     } finally {
       removing = false
     }

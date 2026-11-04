@@ -11,6 +11,9 @@ pub enum Error {
     /// The address has no feed, and no link to one.
     #[error("no feed found at this address")]
     NoFeed,
+    /// A feed, page or file that can't be used, said for the user.
+    #[error("{0}")]
+    Local(String),
     #[error("unexpected response from the server: {0}")]
     Protocol(String),
     /// The cache was written by a newer version of Skvaller.

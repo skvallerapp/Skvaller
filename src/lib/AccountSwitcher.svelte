@@ -14,7 +14,9 @@
 
   /** The active account's live count: its articles are being read right now. */
   const unread = (id: string, saved: number) =>
-    id === store.activeId ? [...store.unreadByFeed.values()].reduce((sum, n) => sum + n, 0) : saved
+    id === store.activeId && store.signedIn
+      ? [...store.unreadByFeed.values()].reduce((sum, n) => sum + n, 0)
+      : saved
 
   async function toggle() {
     open = !open

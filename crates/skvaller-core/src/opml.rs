@@ -12,20 +12,32 @@ use crate::{Db, Error, Result};
 /// Folders in real files nest a few levels at most.
 const MAX_DEPTH: usize = 100;
 
-/// How deeply `<outline>` elements nest, counted roughly from the text.
-fn outline_depth(xml: &str) -> usize {
+/// Feeds one import adds at most. Readers export a few hundred.
+const MAX_FEEDS: usize = 5000;
+
+/// How deeply elements nest, from a real XML tokenizer, so comments, CDATA and `>` in
+/// attribute values count right. Stops counting past `MAX_DEPTH`. A file that doesn't
+/// tokenize gets 0: the parser refuses it anyway.
+fn depth(xml: &str) -> usize {
+    use xmlparser::{ElementEnd, Token, Tokenizer};
     let (mut depth, mut max) = (0usize, 0);
-    let mut rest = xml;
-    while let Some(i) = rest.find('<') {
-        rest = &rest[i + 1..];
-        if rest.starts_with("/outline") {
-            depth = depth.saturating_sub(1);
-        } else if rest.starts_with("outline") {
-            let end = rest.find('>').unwrap_or(rest.len());
-            if !rest[..end].ends_with('/') {
+    for token in Tokenizer::from(xml) {
+        match token {
+            Ok(Token::ElementStart { .. }) => {
                 depth += 1;
                 max = max.max(depth);
+                if max > MAX_DEPTH {
+                    break;
+                }
             }
+            Ok(Token::ElementEnd {
+                end: ElementEnd::Empty | ElementEnd::Close(..),
+                ..
+            }) => {
+                depth = depth.saturating_sub(1);
+            }
+            Ok(_) => {}
+            Err(_) => return 0,
         }
     }
     max
@@ -81,7 +93,7 @@ pub fn export(db: &Db, title: &str) -> Result<String> {
     };
     document
         .to_string()
-        .map_err(|e| Error::Protocol(format!("writing OPML failed: {e}")))
+        .map_err(|e| Error::Local(format!("writing OPML failed: {e}")))
 }
 
 /// Adds the feeds of an OPML document, in their folders. Folders inside folders count
@@ -90,10 +102,10 @@ pub fn export(db: &Db, title: &str) -> Result<String> {
 pub fn import(db: &Db, xml: &str) -> Result<ImportReport> {
     // The parser recurses per level: a crafted file nested thousands deep would
     // overflow the stack and end the app.
-    if outline_depth(xml) > MAX_DEPTH {
-        return Err(Error::Protocol("the OPML file nests too deeply".into()));
+    if depth(xml) > MAX_DEPTH {
+        return Err(Error::Local("the OPML file nests too deeply".into()));
     }
-    let document = OPML::from_str(xml).map_err(|_| Error::Protocol("not an OPML file".into()))?;
+    let document = OPML::from_str(xml).map_err(|_| Error::Local("not an OPML file".into()))?;
     let mut report = ImportReport::default();
     for outline in &document.body.outlines {
         add(db, outline, None, &mut report)?;
@@ -112,6 +124,10 @@ fn add(db: &Db, outline: &Outline, folder: Option<&str>, report: &mut ImportRepo
             .to_owned()
     };
     if let Some(xml_url) = &outline.xml_url {
+        if report.added >= MAX_FEEDS {
+            report.skipped += 1;
+            return Ok(());
+        }
         let Some(url) = Url::parse(xml_url.trim())
             .ok()
             .filter(|u| matches!(u.scheme(), "http" | "https"))
@@ -234,7 +250,22 @@ mod tests {
             "</outline>".repeat(5000)
         );
         let db = Db::open_in_memory().unwrap();
-        assert!(matches!(import(&db, &deep), Err(Error::Protocol(_))));
+        assert!(matches!(import(&db, &deep), Err(Error::Local(_))));
+        // End tags in comments don't hide the depth.
+        let hidden = format!(
+            "<opml version=\"2.0\"><body>{}{}</body></opml>",
+            "<outline text=\"x\"><!--</outline>-->".repeat(5000),
+            "</outline>".repeat(5000)
+        );
+        assert!(matches!(import(&db, &hidden), Err(Error::Local(_))));
+        // A > in a value is no end of the tag.
+        let arrows = format!(
+            "<opml version=\"2.0\"><body>{}</body></opml>",
+            (0..150)
+                .map(|i| format!("<outline text=\"A > {i}\" xmlUrl=\"https://a.example/{i}\"/>"))
+                .collect::<String>()
+        );
+        assert_eq!(import(&db, &arrows).unwrap().added, 150);
         // Many feeds side by side are not deep.
         let flat = format!(
             "<opml version=\"2.0\"><body><outline text=\"F\">{}</outline></body></opml>",
@@ -242,7 +273,7 @@ mod tests {
                 .map(|i| format!("<outline text=\"{i}\" xmlUrl=\"https://e.example/{i}\"/>"))
                 .collect::<String>()
         );
-        assert_eq!(outline_depth(&flat), 1);
+        assert_eq!(depth(&flat), 4);
         assert_eq!(import(&db, &flat).unwrap().added, 500);
     }
 

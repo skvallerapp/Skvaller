@@ -91,7 +91,7 @@ pub async fn subscribe(db: &Db, url: &str, folder_id: Option<&str>, now: i64) ->
     let url = with_scheme(url).ok_or(Error::BadUrl)?;
     let page = fetch(&http, url.as_str(), None)
         .await
-        .map_err(Error::Protocol)?
+        .map_err(Error::Local)?
         .ok_or(Error::NoFeed)?;
     let (page, parsed) = match parse(&page) {
         Some(parsed) => (page, parsed),
@@ -99,7 +99,7 @@ pub async fn subscribe(db: &Db, url: &str, folder_id: Option<&str>, now: i64) ->
             let link = discover_off_runtime(&page).await.ok_or(Error::NoFeed)?;
             let page = fetch(&http, link.as_str(), None)
                 .await
-                .map_err(Error::Protocol)?
+                .map_err(Error::Local)?
                 .ok_or(Error::NoFeed)?;
             let parsed = parse(&page).ok_or(Error::NoFeed)?;
             (page, parsed)

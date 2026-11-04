@@ -979,8 +979,14 @@ pub async fn import_opml(
             "the file is too large for an OPML file",
         ));
     }
-    let xml = std::fs::read(&path).map_err(CommandError::other)?;
-    let report = read_opml(&rt.db, &String::from_utf8_lossy(&xml))?;
+    // Reading and adding thousands of feeds takes a moment: off the async runtime.
+    let db = rt.db.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        let xml = std::fs::read(&path).map_err(CommandError::other)?;
+        read_opml(&db, &String::from_utf8_lossy(&xml)).map_err(CommandError::from)
+    })
+    .await
+    .map_err(CommandError::other)??;
     if report.added > 0 {
         tauri::async_runtime::spawn(async move {
             // After any refresh that is running, which started before the import.
@@ -1070,9 +1076,10 @@ pub async fn open_settings(
     state: State<'_, AppState>,
     pane: Option<String>,
 ) -> CommandResult<()> {
-    if let Some(pane) = &pane {
-        // A window that is open gets the event; a new one asks on load.
-        *lock(&state.settings_pane) = Some(pane.clone());
+    // A window that is open gets the event; a new one asks on load.
+    let open = app.get_webview_window(SETTINGS_WINDOW).is_some();
+    *lock(&state.settings_pane) = if open { None } else { pane.clone() };
+    if let (true, Some(pane)) = (open, &pane) {
         let _ = app.emit_to(SETTINGS_WINDOW, SETTINGS_PANE_EVENT, pane);
     }
     show_settings_window(&app).map_err(CommandError::other)
@@ -1201,6 +1208,8 @@ async fn run_sync(app: &AppHandle, rt: &Arc<Runtime>) {
                 if unauthorized {
                     rt.token_rejected.store(true, Ordering::Relaxed);
                     *lock(&rt.client) = None;
+                    // Sessions from before this say the account is signed in.
+                    state.revision.fetch_add(1, Ordering::SeqCst);
                 }
                 status(SyncStatus {
                     error: Some(e.to_string()),
