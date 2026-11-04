@@ -12,7 +12,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use skvaller_core::{
     ArticleSummary, Client, Counts, Db, Error, Feed, Folder, Selection, delete_token,
-    load_full_text, load_token, prefetch_full_text, save_token, sync,
+    load_full_text, load_token, prefetch_full_text, refresh_local, save_token,
+    subscribe as subscribe_feed, sync,
 };
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder};
 use tokio::sync::Notify;
@@ -268,6 +269,7 @@ impl From<Error> for CommandError {
             Error::Unauthorized => "unauthorized",
             Error::BadUrl => "badUrl",
             Error::Http(_) => "network",
+            Error::NoFeed => "noFeed",
             _ => "other",
         };
         Self {
@@ -498,6 +500,26 @@ fn add_account(
     Ok(rt)
 }
 
+/// Adds the local account, whose feeds Skvaller fetches itself, and makes it active.
+/// There is at most one.
+#[tauri::command]
+pub async fn add_local_account(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> CommandResult<Session> {
+    if state
+        .config()
+        .accounts
+        .iter()
+        .any(|a| a.kind == AccountKind::Local)
+    {
+        return Err(CommandError::other("there is a local account already"));
+    }
+    add_account(&app, &state, AccountKind::Local)?;
+    emit_session(&app).await;
+    current_session(&state).await
+}
+
 /// Shows another account in the main window.
 #[tauri::command]
 pub async fn set_active_account(
@@ -680,6 +702,95 @@ pub async fn set_starred(
     Ok(state.active()?.db.set_starred(&parse_ids(&ids)?, starred)?)
 }
 
+/// The active account, if it is the local one: only its feeds and folders are managed
+/// here. A sync account's are managed on its server.
+fn active_local(state: &AppState) -> CommandResult<Arc<Runtime>> {
+    let rt = state.active()?;
+    match state.config().account(&rt.id).map(|a| &a.kind) {
+        Some(AccountKind::Local) => Ok(rt),
+        _ => Err(CommandError::other(
+            "this account's feeds are managed on its server",
+        )),
+    }
+}
+
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// Subscribes the local account to the feed at `url`, or the one a web page there
+/// links to. Returns the feed's ID. Fetches it, so it can take seconds.
+#[tauri::command]
+pub async fn subscribe(
+    state: State<'_, AppState>,
+    url: String,
+    folder_id: Option<String>,
+) -> CommandResult<String> {
+    let rt = active_local(&state)?;
+    Ok(subscribe_feed(&rt.db, &url, folder_id.as_deref(), now_secs()).await?)
+}
+
+/// Removes a feed of the local account, with its articles.
+#[tauri::command]
+pub async fn unsubscribe(state: State<'_, AppState>, feed_id: String) -> CommandResult<()> {
+    Ok(active_local(&state)?.db.unsubscribe(&feed_id)?)
+}
+
+#[tauri::command]
+pub async fn rename_feed(
+    state: State<'_, AppState>,
+    feed_id: String,
+    title: String,
+) -> CommandResult<()> {
+    let title = non_empty(&title)?;
+    Ok(active_local(&state)?.db.rename_feed(&feed_id, title)?)
+}
+
+/// Moves a feed of the local account into a folder, or out of any with `None`.
+#[tauri::command]
+pub async fn move_feed(
+    state: State<'_, AppState>,
+    feed_id: String,
+    folder_id: Option<String>,
+) -> CommandResult<()> {
+    Ok(active_local(&state)?
+        .db
+        .move_feed(&feed_id, folder_id.as_deref())?)
+}
+
+/// The local account's folder with this title, or else a new one. Returns its ID.
+#[tauri::command]
+pub async fn create_folder(state: State<'_, AppState>, title: String) -> CommandResult<String> {
+    let title = non_empty(&title)?;
+    Ok(active_local(&state)?.db.create_folder(title)?)
+}
+
+#[tauri::command]
+pub async fn rename_folder(
+    state: State<'_, AppState>,
+    folder_id: String,
+    title: String,
+) -> CommandResult<()> {
+    let title = non_empty(&title)?;
+    Ok(active_local(&state)?.db.rename_folder(&folder_id, title)?)
+}
+
+/// Removes a folder of the local account. Its feeds stay, in no folder.
+#[tauri::command]
+pub async fn delete_folder(state: State<'_, AppState>, folder_id: String) -> CommandResult<()> {
+    Ok(active_local(&state)?.db.delete_folder(&folder_id)?)
+}
+
+fn non_empty(title: &str) -> CommandResult<&str> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(CommandError::other("the name is empty"));
+    }
+    Ok(title)
+}
+
 /// Saves the settings and sends them to every window.
 #[tauri::command]
 pub async fn set_settings(
@@ -808,9 +919,10 @@ async fn run_sync(app: &AppHandle, rt: &Arc<Runtime>) {
 
     let work = async {
         let account = state.config().account(&rt.id).cloned()?;
+        // `None` for the local account, which fetches its feeds itself.
         let client = match account.kind {
             AccountKind::Greader { .. } => match ensure_client(&state, rt).await {
-                Ok(Some(client)) => client,
+                Ok(Some(client)) => Some(client),
                 Ok(None) => return None,
                 Err(e) => {
                     return Some(status(SyncStatus {
@@ -819,18 +931,19 @@ async fn run_sync(app: &AppHandle, rt: &Arc<Runtime>) {
                     }));
                 }
             },
-            AccountKind::Local => return None,
+            AccountKind::Local => None,
         };
         emit(status(SyncStatus {
             syncing: true,
             ..SyncStatus::default()
         }));
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as i64);
-        let keep_read_days = account.keep_read_days.max(1);
-        Some(match sync(&client, &rt.db, now, keep_read_days).await {
+        let (now, keep_read_days) = (now_secs(), account.keep_read_days.max(1));
+        let synced = match &client {
+            Some(client) => sync(client, &rt.db, now, keep_read_days).await,
+            None => refresh_local(&rt.db, now, keep_read_days).await,
+        };
+        Some(match synced {
             Ok(_) => status(SyncStatus::default()),
             Err(e) => {
                 let unauthorized = matches!(e, Error::Unauthorized);

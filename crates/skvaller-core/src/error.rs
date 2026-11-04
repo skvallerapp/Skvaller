@@ -8,6 +8,9 @@ pub enum Error {
     BadUrl,
     #[error("network error: {0}")]
     Http(#[from] reqwest::Error),
+    /// The address has no feed, and no link to one.
+    #[error("no feed found at this address")]
+    NoFeed,
     #[error("unexpected response from the server: {0}")]
     Protocol(String),
     /// The cache was written by a newer version of Skvaller.
