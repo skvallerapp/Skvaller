@@ -910,13 +910,16 @@ fn now_secs() -> i64 {
 /// links to. Returns the feed's ID. Fetches it, so it can take seconds.
 #[tauri::command]
 pub async fn subscribe(
+    app: AppHandle,
     state: State<'_, AppState>,
     account_id: String,
     url: String,
     folder_id: Option<String>,
 ) -> CommandResult<String> {
     let rt = local(&state, &account_id)?;
-    Ok(subscribe_feed(&rt.db, &url, folder_id.as_deref(), now_secs()).await?)
+    let id = subscribe_feed(&rt.db, &url, folder_id.as_deref(), now_secs()).await?;
+    update_badge(&app);
+    Ok(id)
 }
 
 /// Removes a feed of the local account, with its articles.
@@ -1177,8 +1180,14 @@ pub fn start_background_sync(app: AppHandle) {
 
 /// How often the clock is checked for a sleep.
 const WAKE_CHECK: Duration = Duration::from_secs(30);
-/// More time than this past a check's wait means the computer slept.
-const WAKE_SLACK: Duration = Duration::from_secs(60);
+/// More time than this past a check's wait means the computer slept. Large, so a stalled
+/// process, such as under App Nap, or a clock set forward isn't taken for a sleep; a
+/// sleep shorter than this needs no sync anyway.
+const WAKE_SLACK: Duration = Duration::from_secs(5 * 60);
+/// The network takes a moment to come back after a wake.
+const WAKE_DELAY: Duration = Duration::from_secs(15);
+/// Retries of a sync on wake that failed, likely before the network was back.
+const WAKE_RETRIES: u32 = 2;
 
 /// Whether the wall clock moved on so much more than a wait of `waited` that the
 /// computer must have slept. A timer doesn't run while it sleeps; the clock does.
@@ -1215,6 +1224,8 @@ fn start_sync_loop(app: AppHandle, rt: Arc<Runtime>) {
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
         let mut last: Option<SystemTime> = None;
+        // A sync on wake still due, with the retries it has left.
+        let mut wake_sync: Option<u32> = None;
         loop {
             if rt.removed.load(Ordering::Relaxed) {
                 break;
@@ -1223,8 +1234,14 @@ fn start_sync_loop(app: AppHandle, rt: Arc<Runtime>) {
                 break;
             };
             let woke = rt.woke.swap(false, Ordering::Relaxed);
+            let synced_lately = last.is_some_and(|l| {
+                SystemTime::now().duration_since(l).unwrap_or_default() < WAKE_SLACK
+            });
+            if woke && account.sync_on_wake && !synced_lately {
+                wake_sync = Some(WAKE_RETRIES);
+            }
             let due = match (account.sync, last) {
-                _ if woke && account.sync_on_wake => Some(Instant::now()),
+                _ if wake_sync.is_some() => Some(Instant::now() + WAKE_DELAY),
                 (SyncSchedule::Manual, _) | (SyncSchedule::OnStart, Some(_)) => None,
                 (_, None) => Some(Instant::now()),
                 (SyncSchedule::Every(m), Some(last)) => {
@@ -1243,6 +1260,11 @@ fn start_sync_loop(app: AppHandle, rt: Arc<Runtime>) {
                 () = wait => {
                     run_sync(&app, &rt).await;
                     last = Some(SystemTime::now());
+                    // A failure other than a rejected sign-in is likely the network,
+                    // not back yet: try again in a moment.
+                    let offline = lock(&rt.last_error).is_some()
+                        && !rt.token_rejected.load(Ordering::Relaxed);
+                    wake_sync = wake_sync.filter(|_| offline).and_then(|n| n.checked_sub(1));
                 }
                 () = rt.wake.notified() => {}
             }
@@ -1376,8 +1398,8 @@ mod tests {
         let before = UNIX_EPOCH + Duration::from_secs(1_000_000);
         let after = |secs| before + Duration::from_secs(secs);
         assert!(!slept(before, after(30), WAKE_CHECK));
-        assert!(!slept(before, after(80), WAKE_CHECK));
-        assert!(slept(before, after(91), WAKE_CHECK));
+        assert!(!slept(before, after(300), WAKE_CHECK));
+        assert!(slept(before, after(331), WAKE_CHECK));
         assert!(slept(before, after(8 * 3600), WAKE_CHECK));
         // A clock set back is no sleep.
         assert!(!slept(after(100), before, WAKE_CHECK));

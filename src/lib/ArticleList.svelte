@@ -175,7 +175,8 @@
   let frame = 0
 
   function onScroll() {
-    const top = viewport.scrollTop
+    // Elastic overscroll can go above the top.
+    const top = Math.max(0, viewport.scrollTop)
     if (store.settings.markReadOnScroll && top > scrolledTo) {
       const end = Math.min(items.length, Math.floor(top / ROW_HEIGHT))
       for (let i = Math.floor(scrolledTo / ROW_HEIGHT); i < end; i++) passed.push(items[i].id)
