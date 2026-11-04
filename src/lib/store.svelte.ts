@@ -510,8 +510,10 @@ class Store {
   async #loadLibrary() {
     const session = this.#session
     await this.#writes
+    const writes = this.#writeCount
     const lib = await api.library(this.#account())
-    if (session !== this.#session) return
+    // A change made meanwhile isn't in these counts; its own reload brings them.
+    if (session !== this.#session || writes !== this.#writeCount) return
     this.folders = lib.folders
     this.feeds = lib.feeds
     this.unreadByFeed = new Map(Object.entries(lib.counts.unreadByFeed))
@@ -538,6 +540,8 @@ class Store {
     const key = this.#selectionKey()
     const writes = this.#writeCount
     await this.#writes
+    // Changes made while waiting, such as scroll marks: wait for them before fetching.
+    if (writes !== this.#writeCount && request === this.#listRequest) return this.#loadList(keep)
     let list = await api.articles(this.#account(), selection)
     if (request !== this.#listRequest) {
       // Not after a sign-out, which drops loads without starting one.
