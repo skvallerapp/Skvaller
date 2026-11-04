@@ -63,6 +63,8 @@
   let confirmingRemove = $state(false)
   let removing = $state(false)
   let removeButton = $state<HTMLButtonElement>()
+  /** What the last OPML import or export did, for the account it was for. */
+  let opmlNote = $state<{ id: string; text: string } | null>(null)
   // Saves run one after another, so they reach config.json in the order made.
   let saving = Promise.resolve()
   // While saves are pending, `settings-changed` only echoes older states of this window.
@@ -114,6 +116,7 @@
 
   function show(p: Pane) {
     confirmingRemove = false
+    opmlNote = null
     pane = p
   }
 
@@ -158,6 +161,31 @@
     const description = input.value.trim()
     if (description && description !== a.description) changeAccount(a.id, { description })
     else input.value = a.description
+  }
+
+  async function importOpml(id: string) {
+    try {
+      const report = await api.importOpml(id)
+      if (!report) return
+      const feeds = (n: number) => `${n.toLocaleString()} ${n === 1 ? 'feed' : 'feeds'}`
+      const text =
+        report.added === 0
+          ? 'No new feeds in the file.'
+          : `Added ${feeds(report.added)}.` + (report.skipped > 0 ? ` Skipped ${feeds(report.skipped)} already added or unusable.` : '')
+      opmlNote = { id, text }
+      error = null
+    } catch (e) {
+      error = api.errorMessage(e)
+    }
+  }
+
+  async function exportOpml(id: string) {
+    try {
+      if (await api.exportOpml(id)) opmlNote = { id, text: 'Subscriptions exported.' }
+      error = null
+    } catch (e) {
+      error = api.errorMessage(e)
+    }
   }
 
   async function removeAccount(id: string) {
@@ -453,6 +481,16 @@
             <p class="note">Starred articles are always kept.</p>
           </section>
           <section>
+            <h2>Subscriptions</h2>
+            <div class="buttons">
+              {#if a.kind === 'local'}
+                <button class="button wide" onclick={() => importOpml(a.id)}>Import OPML…</button>
+              {/if}
+              <button class="button wide" onclick={() => exportOpml(a.id)}>Export as OPML…</button>
+            </div>
+            {#if opmlNote?.id === a.id}<p class="note" role="status">{opmlNote.text}</p>{/if}
+          </section>
+          <section>
             <h2>Account</h2>
             {#if confirmingRemove}
               <div class="group confirm" role="alertdialog" aria-labelledby="remove-question">
@@ -468,6 +506,9 @@
                 </p>
                 <div class="actions">
                   <!-- Cancel takes the focus, so a second Return doesn't remove it. -->
+                  {#if a.kind === 'local'}
+                    <button class="button export" onclick={() => exportOpml(a.id)}>Export as OPML…</button>
+                  {/if}
                   <!-- svelte-ignore a11y_autofocus -->
                   <button class="button" autofocus onclick={cancelRemove}>Cancel</button>
                   <button
@@ -724,6 +765,17 @@
     background: var(--reader-bg);
     color: var(--text);
     text-align: left;
+  }
+
+  .buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* Apart from Cancel and Remove, at the start. */
+  .button.export {
+    margin-right: auto;
   }
 
   /* A whole group's width, as a row of its own. */

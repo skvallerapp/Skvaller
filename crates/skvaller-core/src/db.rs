@@ -86,10 +86,11 @@ END;
 
 /// Schema version 3 to 4: the local account, whose feeds Skvaller fetches itself.
 const MIGRATE_3: &str = "
--- The local account's feeds: where they are fetched from, and how it went last time.
--- NULL for a sync account's feeds.
+-- The feed's address and its web site's, as the server lists them or, in the local
+-- account, where it is fetched from.
 ALTER TABLE feeds ADD COLUMN url TEXT;
 ALTER TABLE feeds ADD COLUMN site_url TEXT;
+-- The local account's: how fetching went last time.
 ALTER TABLE feeds ADD COLUMN etag TEXT;
 ALTER TABLE feeds ADD COLUMN last_modified TEXT;
 ALTER TABLE feeds ADD COLUMN fetch_error TEXT; -- why the last fetch failed
@@ -142,6 +143,9 @@ pub(crate) struct FeedRow {
     /// `(id, title)` of the folder, if any.
     pub folder: Option<(String, String)>,
     pub icon_url: Option<String>,
+    /// The feed's address and its web site's, if the server lists them.
+    pub url: Option<String>,
+    pub site_url: Option<String>,
 }
 
 pub(crate) struct ArticleRow {
@@ -177,7 +181,8 @@ pub struct Feed {
     pub icon: Option<String>,
     /// Open its articles in Reader View. A local setting, not synced.
     pub reader_view: bool,
-    /// The local account's feeds: the feed's URL, and its web site's.
+    /// The feed's address and its web site's: always for the local account's feeds, as
+    /// the server lists them for a sync account's.
     pub url: Option<String>,
     pub site_url: Option<String>,
     /// The local account's feeds: why the last fetch failed.
@@ -563,11 +568,12 @@ impl Db {
                  ON CONFLICT DO UPDATE SET title = excluded.title",
             )?;
             let mut feed = tx.prepare(
-                "INSERT INTO feeds (id, title, folder_id, subscribed, icon_url)
-                 VALUES (?1, ?2, ?3, 1, ?4)
+                "INSERT INTO feeds (id, title, folder_id, subscribed, icon_url, url, site_url)
+                 VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6)
                  ON CONFLICT DO UPDATE SET
                      title = excluded.title, folder_id = excluded.folder_id, subscribed = 1,
-                     icon_url = excluded.icon_url",
+                     icon_url = excluded.icon_url, url = excluded.url,
+                     site_url = excluded.site_url",
             )?;
             for f in feeds {
                 if let Some((id, title)) = &f.folder {
@@ -577,7 +583,9 @@ impl Db {
                     f.id,
                     f.title,
                     f.folder.as_ref().map(|(id, _)| id),
-                    f.icon_url
+                    f.icon_url,
+                    f.url,
+                    f.site_url
                 ])?;
             }
         }
@@ -751,7 +759,8 @@ impl Db {
         )?)
     }
 
-    /// The local account's feeds.
+    /// Feeds with an address: in the local account, every one. Only the local account
+    /// fetches them.
     pub(crate) fn local_feeds(&self) -> Result<Vec<LocalFeed>> {
         let conn = self.lock();
         let mut stmt =
@@ -1007,6 +1016,8 @@ mod tests {
             title: id.to_uppercase(),
             folder: folder.map(|f| (f.into(), f.to_uppercase())),
             icon_url: None,
+            url: None,
+            site_url: None,
         }
     }
 

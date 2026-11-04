@@ -254,6 +254,10 @@ pub(crate) struct Subscription {
     /// The feed's favicon. FreshRSS and Miniflux send it.
     #[serde(rename = "iconUrl")]
     pub icon_url: Option<String>,
+    /// The feed's own address, and its web site's, for an OPML export.
+    pub url: Option<String>,
+    #[serde(rename = "htmlUrl")]
+    pub html_url: Option<String>,
 }
 
 #[derive(Deserialize)]

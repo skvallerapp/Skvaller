@@ -11,11 +11,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use skvaller_core::{
-    ArticleSummary, Client, Counts, Db, Error, Feed, Folder, Selection, delete_token,
-    load_full_text, load_token, prefetch_full_text, refresh_local, save_token,
-    subscribe as subscribe_feed, sync,
+    ArticleSummary, Client, Counts, Db, Error, Feed, Folder, ImportReport, Selection, delete_token,
+    export_opml as write_opml, import_opml as read_opml, load_full_text, load_token,
+    prefetch_full_text, refresh_local, save_token, subscribe as subscribe_feed, sync,
 };
-use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, WebviewWindowBuilder};
+use tauri_plugin_dialog::{DialogExt, FilePath};
 use tokio::sync::Notify;
 use tokio::time::{Instant, sleep_until};
 
@@ -781,6 +782,91 @@ pub async fn rename_folder(
 #[tauri::command]
 pub async fn delete_folder(state: State<'_, AppState>, folder_id: String) -> CommandResult<()> {
     Ok(active_local(&state)?.db.delete_folder(&folder_id)?)
+}
+
+/// Larger OPML files are not read. A thousand feeds take a few hundred kilobytes.
+const MAX_OPML_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Asks for an OPML file and adds its feeds to the local account `id`, which then
+/// refreshes. `None` if the user cancelled.
+#[tauri::command]
+pub async fn import_opml(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    window: WebviewWindow,
+    id: String,
+) -> CommandResult<Option<ImportReport>> {
+    let rt = state.runtime(&id)?;
+    if state.config().account(&id).map(|a| &a.kind) != Some(&AccountKind::Local) {
+        return Err(CommandError::other(
+            "this account's feeds are managed on its server",
+        ));
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_parent(&window)
+        .add_filter("OPML", &["opml", "xml"])
+        .pick_file(|path| {
+            let _ = tx.send(path);
+        });
+    let Some(path) = rx.await.ok().flatten() else {
+        return Ok(None);
+    };
+    let path = file_path(path)?;
+    let too_large = std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_OPML_BYTES);
+    if too_large {
+        return Err(CommandError::other(
+            "the file is too large for an OPML file",
+        ));
+    }
+    let xml = std::fs::read(&path).map_err(CommandError::other)?;
+    let report = read_opml(&rt.db, &String::from_utf8_lossy(&xml))?;
+    if report.added > 0 {
+        tauri::async_runtime::spawn(async move { run_sync(&app, &rt).await });
+    }
+    Ok(Some(report))
+}
+
+/// Asks where to save, and writes the account's subscriptions there as OPML. False if
+/// the user cancelled.
+#[tauri::command]
+pub async fn export_opml(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    window: WebviewWindow,
+    id: String,
+) -> CommandResult<bool> {
+    let rt = state.runtime(&id)?;
+    let description = state
+        .config()
+        .account(&id)
+        .map(|a| a.description.clone())
+        .unwrap_or_default();
+    let xml = write_opml(&rt.db, &description)?;
+    // No characters a file system refuses in the suggested name.
+    let name: String = description
+        .chars()
+        .map(|c| if "/\\:*?\"<>|".contains(c) { '-' } else { c })
+        .collect();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_parent(&window)
+        .add_filter("OPML", &["opml"])
+        .set_file_name(format!("{} Subscriptions.opml", name.trim()))
+        .save_file(|path| {
+            let _ = tx.send(path);
+        });
+    let Some(path) = rx.await.ok().flatten() else {
+        return Ok(false);
+    };
+    std::fs::write(file_path(path)?, xml).map_err(CommandError::other)?;
+    Ok(true)
+}
+
+fn file_path(path: FilePath) -> CommandResult<PathBuf> {
+    path.into_path().map_err(CommandError::other)
 }
 
 fn non_empty(title: &str) -> CommandResult<&str> {

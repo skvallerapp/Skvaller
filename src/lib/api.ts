@@ -76,6 +76,14 @@ export const renameFolder = (folderId: string, title: string) =>
 /** Removes the folder. Its feeds stay, in no folder. */
 export const deleteFolder = (folderId: string) => call<void>('delete_folder', { folderId })
 
+/** Asks for an OPML file and adds its feeds to the local account `id`, which then
+ * refreshes. `null` if the user cancelled. */
+export const importOpml = (id: string) => call<{ added: number; skipped: number } | null>('import_opml', { id })
+
+/** Asks where to save, and writes the account's subscriptions there as OPML. False if
+ * the user cancelled. */
+export const exportOpml = (id: string) => call<boolean>('export_opml', { id })
+
 /** Asks a yes-or-no question in a native dialog. */
 export async function confirm(message: string, title: string, okLabel: string): Promise<boolean> {
   if (mock) return window.confirm(`${title}\n\n${message}`)
