@@ -1,8 +1,9 @@
 # Skvaller
 
 A desktop RSS reader (Windows, macOS, Linux).
-It is a client for a sync service through the Google Reader API. FreshRSS is the first
-target.
+It is a client for a sync service through the Google Reader API, with FreshRSS as the
+first target. It also has a local account that fetches feeds itself, and several accounts
+can be connected at once.
 
 ## Stack
 
@@ -33,5 +34,5 @@ target.
 
 ## Out of scope
 
-Do not add these: mobile apps, local-only feeds, a unified timeline, plugins, AI
-features. OPML and other sync backends are planned for "Later".
+Do not add these: mobile apps, a unified timeline (accounts are switched, never merged),
+plugins, AI features. Other sync backends are planned for "Later".
