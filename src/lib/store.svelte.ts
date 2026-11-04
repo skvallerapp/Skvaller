@@ -96,7 +96,9 @@ class Store {
       await api.onSyncStatus((status) => this.#onStatus(status))
       await api.onSettingsChanged((settings) => (this.settings = settings))
       await api.onAccountsChanged((session) => void this.#applySession(session))
-      await this.#applySession(await api.session())
+      const session = await api.session()
+      this.settings = session.settings
+      await this.#applySession(session)
     } catch (e) {
       // Such as no keychain available. The sign-in screen shows it.
       this.status = { ...this.status, error: api.errorMessage(e) }
@@ -112,6 +114,9 @@ class Store {
     await this.#applySession(await api.addLocalAccount())
   }
 
+  /** The newest session taken in. */
+  #revision = -1
+
   /** The active account's ID, for the commands. */
   #account(): string {
     return this.activeId ?? ''
@@ -126,9 +131,11 @@ class Store {
   /** Takes in the accounts, from the start, a sign-in or any window's change. Another
    * active account drops everything of the old one and loads its own. */
   async #applySession(session: Session) {
+    // Settings come through `settings-changed`; an account change may predate one.
+    if (session.revision < this.#revision) return
+    this.#revision = session.revision
     const switched = session.activeId !== this.activeId
     this.accounts = session.accounts
-    this.settings = session.settings
     if (switched || session.signedIn !== this.signedIn) {
       this.#reset()
       this.activeId = session.activeId
@@ -226,8 +233,9 @@ class Store {
   /** Subscribes and shows the feed. Fetching it can take seconds; a failure throws. */
   async subscribe(url: string, folderId: string | null) {
     const session = this.#session
+    const account = this.#account()
     await this.#writes
-    const id = await api.subscribe(this.#account(), url, folderId)
+    const id = await api.subscribe(account, url, folderId)
     // Another account is showing now: the feed is in the one it was added to.
     if (session !== this.#session) return
     await this.#loadLibrary()
@@ -237,8 +245,9 @@ class Store {
   /** The folder with this title, or else a new one. Returns its ID. */
   async createFolder(title: string): Promise<string> {
     const session = this.#session
+    const account = this.#account()
     await this.#writes
-    const id = await api.createFolder(this.#account(), title)
+    const id = await api.createFolder(account, title)
     if (session === this.#session) await this.#loadLibrary()
     return id
   }

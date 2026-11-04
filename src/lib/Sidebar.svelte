@@ -271,22 +271,25 @@
     }
   }
 
+  // Only if the account is still the one asked about when the user answers.
   async function unsubscribe(feedId: string) {
     const feed = store.feed(feedId)
     if (!feed) return
+    const account = store.activeId
     const ok = await confirm(
       'Its articles are removed from this device, starred ones too.',
       `Unsubscribe from ${feed.title}?`,
       'Unsubscribe',
     )
-    if (ok) store.unsubscribe(feedId)
+    if (ok && store.activeId === account) store.unsubscribe(feedId)
   }
 
   async function deleteFolder(folderId: string) {
     const folder = store.folders.find((f) => f.id === folderId)
     if (!folder) return
+    const account = store.activeId
     const ok = await confirm('Its feeds stay, in no folder.', `Delete ${folder.title}?`, 'Delete Folder')
-    if (ok) store.deleteFolder(folderId)
+    if (ok && store.activeId === account) store.deleteFolder(folderId)
   }
 
   // Renaming happens in the row itself.
@@ -321,6 +324,11 @@
     const target = renaming
     if (!target) return
     renaming = null
+    // The row takes the focus back from the field, which goes.
+    const hadFocus = document.activeElement === input
+    void tick().then(() => {
+      if (hadFocus) nav.querySelector<HTMLElement>(`[data-row="${CSS.escape(`${target.kind}:${target.id}`)}"]`)?.focus()
+    })
     const title = input.value.trim()
     const old = target.kind === 'feed' ? store.feed(target.id)?.title : store.folders.find((f) => f.id === target.id)?.title
     if (save && title && title !== old) {
@@ -372,6 +380,7 @@
   <button
     class="row"
     class:indent
+    data-row={'id' in scope ? `${scope.kind}:${scope.id}` : scope.kind}
     class:selected={isSelected(scope)}
     aria-current={isSelected(scope) || undefined}
     out:leave|global
@@ -397,7 +406,7 @@
     <span class="label">{label}</span>
     {#if feed?.fetchError}
       <span class="fetch-error" title="Can’t update: {feed.fetchError}">
-        <CircleAlert size={13} strokeWidth={2.25} aria-label="Can’t update" />
+        <CircleAlert size={13} strokeWidth={2.25} role="img" aria-label="Can’t update" />
       </span>
     {/if}
     {#if count > 0}<span class="count">{count.toLocaleString()}</span>{/if}

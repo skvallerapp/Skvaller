@@ -2,7 +2,7 @@
   // Under the sign-in form: the local account, for someone without a sync service.
   import type { CommandError } from './types'
 
-  let { add }: { add: () => Promise<void> } = $props()
+  let { add, label = 'Use Without an Account' }: { add: () => Promise<void>; label?: string } = $props()
   let busy = $state(false)
   let error = $state<string | null>(null)
 
@@ -21,7 +21,7 @@
 
 <div class="local">
   <p>No sync service? Skvaller can fetch your feeds itself and keep them on this device only.</p>
-  <button type="button" class="secondary" disabled={busy} {onclick}>Use Without an Account</button>
+  <button type="button" class="secondary" disabled={busy} {onclick}>{label}</button>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
 </div>
 

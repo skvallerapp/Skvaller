@@ -342,8 +342,13 @@ impl Config {
 
     /// Writes to a temporary file first, so a crash never leaves half a file.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        use std::io::Write;
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(&serde_json::to_vec_pretty(self)?)?;
+        // On disk before the rename, so a power loss can't leave an empty file.
+        file.sync_all()?;
+        drop(file);
         std::fs::rename(tmp, path)
     }
 }

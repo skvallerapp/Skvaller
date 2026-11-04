@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -41,10 +41,15 @@ pub struct AppState {
     accounts_dir: PathBuf,
     config_path: PathBuf,
     config: Mutex<Config>,
-    /// One per account in the config.
+    /// One per account in the config, except those in `broken`.
     runtimes: Mutex<HashMap<String, Arc<Runtime>>>,
+    /// Why an account's cache didn't open at start.
+    broken: Mutex<HashMap<String, String>>,
     /// The pane the Settings window shows when it opens next.
     settings_pane: Mutex<Option<String>>,
+    /// Counts config changes, so a window can tell an older session from a newer one
+    /// that arrived first.
+    revision: AtomicU64,
 }
 
 /// What an account needs while the app runs: its cache, its client and its syncs.
@@ -199,21 +204,46 @@ impl AppState {
         let raw: Option<serde_json::Value> = std::fs::read(&config_path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok());
+        // An account entry this version can't read, such as a newer one's, would go
+        // with the save: keep the file as it was.
+        let listed = raw
+            .as_ref()
+            .and_then(|r| r.get("accounts")?.as_array().map(Vec::len))
+            .unwrap_or(0);
+        if listed > config.accounts.len() {
+            let backup = config_path.with_extension("json.bak");
+            eprintln!(
+                "Some accounts in config.json can't be read; keeping it as {}",
+                backup.display()
+            );
+            std::fs::copy(&config_path, &backup)?;
+        }
         if serde_json::to_value(&config).ok() != raw {
             config.save(&config_path)?;
         }
 
-        let mut runtimes = HashMap::new();
+        // A cache that doesn't open, such as one from a newer version, takes only its
+        // own account out.
+        let (mut runtimes, mut broken) = (HashMap::new(), HashMap::new());
         for account in &config.accounts {
-            let runtime = Runtime::open(&accounts_dir, &account.id)?;
-            runtimes.insert(account.id.clone(), Arc::new(runtime));
+            match Runtime::open(&accounts_dir, &account.id) {
+                Ok(runtime) => {
+                    runtimes.insert(account.id.clone(), Arc::new(runtime));
+                }
+                Err(e) => {
+                    eprintln!("Opening the cache of account {} failed: {e}", account.id);
+                    broken.insert(account.id.clone(), e.to_string());
+                }
+            }
         }
         Ok(Self {
             accounts_dir,
             config: Mutex::new(config),
             config_path,
             runtimes: Mutex::new(runtimes),
+            broken: Mutex::new(broken),
             settings_pane: Mutex::new(None),
+            revision: AtomicU64::new(0),
         })
     }
 
@@ -233,15 +263,19 @@ impl AppState {
         let result = change(&mut new);
         new.save(&self.config_path).map_err(CommandError::other)?;
         *config = new;
+        self.revision.fetch_add(1, Ordering::SeqCst);
         Ok(result)
     }
 
     /// The account's runtime, if it still exists.
     fn runtime(&self, id: &str) -> CommandResult<Arc<Runtime>> {
-        lock(&self.runtimes)
-            .get(id)
-            .cloned()
-            .ok_or_else(|| CommandError::other("the account was removed"))
+        if let Some(rt) = lock(&self.runtimes).get(id) {
+            return Ok(rt.clone());
+        }
+        Err(CommandError::other(match lock(&self.broken).get(id) {
+            Some(e) => format!("this account's cache can't be opened: {e}"),
+            None => "the account was removed".to_owned(),
+        }))
     }
 
     fn runtimes(&self) -> Vec<Arc<Runtime>> {
@@ -393,6 +427,8 @@ fn account_infos(state: &AppState) -> Vec<AccountInfo> {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
+    /// Higher for a session made from a newer config.
+    revision: u64,
     accounts: Vec<AccountInfo>,
     /// The account the main window shows. `None` only without accounts.
     active_id: Option<String>,
@@ -405,13 +441,26 @@ pub struct Session {
 }
 
 async fn current_session(state: &AppState) -> CommandResult<Session> {
-    let config = state.config();
+    let (config, revision) = {
+        let config = lock(&state.config);
+        (config.clone(), state.revision.load(Ordering::SeqCst))
+    };
     let active = config.active.as_deref().map(|id| state.runtime(id));
     let (signed_in, status) = match active {
         Some(Ok(rt)) => (is_signed_in(state, &rt).await?, rt.status()),
-        _ => (false, SyncStatus::default()),
+        // Its cache didn't open: the main window says why.
+        Some(Err(e)) => (
+            true,
+            SyncStatus {
+                account_id: config.active.clone().unwrap_or_default(),
+                error: Some(e.message),
+                ..SyncStatus::default()
+            },
+        ),
+        None => (false, SyncStatus::default()),
     };
     Ok(Session {
+        revision,
         accounts: account_infos(state),
         active_id: config.active,
         signed_in,
@@ -477,9 +526,13 @@ pub async fn sign_in(
     blocking(move || save_token(&key, &token)).await?;
 
     let rt = add_account(&app, &state, kind)?;
-    *lock(&rt.client) = Some(client);
-    rt.token_rejected.store(false, Ordering::Relaxed);
-    *lock(&rt.last_error) = None;
+    {
+        // A sync still running with the old token would reject the new one when it fails.
+        let _no_sync = rt.sync_gate.stop().await;
+        *lock(&rt.client) = Some(client);
+        rt.token_rejected.store(false, Ordering::Relaxed);
+        *lock(&rt.last_error) = None;
+    }
 
     emit_session(&app).await;
     let sync_app = app.clone();
@@ -629,24 +682,36 @@ pub async fn remove_account(
     state: State<'_, AppState>,
     id: String,
 ) -> CommandResult<()> {
-    let rt = state.runtime(&id)?;
-    rt.removed.store(true, Ordering::Relaxed);
-    rt.wake.notify_one();
-    let account = state.config().account(&id).cloned();
+    let account = state
+        .config()
+        .account(&id)
+        .cloned()
+        .ok_or_else(|| CommandError::other("the account was removed"))?;
+    // One whose cache didn't open has no runtime.
+    let rt = lock(&state.runtimes).get(&id).cloned();
     {
         // No sync may write while the cache goes.
-        let _no_sync = rt.sync_gate.stop().await;
-        let _no_prefetch = rt.prefetch_gate.stop().await;
+        let _no_sync = match &rt {
+            Some(rt) => Some((rt.sync_gate.stop().await, rt.prefetch_gate.stop().await)),
+            None => None,
+        };
         state.update_config(|config| {
             config.accounts.retain(|a| a.id != id);
             if config.active.as_deref() == Some(id.as_str()) {
                 config.active = config.accounts.first().map(|a| a.id.clone());
             }
         })?;
+        // Only once saved: until then, the account goes on as before.
         lock(&state.runtimes).remove(&id);
-        *lock(&rt.client) = None;
+        lock(&state.broken).remove(&id);
+        if let Some(rt) = &rt {
+            rt.removed.store(true, Ordering::Relaxed);
+            rt.wake.notify_one();
+            *lock(&rt.client) = None;
+        }
     }
     drop(rt);
+    let account = Some(account);
 
     if let Some(key) = account.and_then(|a| a.kind.keychain_key())
         && let Err(e) = blocking(move || delete_token(&key)).await

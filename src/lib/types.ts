@@ -81,6 +81,9 @@ export interface SyncStatus {
 }
 
 export interface Session {
+  /** Higher for a session made from a newer config: an older one that arrives later is
+   * out of date. */
+  revision: number
   accounts: Account[]
   /** The account the main window shows. `null` only without accounts. */
   activeId: string | null
