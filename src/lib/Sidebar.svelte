@@ -5,7 +5,7 @@
   import SettingsIcon from '@lucide/svelte/icons/settings'
   import Rss from '@lucide/svelte/icons/rss'
   import { CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu } from '@tauri-apps/api/menu'
-  import { tick, untrack } from 'svelte'
+  import { onDestroy, tick, untrack } from 'svelte'
   import { slide, type TransitionConfig } from 'svelte/transition'
   import { SvelteSet } from 'svelte/reactivity'
   import AccountSwitcher from './AccountSwitcher.svelte'
@@ -167,6 +167,8 @@
     readerView: CheckMenuItem
     /** "Move To" items, by folder ID; `null` is no folder. */
     moves: [string | null, CheckMenuItem][]
+    /** Every resource made for the menu, the menu last: each one is closed. */
+    resources: { close(): Promise<void> }[]
   }
   let feedMenu: Promise<FeedMenu> | null = null
   let feedMenuKey = ''
@@ -181,7 +183,7 @@
     const old = feedMenu
     feedMenuKey = key
     const menu = (async (): Promise<FeedMenu> => {
-      void old?.then(({ menu }) => menu.close()).catch(() => {})
+      void old?.then(closeAll).catch(() => {})
       const readerView = await CheckMenuItem.new({
         text: 'Always Use Reader View',
         action: () => {
@@ -189,7 +191,10 @@
           if (feed) store.setFeedReaderView(feed.id, !feed.readerView)
         },
       })
-      if (!store.isLocal) return { menu: await Menu.new({ items: [readerView] }), readerView, moves: [] }
+      if (!store.isLocal) {
+        const menu = await Menu.new({ items: [readerView] })
+        return { menu, readerView, moves: [], resources: [readerView, menu] }
+      }
       const moves: [string | null, CheckMenuItem][] = []
       for (const [id, text] of [[null, 'No Folder'], ...store.folders.map((f) => [f.id, f.title])])
         moves.push([id, await CheckMenuItem.new({ text: text!, action: () => store.moveFeed(menuFeedId, id) })])
@@ -201,7 +206,8 @@
         await PredefinedMenuItem.new({ item: 'Separator' }),
         await MenuItem.new({ text: 'Unsubscribe…', action: () => void unsubscribe(menuFeedId) }),
       ]
-      return { menu: await Menu.new({ items }), readerView, moves }
+      const menu = await Menu.new({ items })
+      return { menu, readerView, moves, resources: [...moves.map(([, item]) => item), ...items, menu] }
     })()
     feedMenu = menu.catch((e) => {
       if (feedMenu === menu) feedMenu = null
@@ -228,24 +234,35 @@
     }
   }
 
-  let folderMenu: Promise<Menu> | null = null
+  function closeAll({ resources }: { resources: { close(): Promise<void> }[] }) {
+    for (const r of resources) void r.close().catch(() => {})
+  }
+
+  let folderMenu: Promise<{ menu: Menu; resources: { close(): Promise<void> }[] }> | null = null
+
+  // The menus go with the sidebar, as it does on sign-out.
+  onDestroy(() => {
+    void feedMenu?.then(closeAll).catch(() => {})
+    void folderMenu?.then(closeAll).catch(() => {})
+  })
 
   async function showFolderMenu(e: MouseEvent, folderId: string) {
     if (!inTauri || !store.isLocal) return
     e.preventDefault()
     const request = ++menuRequest
     try {
-      folderMenu ??= (async () =>
-        Menu.new({
-          items: [
-            await MenuItem.new({ text: 'Rename…', action: () => startRename({ kind: 'folder', id: menuFolderId }) }),
-            await MenuItem.new({ text: 'Delete Folder…', action: () => void deleteFolder(menuFolderId) }),
-          ],
-        }))().catch((err) => {
+      folderMenu ??= (async () => {
+        const items = [
+          await MenuItem.new({ text: 'Rename…', action: () => startRename({ kind: 'folder', id: menuFolderId }) }),
+          await MenuItem.new({ text: 'Delete Folder…', action: () => void deleteFolder(menuFolderId) }),
+        ]
+        const menu = await Menu.new({ items })
+        return { menu, resources: [...items, menu] }
+      })().catch((err) => {
         folderMenu = null
         throw err
       })
-      const menu = await folderMenu
+      const { menu } = await folderMenu
       if (request !== menuRequest) return
       menuFolderId = folderId
       await menu.popup()
@@ -275,6 +292,21 @@
   // Renaming happens in the row itself.
   type Renamable = { kind: 'feed' | 'folder'; id: string }
   let renaming = $state<Renamable | null>(null)
+
+  // A row that goes while renaming, such as when a sync filters it out, ends it.
+  $effect(() => {
+    const target = renaming
+    if (target && !rows.some((r) => r.kind === target.kind && r.id === target.id)) renaming = null
+  })
+
+  // Another account's folders are its own.
+  $effect(() => {
+    void store.activeId
+    untrack(() => {
+      collapsed.clear()
+      renaming = null
+    })
+  })
 
   function startRename(target: Renamable) {
     if (target.kind === 'folder') collapsed.delete(target.id)

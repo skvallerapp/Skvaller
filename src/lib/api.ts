@@ -24,7 +24,7 @@ export const addLocalAccount = () => call<Session>('add_local_account')
 export const accounts = () => call<Session['accounts']>('accounts')
 
 /** Shows another account in the main window. Every window gets `onAccountsChanged`. */
-export const setActiveAccount = (id: string) => call<void>('set_active_account', { id })
+export const setActiveAccount = (id: string) => call<Session>('set_active_account', { id })
 
 export const updateAccount = (id: string, change: AccountChange) =>
   call<void>('update_account', { id, ...change })
@@ -33,48 +33,60 @@ export const updateAccount = (id: string, change: AccountChange) =>
 export const removeAccount = (id: string) => call<void>('remove_account', { id })
 
 /** Starts a sync of the active account. The outcome arrives through `onSyncStatus`. */
-export const syncNow = () => call<void>('sync_now')
+export const syncNow = (accountId: string) => call<void>('sync_now', { accountId })
 
-export const library = () => call<Library>('library')
+export const library = (accountId: string) => call<Library>('library', { accountId })
 
-export const articles = (selection: Selection) => call<Article[]>('articles', { selection })
+export const articles = (accountId: string, selection: Selection) =>
+  call<Article[]>('articles', { accountId, selection })
 
-export const articleHtml = (id: string) => call<string | null>('article_html', { id })
+export const articleHtml = (accountId: string, id: string) =>
+  call<string | null>('article_html', { accountId, id })
 
 /** The article's Reader View HTML, extracted from its web page. Untrusted. Fetches the
  * page if it isn't cached, so it may take seconds or fail. A page given up on is fetched
  * again only with `retry`. */
-export const fullText = (id: string, retry: boolean) => call<string>('full_text', { id, retry })
+export const fullText = (accountId: string, id: string, retry: boolean) =>
+  call<string>('full_text', { accountId, id, retry })
 
-export const setFeedReaderView = (feedId: string, on: boolean) =>
-  call<void>('set_feed_reader_view', { feedId, on })
+export const setFeedReaderView = (accountId: string, feedId: string, on: boolean) =>
+  call<void>('set_feed_reader_view', { accountId, feedId, on })
 
-export const setRead = (ids: string[], read: boolean) => call<void>('set_read', { ids, read })
+export const setRead = (accountId: string, ids: string[], read: boolean) =>
+  call<void>('set_read', { accountId, ids, read })
 
-export const setStarred = (ids: string[], starred: boolean) =>
-  call<void>('set_starred', { ids, starred })
+export const setStarred = (accountId: string, ids: string[], starred: boolean) =>
+  call<void>('set_starred', { accountId, ids, starred })
+
+// The commands for the main window name the account they're for, so one sent just
+// before a switch of accounts still acts on its own.
 
 // The local account's feeds and folders. A sync account's are managed on its server.
 
 /** Subscribes to the feed at `url`, or the one a web page there links to. Fetches it, so
  * it can take seconds. Returns the feed's ID. */
-export const subscribe = (url: string, folderId: string | null) =>
-  call<string>('subscribe', { url, folderId })
+export const subscribe = (accountId: string, url: string, folderId: string | null) =>
+  call<string>('subscribe', { accountId, url, folderId })
 
-export const unsubscribe = (feedId: string) => call<void>('unsubscribe', { feedId })
+export const unsubscribe = (accountId: string, feedId: string) =>
+  call<void>('unsubscribe', { accountId, feedId })
 
-export const renameFeed = (feedId: string, title: string) => call<void>('rename_feed', { feedId, title })
+export const renameFeed = (accountId: string, feedId: string, title: string) =>
+  call<void>('rename_feed', { accountId, feedId, title })
 
-export const moveFeed = (feedId: string, folderId: string | null) => call<void>('move_feed', { feedId, folderId })
+export const moveFeed = (accountId: string, feedId: string, folderId: string | null) =>
+  call<void>('move_feed', { accountId, feedId, folderId })
 
 /** The folder with this title, or else a new one. Returns its ID. */
-export const createFolder = (title: string) => call<string>('create_folder', { title })
+export const createFolder = (accountId: string, title: string) =>
+  call<string>('create_folder', { accountId, title })
 
-export const renameFolder = (folderId: string, title: string) =>
-  call<void>('rename_folder', { folderId, title })
+export const renameFolder = (accountId: string, folderId: string, title: string) =>
+  call<void>('rename_folder', { accountId, folderId, title })
 
 /** Removes the folder. Its feeds stay, in no folder. */
-export const deleteFolder = (folderId: string) => call<void>('delete_folder', { folderId })
+export const deleteFolder = (accountId: string, folderId: string) =>
+  call<void>('delete_folder', { accountId, folderId })
 
 /** Asks for an OPML file and adds its feeds to the local account `id`, which then
  * refreshes. `null` if the user cancelled. */

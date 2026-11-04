@@ -2,7 +2,8 @@
 //! Subscriptions, folders and read and starred state live only in the cache, so there
 //! is nothing to send anywhere, and a fetch never changes what the user did.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use dom_query::Document;
 use feed_rs::model;
@@ -12,7 +13,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::db::{ArticleRow, LocalFeed, NewFeed};
-use crate::full_text::{decode, http};
+use crate::full_text::{USER_AGENT, decode};
 use crate::sync::{DAY, SUMMARY_CHARS, fetch_icons};
 use crate::text::plain_text;
 use crate::{Db, Error, Result, SyncReport};
@@ -21,6 +22,23 @@ use crate::{Db, Error, Result, SyncReport};
 const MAX_FEED_BYTES: usize = 10 * 1024 * 1024;
 /// Feeds fetched at the same time.
 const PARALLEL: usize = 6;
+/// For the whole response. Generous: a big feed on a slow line takes a while.
+const TIMEOUT: Duration = Duration::from_secs(60);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// One client for every feed, so connections are reused. It keeps no cookies.
+fn http() -> Result<reqwest::Client> {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client.clone());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .user_agent(USER_AGENT)
+        .build()?;
+    Ok(CLIENT.get_or_init(|| client).clone())
+}
 
 /// Fetches every feed, stores what is new or changed, then removes read, unstarred
 /// articles published more than `keep_read_days` ago. `now` is Unix seconds. A feed
@@ -55,7 +73,7 @@ pub async fn refresh(db: &Db, now: i64, keep_read_days: u32) -> Result<SyncRepor
         }
     }
     let pruned = db.prune((now - i64::from(keep_read_days) * DAY) * 1000)?;
-    fetch_icons(db, |url| Url::parse(url).ok()).await?;
+    fetch_icons(db, |url| Url::parse(url).ok(), None).await?;
     db.set_last_sync(now * 1000)?;
     Ok(SyncReport {
         fetched,
@@ -87,6 +105,10 @@ pub async fn subscribe(db: &Db, url: &str, folder_id: Option<&str>, now: i64) ->
         }
     };
 
+    // Subscribed already, maybe under the address before redirects.
+    if let Some(id) = db.feed_by_url(&[url.as_str(), page.url.as_str()])? {
+        return Ok(id);
+    }
     let id = format!("feed/{}", page.url);
     let site_url = site_url(&parsed);
     let title = parsed
@@ -107,7 +129,7 @@ pub async fn subscribe(db: &Db, url: &str, folder_id: Option<&str>, now: i64) ->
     })?;
     if added {
         store(db, &id, &parsed, &page, now)?;
-        fetch_icons(db, |url| Url::parse(url).ok()).await?;
+        fetch_icons(db, |url| Url::parse(url).ok(), Some(&id)).await?;
     }
     Ok(id)
 }

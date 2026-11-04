@@ -112,11 +112,15 @@ class Store {
     await this.#applySession(await api.addLocalAccount())
   }
 
-  /** Shows another account. Local changes reach the old account's cache first. */
+  /** The active account's ID, for the commands. */
+  #account(): string {
+    return this.activeId ?? ''
+  }
+
+  /** Shows another account. */
   async switchAccount(id: string) {
     if (id === this.activeId) return
-    await this.#writes
-    await api.setActiveAccount(id)
+    await this.#applySession(await api.setActiveAccount(id))
   }
 
   /** Takes in the accounts, from the start, a sign-in or any window's change. Another
@@ -140,7 +144,7 @@ class Store {
   }
 
   sync() {
-    void api.syncNow()
+    if (this.activeId) void api.syncNow(this.activeId)
   }
 
   feed(id: string): Feed | undefined {
@@ -180,7 +184,7 @@ class Store {
     this.articleId = id
     this.html = null
     const request = ++this.#htmlRequest
-    void api.articleHtml(id).then(
+    void api.articleHtml(this.#account(), id).then(
       (html) => {
         if (request === this.#htmlRequest) this.html = html ?? ''
       },
@@ -213,7 +217,7 @@ class Store {
    * follows. */
   setFeedReaderView(feedId: string, on: boolean) {
     this.feeds = this.feeds.map((f) => (f.id === feedId ? { ...f, readerView: on } : f))
-    this.#write(() => api.setFeedReaderView(feedId, on))
+    this.#write((account) => api.setFeedReaderView(account, feedId, on))
     if (this.article?.feedId === feedId && this.readerView !== on) this.toggleReaderView()
   }
 
@@ -221,47 +225,51 @@ class Store {
 
   /** Subscribes and shows the feed. Fetching it can take seconds; a failure throws. */
   async subscribe(url: string, folderId: string | null) {
+    const session = this.#session
     await this.#writes
-    const id = await api.subscribe(url, folderId)
+    const id = await api.subscribe(this.#account(), url, folderId)
+    // Another account is showing now: the feed is in the one it was added to.
+    if (session !== this.#session) return
     await this.#loadLibrary()
     await this.select({ kind: 'feed', id })
   }
 
   /** The folder with this title, or else a new one. Returns its ID. */
   async createFolder(title: string): Promise<string> {
+    const session = this.#session
     await this.#writes
-    const id = await api.createFolder(title)
-    await this.#loadLibrary()
+    const id = await api.createFolder(this.#account(), title)
+    if (session === this.#session) await this.#loadLibrary()
     return id
   }
 
   unsubscribe(feedId: string) {
     this.feeds = this.feeds.filter((f) => f.id !== feedId)
-    this.#write(() => api.unsubscribe(feedId))
+    this.#write((account) => api.unsubscribe(account, feedId))
     this.#afterRemoving({ kind: 'feed', id: feedId })
   }
 
   renameFeed(feedId: string, title: string) {
     this.feeds = this.feeds.map((f) => (f.id === feedId ? { ...f, title } : f))
-    this.#write(() => api.renameFeed(feedId, title))
+    this.#write((account) => api.renameFeed(account, feedId, title))
   }
 
   moveFeed(feedId: string, folderId: string | null) {
     this.feeds = this.feeds.map((f) => (f.id === feedId ? { ...f, folderId } : f))
-    this.#write(() => api.moveFeed(feedId, folderId))
+    this.#write((account) => api.moveFeed(account, feedId, folderId))
     // A folder's list gains or loses the feed's articles.
     if (this.scope.kind === 'folder') void this.#loadList()
   }
 
   renameFolder(folderId: string, title: string) {
     this.folders = this.folders.map((f) => (f.id === folderId ? { ...f, title } : f))
-    this.#write(() => api.renameFolder(folderId, title))
+    this.#write((account) => api.renameFolder(account, folderId, title))
   }
 
   deleteFolder(folderId: string) {
     this.folders = this.folders.filter((f) => f.id !== folderId)
     this.feeds = this.feeds.map((f) => (f.folderId === folderId ? { ...f, folderId: null } : f))
-    this.#write(() => api.deleteFolder(folderId))
+    this.#write((account) => api.deleteFolder(account, folderId))
     this.#afterRemoving({ kind: 'folder', id: folderId })
   }
 
@@ -284,7 +292,7 @@ class Store {
       setTimeout(() => {
         if (request === this.#fullTextRequest) this.awaitingFullText = false
       }, 400)
-    void api.fullText(id, retry).then(
+    void api.fullText(this.#account(), id, retry).then(
       (html) => {
         if (request !== this.#fullTextRequest) return
         this.fullText = html
@@ -330,7 +338,7 @@ class Store {
     if (read) this.read.add(id)
     else this.read.delete(id)
     if (article) this.unreadByFeed = adjusted(this.unreadByFeed, [article], read ? -1 : 1)
-    this.#write(() => api.setRead([id], read))
+    this.#write((account) => api.setRead(account, [id], read))
   }
 
   /** Marks every article in the current list read. Unlike reading one by one, the
@@ -340,7 +348,7 @@ class Store {
     if (unread.length === 0) return
     for (const a of unread) this.read.add(a.id)
     this.unreadByFeed = adjusted(this.unreadByFeed, unread, -1)
-    this.#write(() => api.setRead(unread.map((a) => a.id), true))
+    this.#write((account) => api.setRead(account, unread.map((a) => a.id), true))
     const open = this.articleId
     const keepOpen = (a: Article) => a.id === open
     if (this.view === 'unread') this.visible = this.visible.filter(keepOpen)
@@ -353,7 +361,7 @@ class Store {
     if (starred) this.starred.add(id)
     else this.starred.delete(id)
     if (article) this.starredByFeed = adjusted(this.starredByFeed, [article], starred ? 1 : -1)
-    this.#write(() => api.setStarred([id], starred))
+    this.#write((account) => api.setStarred(account, [id], starred))
   }
 
   /**
@@ -361,9 +369,12 @@ class Store {
    * Then reloads the counts from the cache, also after a failure, so the optimistic
    * counts never stay wrong. The reload is not part of `#writes`: it waits for it.
    */
-  #write(save: () => Promise<void>) {
+  #write(save: (account: string) => Promise<void>) {
     this.#writeCount++
-    const saved = this.#writes.then(save).catch((e) => console.error('Saving a change failed', e))
+    // The account shown when the change was made, even if another shows by the time
+    // it's saved.
+    const account = this.#account()
+    const saved = this.#writes.then(() => save(account)).catch((e) => console.error('Saving a change failed', e))
     this.#writes = saved
     void saved.then(() => this.#loadLibrary()).catch((e) => console.error('Loading the feeds failed', e))
   }
@@ -408,7 +419,7 @@ class Store {
   async #loadLibrary() {
     const session = this.#session
     await this.#writes
-    const lib = await api.library()
+    const lib = await api.library(this.#account())
     if (session !== this.#session) return
     this.folders = lib.folders
     this.feeds = lib.feeds
@@ -436,7 +447,7 @@ class Store {
     const key = this.#selectionKey()
     const writes = this.#writeCount
     await this.#writes
-    let list = await api.articles(selection)
+    let list = await api.articles(this.#account(), selection)
     if (request !== this.#listRequest) {
       // Not after a sign-out, which drops loads without starting one.
       if (this.#listLoad.request > request) return this.#listLoad.done
