@@ -166,6 +166,7 @@
     if (viewport) viewport.scrollTop = 0
     scrollTop = 0
     scrolledTo = 0
+    passed = []
   })
 
   // With markReadOnScroll, rows that leave the top of the list while scrolling down are

@@ -384,3 +384,53 @@ async fn a_feed_unsubscribed_while_fetched_is_skipped_and_one_redirected_to_is_f
         Some(feed)
     );
 }
+
+#[tokio::test]
+async fn a_refresh_that_reaches_no_feed_fails_and_one_without_feeds_works() {
+    let db = Db::open_in_memory().unwrap();
+    // No feeds: nothing to reach, and the refresh is done.
+    refresh(&db, NOW, 30).await.unwrap();
+    assert_eq!(db.last_sync().unwrap(), Some(NOW * 1000));
+
+    // A port nothing listens on: likely offline, so the refresh fails, keeping the feed.
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let url = format!("http://127.0.0.1:{closed}/feed.xml");
+    let added = db
+        .add_local_feed(&NewFeed {
+            id: &format!("feed/{url}"),
+            url: &url,
+            title: "Gone",
+            site_url: None,
+            folder_id: None,
+            icon_url: None,
+        })
+        .unwrap();
+    assert!(added);
+    assert!(matches!(
+        refresh(&db, NOW + 60, 30).await,
+        Err(Error::Local(_))
+    ));
+    assert_eq!(
+        db.feeds().unwrap()[0].fetch_error.as_deref(),
+        Some("could not reach the server")
+    );
+    assert_eq!(db.last_sync().unwrap(), Some(NOW * 1000));
+
+    // One that answers, even with an error, means the network is there.
+    let server = MockServer::start().await;
+    serve(&server, "/bad.xml", ResponseTemplate::new(404)).await;
+    let bad = format!("{}/bad.xml", server.uri());
+    db.add_local_feed(&NewFeed {
+        id: &format!("feed/{bad}"),
+        url: &bad,
+        title: "Bad",
+        site_url: None,
+        folder_id: None,
+        icon_url: None,
+    })
+    .unwrap();
+    refresh(&db, NOW + 120, 30).await.unwrap();
+}
