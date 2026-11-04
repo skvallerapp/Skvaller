@@ -3,7 +3,8 @@
 //! `sync-status` event. One exception: `full_text` fetches a page the user opens in
 //! Reader View, while the UI shows the cached feed content.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -17,25 +18,39 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder};
 use tokio::sync::Notify;
 use tokio::time::{Instant, sleep_until};
 
-use crate::config::{Account, Config, Settings, Theme};
+use crate::config::{
+    Account, AccountKind, Config, FIRST_ACCOUNT_ID, Settings, SyncSchedule, Theme,
+};
 use crate::sync_gate::{Outcome, SyncGate};
 
 const SYNC_STATUS_EVENT: &str = "sync-status";
 /// Sent to every window with the new `Settings` when they change.
 const SETTINGS_EVENT: &str = "settings-changed";
-/// Sent to every window with the `Account` after signing in.
-const SIGNED_IN_EVENT: &str = "signed-in";
-/// Sent to every window after signing out.
-const SIGNED_OUT_EVENT: &str = "signed-out";
+/// Sent to every window with a new `Session` when an account is added, changed or
+/// removed, or another one becomes active.
+const ACCOUNTS_EVENT: &str = "accounts-changed";
+/// Sent to the Settings window with the pane to show, when it is asked to open one.
+const SETTINGS_PANE_EVENT: &str = "settings-pane";
 /// The label of the Settings window, in tauri.conf.json.
 const SETTINGS_WINDOW: &str = "settings";
 
 pub struct AppState {
-    db: Arc<Db>,
+    /// Each account's cache is `<id>.db` in here.
+    accounts_dir: PathBuf,
     config_path: PathBuf,
     config: Mutex<Config>,
-    /// Built from the keychain token on first use. `None` until then, and after the
-    /// server rejects the token.
+    /// One per account in the config.
+    runtimes: Mutex<HashMap<String, Arc<Runtime>>>,
+    /// The pane the Settings window shows when it opens next.
+    settings_pane: Mutex<Option<String>>,
+}
+
+/// What an account needs while the app runs: its cache, its client and its syncs.
+pub struct Runtime {
+    id: String,
+    db: Arc<Db>,
+    /// Built from the keychain token on first use. `None` until then, after the server
+    /// rejects the token, and always for a local account.
     client: Mutex<Option<Client>>,
     /// The server rejected the saved token. Until the next sign-in, no client is built
     /// from the keychain again, so the app shows the sign-in screen instead of retrying
@@ -44,8 +59,67 @@ pub struct AppState {
     sync_gate: SyncGate,
     /// Reader View prefetch, after a sync. Separate, so syncing is not held up by it.
     prefetch_gate: SyncGate,
-    /// Wakes the background sync when the sync interval changes.
-    interval_changed: Notify,
+    /// Wakes the background sync: the schedule changed, or the account was removed.
+    wake: Notify,
+    removed: AtomicBool,
+}
+
+impl Runtime {
+    /// Opens the account's cache. With `fresh`, for a new account, first removes what a
+    /// failed removal of an earlier account with the same ID left behind.
+    fn open(dir: &Path, id: &str, fresh: bool) -> skvaller_core::Result<Self> {
+        if fresh {
+            remove_db_files(dir, id);
+        }
+        Ok(Self {
+            id: id.to_owned(),
+            db: Arc::new(Db::open(db_path(dir, id))?),
+            client: Mutex::new(None),
+            token_rejected: AtomicBool::new(false),
+            sync_gate: SyncGate::default(),
+            prefetch_gate: SyncGate::default(),
+            wake: Notify::new(),
+            removed: AtomicBool::new(false),
+        })
+    }
+
+    fn client(&self) -> Option<Client> {
+        lock(&self.client).clone()
+    }
+
+    fn status(&self) -> SyncStatus {
+        SyncStatus {
+            account_id: self.id.clone(),
+            syncing: self.sync_gate.is_running(),
+            last_sync: self.db.last_sync().ok().flatten(),
+            ..SyncStatus::default()
+        }
+    }
+}
+
+fn db_path(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.db"))
+}
+
+/// The cache file and SQLite's files next to it.
+fn db_files(path: &Path) -> [PathBuf; 3] {
+    let with = |suffix: &str| {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    [path.to_owned(), with("-wal"), with("-shm")]
+}
+
+/// Best effort: on Windows, a file still open somewhere stays. The next start removes it.
+fn remove_db_files(dir: &Path, id: &str) {
+    for file in db_files(&db_path(dir, id)) {
+        match std::fs::remove_file(&file) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => eprintln!("Removing {} failed: {e}", file.display()),
+        }
+    }
 }
 
 impl AppState {
@@ -54,18 +128,44 @@ impl AppState {
         // between machines.
         let data_dir = app.path().app_local_data_dir()?;
         let config_dir = app.path().app_config_dir()?;
-        std::fs::create_dir_all(&data_dir)?;
+        let accounts_dir = data_dir.join("accounts");
+        std::fs::create_dir_all(&accounts_dir)?;
         std::fs::create_dir_all(&config_dir)?;
         let config_path = config_dir.join("config.json");
+
+        let mut config = Config::load(&config_path);
+        for account in &mut config.accounts {
+            if account.description.is_empty() {
+                account.description = default_description(&account.kind);
+            }
+        }
+        // The one account from before several accounts keeps its cache.
+        let old_cache = data_dir.join("cache.db");
+        if config.account(FIRST_ACCOUNT_ID).is_some()
+            && old_cache.exists()
+            && !db_path(&accounts_dir, FIRST_ACCOUNT_ID).exists()
+        {
+            let new = db_files(&db_path(&accounts_dir, FIRST_ACCOUNT_ID));
+            for (from, to) in db_files(&old_cache).iter().zip(&new) {
+                if from.exists() {
+                    std::fs::rename(from, to)?;
+                }
+            }
+        }
+        config.save(&config_path)?;
+        remove_stray_caches(&accounts_dir, &config);
+
+        let mut runtimes = HashMap::new();
+        for account in &config.accounts {
+            let runtime = Runtime::open(&accounts_dir, &account.id, false)?;
+            runtimes.insert(account.id.clone(), Arc::new(runtime));
+        }
         Ok(Self {
-            db: Arc::new(Db::open(data_dir.join("cache.db"))?),
-            config: Mutex::new(Config::load(&config_path)),
+            accounts_dir,
+            config: Mutex::new(config),
             config_path,
-            client: Mutex::new(None),
-            token_rejected: AtomicBool::new(false),
-            sync_gate: SyncGate::default(),
-            prefetch_gate: SyncGate::default(),
-            interval_changed: Notify::new(),
+            runtimes: Mutex::new(runtimes),
+            settings_pane: Mutex::new(None),
         })
     }
 
@@ -88,12 +188,57 @@ impl AppState {
         Ok(())
     }
 
-    fn client(&self) -> Option<Client> {
-        lock(&self.client).clone()
+    fn runtime(&self, id: &str) -> CommandResult<Arc<Runtime>> {
+        lock(&self.runtimes)
+            .get(id)
+            .cloned()
+            .ok_or_else(|| CommandError::other(format!("no account {id:?}")))
     }
 
-    fn is_syncing(&self) -> bool {
-        self.sync_gate.is_running()
+    /// The account the main window shows.
+    fn active(&self) -> CommandResult<Arc<Runtime>> {
+        let id = lock(&self.config).active.clone();
+        self.runtime(&id.ok_or_else(|| CommandError::other("no account"))?)
+    }
+
+    fn runtimes(&self) -> Vec<Arc<Runtime>> {
+        lock(&self.runtimes).values().cloned().collect()
+    }
+}
+
+/// Caches of accounts that are gone, which a failed removal left behind.
+fn remove_stray_caches(dir: &Path, config: &Config) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let id = name.split('.').next().unwrap_or_default();
+        if config.account(id).is_none() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// The name an account gets until the user changes it: "FreshRSS" or the server's host
+/// name, or where the local account's feeds are.
+fn default_description(kind: &AccountKind) -> String {
+    match kind {
+        AccountKind::Greader { server, .. } => {
+            let rest = server
+                .split_once("://")
+                .map_or(server.as_str(), |(_, rest)| rest);
+            let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+            if path.trim_end_matches('/').ends_with("api/greader.php") {
+                "FreshRSS".to_owned()
+            } else {
+                let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
+                host.split(':').next().unwrap_or(host).to_owned()
+            }
+        }
+        AccountKind::Local if cfg!(target_os = "macos") => "On This Mac".to_owned(),
+        AccountKind::Local => "On This Device".to_owned(),
     }
 }
 
@@ -145,48 +290,121 @@ async fn blocking<T: Send + 'static>(
         .map_err(Into::into)
 }
 
-/// The API client for the saved account, if it has a token in the keychain.
-async fn ensure_client(state: &AppState) -> CommandResult<Option<Client>> {
-    if let Some(client) = state.client() {
+/// The API client for the account, if it syncs with a server and has a token in the
+/// keychain.
+async fn ensure_client(state: &AppState, rt: &Runtime) -> CommandResult<Option<Client>> {
+    if let Some(client) = rt.client() {
         return Ok(Some(client));
     }
-    if state.token_rejected.load(Ordering::Relaxed) {
+    if rt.token_rejected.load(Ordering::Relaxed) {
         return Ok(None);
     }
-    let Some(account) = state.config().account else {
+    let Some(account) = state.config().account(&rt.id).cloned() else {
         return Ok(None);
     };
-    let key = account.keychain_key();
+    let AccountKind::Greader { server, .. } = &account.kind else {
+        return Ok(None);
+    };
+    let key = account
+        .kind
+        .keychain_key()
+        .expect("a sync account has a keychain entry");
     let Some(token) = blocking(move || load_token(&key)).await? else {
         return Ok(None);
     };
-    let client = Client::new(&account.server, &token)?;
-    // Signing in or out may have happened while the token loaded. Keep this client only
-    // if nothing replaced it and the account is still the same.
-    let mut current = lock(&state.client);
+    let client = Client::new(server, &token)?;
+    // Signing in may have happened while the token loaded. Keep this client only if
+    // nothing replaced it and the account is still there.
+    let mut current = lock(&rt.client);
     if let Some(current) = current.as_ref() {
         return Ok(Some(current.clone()));
     }
-    if state.config().account.as_ref() != Some(&account) {
+    if rt.removed.load(Ordering::Relaxed) || rt.token_rejected.load(Ordering::Relaxed) {
         return Ok(None);
     }
     *current = Some(client.clone());
     Ok(Some(client))
 }
 
-#[derive(Serialize)]
+/// Whether the account can sync: a local one always can, a sync account needs a token
+/// the server has not rejected.
+async fn is_signed_in(state: &AppState, rt: &Runtime) -> CommandResult<bool> {
+    match state.config().account(&rt.id).map(|a| &a.kind) {
+        Some(AccountKind::Local) => Ok(true),
+        Some(AccountKind::Greader { .. }) => Ok(ensure_client(state, rt).await?.is_some()),
+        None => Ok(false),
+    }
+}
+
+/// An account as the UI receives it: the saved fields and its unread count.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountInfo {
+    #[serde(flatten)]
+    account: Account,
+    unread: i64,
+}
+
+fn account_infos(state: &AppState) -> Vec<AccountInfo> {
+    let runtimes = lock(&state.runtimes).clone();
+    state
+        .config()
+        .accounts
+        .into_iter()
+        .map(|account| AccountInfo {
+            unread: runtimes
+                .get(&account.id)
+                .and_then(|rt| rt.db.unread_total().ok())
+                .unwrap_or(0),
+            account,
+        })
+        .collect()
+}
+
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
-    /// The saved account, also when signed out, to fill in the sign-in form.
-    account: Option<Account>,
+    accounts: Vec<AccountInfo>,
+    /// The account the main window shows. `None` only without accounts.
+    active_id: Option<String>,
+    /// The active account can sync. False when its token was rejected, which shows the
+    /// sign-in screen, filled in for it.
     signed_in: bool,
+    /// The active account's.
     status: SyncStatus,
     settings: Settings,
+}
+
+async fn current_session(state: &AppState) -> CommandResult<Session> {
+    let config = state.config();
+    let (signed_in, status) = match state.active() {
+        Ok(rt) => (is_signed_in(state, &rt).await?, rt.status()),
+        Err(_) => (false, SyncStatus::default()),
+    };
+    Ok(Session {
+        accounts: account_infos(state),
+        active_id: config.active,
+        signed_in,
+        status,
+        settings: config.settings,
+    })
+}
+
+/// Tells every window about the accounts.
+async fn emit_session(app: &AppHandle) {
+    match current_session(&app.state::<AppState>()).await {
+        Ok(session) => {
+            let _ = app.emit(ACCOUNTS_EVENT, session);
+        }
+        Err(e) => eprintln!("Reading the accounts failed: {}", e.message),
+    }
 }
 
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncStatus {
+    /// The account it is about.
+    account_id: String,
     syncing: bool,
     /// Unix milliseconds.
     last_sync: Option<i64>,
@@ -198,22 +416,17 @@ pub struct SyncStatus {
 
 #[tauri::command]
 pub async fn session(state: State<'_, AppState>) -> CommandResult<Session> {
-    let signed_in = ensure_client(&state).await?.is_some();
-    let config = state.config();
-    Ok(Session {
-        settings: config.settings,
-        account: config.account,
-        signed_in,
-        status: SyncStatus {
-            syncing: state.is_syncing(),
-            last_sync: state.db.last_sync()?,
-            ..SyncStatus::default()
-        },
-    })
+    current_session(&state).await
 }
 
-/// Signs in, saves the token in the keychain and starts a sync. Signing in to a different
-/// account empties the cache first.
+#[tauri::command]
+pub async fn accounts(state: State<'_, AppState>) -> CommandResult<Vec<AccountInfo>> {
+    Ok(account_infos(&state))
+}
+
+/// Signs in, saves the token in the keychain and makes the account the active one. An
+/// account already added, such as one whose token the server rejected, gets the new
+/// token; any other becomes a new account, which syncs at once.
 #[tauri::command]
 pub async fn sign_in(
     app: AppHandle,
@@ -223,58 +436,173 @@ pub async fn sign_in(
     password: String,
 ) -> CommandResult<Session> {
     let server = server.trim().trim_end_matches('/').to_owned();
-    let client = Client::login(&server, username.trim(), &password).await?;
-    let account = Account {
-        server,
-        username: username.trim().to_owned(),
-    };
-    let (key, token) = (account.keychain_key(), client.token().to_owned());
+    let username = username.trim().to_owned();
+    let client = Client::login(&server, &username, &password).await?;
+    let kind = AccountKind::Greader { server, username };
+    let (key, token) = (
+        kind.keychain_key()
+            .expect("a sync account has a keychain entry"),
+        client.token().to_owned(),
+    );
     blocking(move || save_token(&key, &token)).await?;
 
-    {
-        // No sync of the old account may write while the cache is emptied. One that is
-        // running stops; it leaves the cache consistent, and the next one picks up from there.
-        let _no_sync = state.sync_gate.stop().await;
-        let _no_prefetch = state.prefetch_gate.stop().await;
-        // The cache belongs to the saved account. With none saved, it may hold what a
-        // failed sign-out left behind.
-        let old = state.config().account;
-        if old.as_ref() != Some(&account) {
-            state.db.clear()?;
+    let existing = state.config().accounts.into_iter().find(|a| a.kind == kind);
+    let rt = match existing {
+        Some(account) => {
+            let rt = state.runtime(&account.id)?;
+            state.update_config(|config| config.active = Some(account.id.clone()))?;
+            rt
         }
-        if let Some(old) = old.filter(|old| *old != account) {
-            let key = old.keychain_key();
-            if let Err(e) = blocking(move || delete_token(&key)).await {
-                eprintln!(
-                    "Signing in: removing the old account's token failed: {}",
-                    e.message
-                );
-            }
-        }
-        state.update_config(|config| config.account = Some(account.clone()))?;
-        *lock(&state.client) = Some(client);
-        state.token_rejected.store(false, Ordering::Relaxed);
-    }
+        None => add_account(&app, &state, kind)?,
+    };
+    *lock(&rt.client) = Some(client);
+    rt.token_rejected.store(false, Ordering::Relaxed);
 
-    let _ = app.emit(SIGNED_IN_EVENT, &account);
-    tauri::async_runtime::spawn(async move { run_sync(&app).await });
-    Ok(Session {
-        settings: state.config().settings,
-        account: Some(account),
-        signed_in: true,
-        status: SyncStatus {
-            syncing: true,
-            last_sync: state.db.last_sync()?,
-            ..SyncStatus::default()
-        },
-    })
+    emit_session(&app).await;
+    let sync_app = app.clone();
+    tauri::async_runtime::spawn(async move { run_sync(&sync_app, &rt).await });
+    current_session(&state).await
 }
 
-/// Syncs now, unless a sync is already running. The outcome arrives as a `sync-status`
-/// event.
+/// Adds an account of `kind`, makes it active and starts its background sync.
+fn add_account(
+    app: &AppHandle,
+    state: &AppState,
+    kind: AccountKind,
+) -> CommandResult<Arc<Runtime>> {
+    let config = state.config();
+    let id = config.next_id();
+    let mut description = default_description(&kind);
+    if config.accounts.iter().any(|a| a.description == description)
+        && let AccountKind::Greader { username, .. } = &kind
+    {
+        description = format!("{description} ({username})");
+    }
+    let rt = Arc::new(Runtime::open(&state.accounts_dir, &id, true)?);
+    lock(&state.runtimes).insert(id.clone(), rt.clone());
+    let saved = state.update_config(|config| {
+        config.accounts.push(Account {
+            id: id.clone(),
+            description,
+            kind,
+            sync: SyncSchedule::default(),
+            keep_read_days: skvaller_core::DEFAULT_KEEP_READ_DAYS,
+        });
+        config.active = Some(id.clone());
+    });
+    if let Err(e) = saved {
+        lock(&state.runtimes).remove(&id);
+        return Err(e);
+    }
+    start_sync_loop(app.clone(), rt.clone());
+    Ok(rt)
+}
+
+/// Shows another account in the main window.
 #[tauri::command]
-pub async fn sync_now(app: AppHandle) -> CommandResult<()> {
-    run_sync(&app).await;
+pub async fn set_active_account(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> CommandResult<()> {
+    state.runtime(&id)?;
+    state.update_config(|config| config.active = Some(id))?;
+    emit_session(&app).await;
+    Ok(())
+}
+
+/// Changes an account's name or sync settings. Fields left out stay.
+#[tauri::command]
+pub async fn update_account(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    description: Option<String>,
+    sync: Option<SyncSchedule>,
+    keep_read_days: Option<u32>,
+) -> CommandResult<()> {
+    let rt = state.runtime(&id)?;
+    let mut schedule_changed = false;
+    state.update_config(|config| {
+        if let Some(account) = config.accounts.iter_mut().find(|a| a.id == id) {
+            if let Some(description) = description.map(|d| d.trim().to_owned())
+                && !description.is_empty()
+            {
+                account.description = description;
+            }
+            if let Some(sync) = sync {
+                schedule_changed = account.sync != sync;
+                account.sync = sync;
+            }
+            if let Some(days) = keep_read_days {
+                account.keep_read_days = days.max(1);
+            }
+        }
+    })?;
+    if schedule_changed {
+        rt.wake.notify_one();
+    }
+    emit_session(&app).await;
+    Ok(())
+}
+
+/// Removes the account: from the config, its token from the keychain and its cache,
+/// queued changes included. Another account becomes active. Without any left, the
+/// Settings window, where removing happens, closes.
+///
+/// Once the account is gone from the config, it is removed. Removing the token and the
+/// cache after that is best effort: a failure is logged, and the next start removes a
+/// cache left behind.
+#[tauri::command]
+pub async fn remove_account(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> CommandResult<()> {
+    let rt = state.runtime(&id)?;
+    rt.removed.store(true, Ordering::Relaxed);
+    rt.wake.notify_one();
+    let account = state.config().account(&id).cloned();
+    {
+        // No sync may write while the cache goes.
+        let _no_sync = rt.sync_gate.stop().await;
+        let _no_prefetch = rt.prefetch_gate.stop().await;
+        state.update_config(|config| {
+            config.accounts.retain(|a| a.id != id);
+            if config.active.as_deref() == Some(id.as_str()) {
+                config.active = config.accounts.first().map(|a| a.id.clone());
+            }
+        })?;
+        lock(&state.runtimes).remove(&id);
+        *lock(&rt.client) = None;
+    }
+    drop(rt);
+
+    if let Some(key) = account.and_then(|a| a.kind.keychain_key())
+        && let Err(e) = blocking(move || delete_token(&key)).await
+    {
+        eprintln!(
+            "Removing an account: removing the token failed: {}",
+            e.message
+        );
+    }
+    remove_db_files(&state.accounts_dir, &id);
+
+    emit_session(&app).await;
+    if state.config().accounts.is_empty()
+        && let Some(window) = app.get_webview_window(SETTINGS_WINDOW)
+    {
+        let _ = window.close();
+    }
+    Ok(())
+}
+
+/// Syncs the active account now, unless it is syncing already. The outcome arrives as a
+/// `sync-status` event.
+#[tauri::command]
+pub async fn sync_now(app: AppHandle, state: State<'_, AppState>) -> CommandResult<()> {
+    let rt = state.active()?;
+    run_sync(&app, &rt).await;
     Ok(())
 }
 
@@ -285,13 +613,14 @@ pub struct Library {
     counts: Counts,
 }
 
-/// Folders, feeds and unread and starred counts, for the sidebar.
+/// Folders, feeds and unread and starred counts of the active account, for the sidebar.
 #[tauri::command]
 pub async fn library(state: State<'_, AppState>) -> CommandResult<Library> {
+    let db = &state.active()?.db;
     Ok(Library {
-        folders: state.db.folders()?,
-        feeds: state.db.feeds()?,
-        counts: state.db.counts()?,
+        folders: db.folders()?,
+        feeds: db.feeds()?,
+        counts: db.counts()?,
     })
 }
 
@@ -300,12 +629,12 @@ pub async fn articles(
     state: State<'_, AppState>,
     selection: Selection,
 ) -> CommandResult<Vec<ArticleSummary>> {
-    Ok(state.db.articles(&selection)?)
+    Ok(state.active()?.db.articles(&selection)?)
 }
 
 #[tauri::command]
 pub async fn article_html(state: State<'_, AppState>, id: String) -> CommandResult<Option<String>> {
-    Ok(state.db.article_html(parse_id(&id)?)?)
+    Ok(state.active()?.db.article_html(parse_id(&id)?)?)
 }
 
 /// The article's Reader View text, extracted from its web page: cached, or else
@@ -317,7 +646,8 @@ pub async fn full_text(
     id: String,
     retry: bool,
 ) -> CommandResult<String> {
-    load_full_text(&state.db, parse_id(&id)?, retry)
+    let rt = state.active()?;
+    load_full_text(&rt.db, parse_id(&id)?, retry)
         .await?
         .ok_or_else(|| CommandError::other("the page has nothing to show in Reader View"))
 }
@@ -329,7 +659,7 @@ pub async fn set_feed_reader_view(
     feed_id: String,
     on: bool,
 ) -> CommandResult<()> {
-    Ok(state.db.set_feed_reader_view(&feed_id, on)?)
+    Ok(state.active()?.db.set_feed_reader_view(&feed_id, on)?)
 }
 
 #[tauri::command]
@@ -338,7 +668,7 @@ pub async fn set_read(
     ids: Vec<String>,
     read: bool,
 ) -> CommandResult<()> {
-    Ok(state.db.set_read(&parse_ids(&ids)?, read)?)
+    Ok(state.active()?.db.set_read(&parse_ids(&ids)?, read)?)
 }
 
 #[tauri::command]
@@ -347,7 +677,7 @@ pub async fn set_starred(
     ids: Vec<String>,
     starred: bool,
 ) -> CommandResult<()> {
-    Ok(state.db.set_starred(&parse_ids(&ids)?, starred)?)
+    Ok(state.active()?.db.set_starred(&parse_ids(&ids)?, starred)?)
 }
 
 /// Saves the settings and sends them to every window.
@@ -357,16 +687,11 @@ pub async fn set_settings(
     state: State<'_, AppState>,
     settings: Settings,
 ) -> CommandResult<()> {
-    let mut interval_changed = false;
     let mut theme_changed = false;
     state.update_config(|config| {
-        interval_changed = config.settings.sync_interval_minutes != settings.sync_interval_minutes;
         theme_changed = config.settings.theme != settings.theme;
         config.settings = settings.clone();
     })?;
-    if interval_changed {
-        state.interval_changed.notify_one();
-    }
     if theme_changed {
         app.set_theme(settings.theme.native());
     }
@@ -374,44 +699,27 @@ pub async fn set_settings(
     Ok(())
 }
 
-/// Signs out: removes the account from the config, its token from the keychain and every
-/// article from the cache, queued changes included. Closes the Settings window, where
-/// signing out happens.
-///
-/// Once the account is gone from the config, the user is signed out. Removing the token
-/// and the articles after that is best effort: a failure is logged, and the next sign-in
-/// empties the cache anyway.
+/// Opens the Settings window, or brings it to the front when it is open, showing `pane`
+/// if given. Async because creating a window from a synchronous command deadlocks on
+/// Windows.
 #[tauri::command]
-pub async fn sign_out(app: AppHandle, state: State<'_, AppState>) -> CommandResult<()> {
-    // No sync may write while the cache is emptied.
-    let _no_sync = state.sync_gate.stop().await;
-    let _no_prefetch = state.prefetch_gate.stop().await;
-    let account = state.config().account;
-    state.update_config(|config| config.account = None)?;
-    *lock(&state.client) = None;
-
-    if let Some(account) = account {
-        let key = account.keychain_key();
-        if let Err(e) = blocking(move || delete_token(&key)).await {
-            eprintln!("Signing out: removing the token failed: {}", e.message);
-        }
+pub async fn open_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pane: Option<String>,
+) -> CommandResult<()> {
+    if let Some(pane) = &pane {
+        // A window that is open gets the event; a new one asks on load.
+        *lock(&state.settings_pane) = Some(pane.clone());
+        let _ = app.emit_to(SETTINGS_WINDOW, SETTINGS_PANE_EVENT, pane);
     }
-    if let Err(e) = state.db.clear() {
-        eprintln!("Signing out: emptying the cache failed: {e}");
-    }
-
-    let _ = app.emit(SIGNED_OUT_EVENT, ());
-    if let Some(window) = app.get_webview_window(SETTINGS_WINDOW) {
-        let _ = window.close();
-    }
-    Ok(())
+    show_settings_window(&app).map_err(CommandError::other)
 }
 
-/// Opens the Settings window, or brings it to the front when it is open. Async because
-/// creating a window from a synchronous command deadlocks on Windows.
+/// The pane `open_settings` asked for, once.
 #[tauri::command]
-pub async fn open_settings(app: AppHandle) -> CommandResult<()> {
-    show_settings_window(&app).map_err(CommandError::other)
+pub async fn take_settings_pane(state: State<'_, AppState>) -> CommandResult<Option<String>> {
+    Ok(lock(&state.settings_pane).take())
 }
 
 /// Opens or focuses the Settings window, as defined in tauri.conf.json.
@@ -440,19 +748,33 @@ fn parse_id(id: &str) -> CommandResult<i64> {
         .map_err(|_| CommandError::other(format!("bad article ID {id:?}")))
 }
 
-/// Syncs on start, then every `sync_interval_minutes` after the last automatic sync.
-/// With the interval set to manually (0), it never syncs on its own, not on start either.
-/// A changed interval applies at once.
+/// Starts every account's background sync.
 pub fn start_background_sync(app: AppHandle) {
+    for rt in app.state::<AppState>().runtimes() {
+        start_sync_loop(app.clone(), rt);
+    }
+}
+
+/// When the account's schedule says: on start, and then every so many minutes after
+/// the last automatic sync. A changed schedule applies at once. Ends when the account
+/// is removed.
+fn start_sync_loop(app: AppHandle, rt: Arc<Runtime>) {
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
         let mut last: Option<Instant> = None;
         loop {
-            let minutes = state.config().settings.sync_interval_minutes;
-            let due = match (minutes, last) {
-                (0, _) => None,
+            if rt.removed.load(Ordering::Relaxed) {
+                break;
+            }
+            let Some(schedule) = state.config().account(&rt.id).map(|a| a.sync) else {
+                break;
+            };
+            let due = match (schedule, last) {
+                (SyncSchedule::Manual, _) | (SyncSchedule::OnStart, Some(_)) => None,
                 (_, None) => Some(Instant::now()),
-                (m, Some(last)) => Some(last + Duration::from_secs(u64::from(m) * 60)),
+                (SyncSchedule::Every(m), Some(last)) => {
+                    Some(last + Duration::from_secs(u64::from(m) * 60))
+                }
             };
             let wait = async {
                 match due {
@@ -462,88 +784,129 @@ pub fn start_background_sync(app: AppHandle) {
             };
             tokio::select! {
                 () = wait => {
-                    run_sync(&app).await;
+                    run_sync(&app, &rt).await;
                     last = Some(Instant::now());
                 }
-                () = state.interval_changed.notified() => {}
+                () = rt.wake.notified() => {}
             }
         }
     });
 }
 
-/// One sync, reported through `sync-status`. Does nothing while another sync runs or
-/// when no one is signed in.
-async fn run_sync(app: &AppHandle) {
+/// One sync of the account, reported through `sync-status`. Does nothing while another
+/// sync of it runs or when it is signed out.
+async fn run_sync(app: &AppHandle, rt: &Arc<Runtime>) {
     let state = app.state::<AppState>();
-    let last_sync = || state.db.last_sync().ok().flatten();
+    let status = |patch: SyncStatus| SyncStatus {
+        account_id: rt.id.clone(),
+        last_sync: rt.db.last_sync().ok().flatten(),
+        ..patch
+    };
     let emit = |status: SyncStatus| {
         let _ = app.emit(SYNC_STATUS_EVENT, status);
     };
 
     let work = async {
-        let client = match ensure_client(&state).await {
-            Ok(Some(client)) => client,
-            Ok(None) => return None,
-            Err(e) => {
-                return Some(SyncStatus {
-                    last_sync: last_sync(),
-                    error: Some(e.message),
-                    ..SyncStatus::default()
-                });
-            }
+        let account = state.config().account(&rt.id).cloned()?;
+        let client = match account.kind {
+            AccountKind::Greader { .. } => match ensure_client(&state, rt).await {
+                Ok(Some(client)) => client,
+                Ok(None) => return None,
+                Err(e) => {
+                    return Some(status(SyncStatus {
+                        error: Some(e.message),
+                        ..SyncStatus::default()
+                    }));
+                }
+            },
+            AccountKind::Local => return None,
         };
-        emit(SyncStatus {
+        emit(status(SyncStatus {
             syncing: true,
-            last_sync: last_sync(),
             ..SyncStatus::default()
-        });
+        }));
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
-        let keep_read_days = state.config().settings.keep_read_days.max(1);
-        Some(match sync(&client, &state.db, now, keep_read_days).await {
-            Ok(_) => SyncStatus {
-                last_sync: last_sync(),
-                ..SyncStatus::default()
-            },
+        let keep_read_days = account.keep_read_days.max(1);
+        Some(match sync(&client, &rt.db, now, keep_read_days).await {
+            Ok(_) => status(SyncStatus::default()),
             Err(e) => {
                 let unauthorized = matches!(e, Error::Unauthorized);
                 if unauthorized {
-                    state.token_rejected.store(true, Ordering::Relaxed);
-                    *lock(&state.client) = None;
+                    rt.token_rejected.store(true, Ordering::Relaxed);
+                    *lock(&rt.client) = None;
                 }
-                SyncStatus {
-                    last_sync: last_sync(),
+                status(SyncStatus {
                     error: Some(e.to_string()),
                     unauthorized,
                     ..SyncStatus::default()
-                }
+                })
             }
         })
     };
 
-    match state.sync_gate.run(work).await {
+    match rt.sync_gate.run(work).await {
         Outcome::Done(Some(status)) => {
             let synced = status.error.is_none();
             emit(status);
             if synced {
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move { prefetch(&app.state()).await });
+                let rt = rt.clone();
+                tauri::async_runtime::spawn(async move { prefetch(&rt).await });
             }
         }
-        Outcome::Stopped => emit(SyncStatus {
-            last_sync: last_sync(),
-            ..SyncStatus::default()
-        }),
+        Outcome::Stopped => emit(status(SyncStatus::default())),
         Outcome::Done(None) | Outcome::Busy => {}
     }
 }
 
 /// Fetches Reader View pages for new articles, which can take minutes. Skipped while
-/// the last sync's prefetch still runs; signing in or out stops it.
-async fn prefetch(state: &AppState) {
-    if let Outcome::Done(Err(e)) = state.prefetch_gate.run(prefetch_full_text(&state.db)).await {
+/// the last sync's prefetch still runs; removing the account stops it.
+async fn prefetch(rt: &Runtime) {
+    if let Outcome::Done(Err(e)) = rt.prefetch_gate.run(prefetch_full_text(&rt.db)).await {
         eprintln!("Prefetching Reader View failed: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn greader(server: &str) -> AccountKind {
+        AccountKind::Greader {
+            server: server.into(),
+            username: "carl".into(),
+        }
+    }
+
+    #[test]
+    fn an_account_is_named_after_its_service_or_host() {
+        assert_eq!(
+            default_description(&greader("https://rss.example.com/api/greader.php")),
+            "FreshRSS"
+        );
+        assert_eq!(
+            default_description(&greader("https://rss.example.com/i/api/greader.php/")),
+            "FreshRSS"
+        );
+        assert_eq!(
+            default_description(&greader("https://reader.example.org:8443/reader/api/0")),
+            "reader.example.org"
+        );
+        assert!(default_description(&AccountKind::Local).starts_with("On This "));
+    }
+
+    #[test]
+    fn the_old_cache_moves_with_its_sqlite_files() {
+        let files = db_files(Path::new("/data/accounts/1.db"));
+        assert_eq!(
+            files.map(|f| f.display().to_string()),
+            [
+                "/data/accounts/1.db",
+                "/data/accounts/1.db-wal",
+                "/data/accounts/1.db-shm"
+            ]
+        );
     }
 }

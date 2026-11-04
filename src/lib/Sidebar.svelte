@@ -7,7 +7,8 @@
   import { tick, untrack } from 'svelte'
   import { slide, type TransitionConfig } from 'svelte/transition'
   import { SvelteSet } from 'svelte/reactivity'
-  import { formatSynced, serviceTitle } from './format'
+  import AccountSwitcher from './AccountSwitcher.svelte'
+  import { formatSynced } from './format'
   import { openSettings } from './api'
   import { animate, ms } from './motion'
   import { activePane, focus } from './layout.svelte'
@@ -56,7 +57,7 @@
     ),
   )
   const looseFeeds = $derived(feedsByFolder.get(null) ?? [])
-  const title = $derived(store.account ? serviceTitle(store.account.server) : '')
+  const title = $derived(store.account?.description ?? '')
   const status = $derived.by(() => {
     const s = store.status
     if (s.syncing) return 'Syncing…'
@@ -232,6 +233,7 @@
 
 <nav class="sidebar" class:active={activePane() === 'sidebar'} aria-label="Feeds" bind:this={nav}>
   <div class="toolbar" data-tauri-drag-region={dragRegion}>
+    {#if store.accounts.length > 1}<AccountSwitcher />{/if}
     <!-- On macOS, ⌘, comes from the app menu, which a browser doesn't have. -->
     <button
       class="icon-button"
@@ -330,7 +332,10 @@
     background: var(--sidebar-bg);
   }
 
+  /* Over the header, for the account menu. */
   .toolbar {
+    position: relative;
+    z-index: 2;
     justify-content: flex-end;
   }
 

@@ -412,6 +412,15 @@ impl Db {
         })
     }
 
+    /// Unread articles in the whole cache, for the account switcher.
+    pub fn unread_total(&self) -> Result<i64> {
+        Ok(self
+            .read()
+            .query_row("SELECT count(*) FROM articles WHERE NOT read", [], |r| {
+                r.get(0)
+            })?)
+    }
+
     /// Empties the cache, for a sign-in to a different account. Queued changes go too.
     pub fn clear(&self) -> Result<()> {
         // A transaction that rolls back on error. A failed BEGIN…COMMIT batch would leave

@@ -4,37 +4,38 @@
   import CircleUser from '@lucide/svelte/icons/circle-user'
   import Keyboard from '@lucide/svelte/icons/keyboard'
   import Palette from '@lucide/svelte/icons/palette'
-  import SettingsIcon from '@lucide/svelte/icons/settings'
+  import Plus from '@lucide/svelte/icons/plus'
   import { onMount, tick } from 'svelte'
   import * as api from './lib/api'
-  import { serviceTitle } from './lib/format'
   import { slideHighlight } from './lib/highlight.svelte'
   import { dragRegion, macWindow } from './lib/platform'
   import ShortcutList from './lib/ShortcutList.svelte'
+  import SignIn from './lib/SignIn.svelte'
   import { styleRoot } from './lib/theme'
-  import type { Account, Font, Settings, Theme } from './lib/types'
+  import type { Account, AccountChange, Font, Settings, SyncSchedule, Theme } from './lib/types'
 
-  type Pane = 'general' | 'appearance' | 'reading' | 'shortcuts' | 'account'
+  /** A section of the window. An account's is `account:<id>`. */
+  type Pane = 'appearance' | 'reading' | 'shortcuts' | 'add-account' | `account:${string}`
 
   const panes: { pane: Pane; label: string; icon: typeof Palette }[] = [
-    { pane: 'general', label: 'General', icon: SettingsIcon },
     { pane: 'appearance', label: 'Appearance', icon: Palette },
     { pane: 'reading', label: 'Reading', icon: BookOpen },
     { pane: 'shortcuts', label: 'Shortcuts', icon: Keyboard },
   ]
 
-  const syncIntervals = [
-    { minutes: 5, label: 'Every 5 Minutes' },
-    { minutes: 15, label: 'Every 15 Minutes' },
-    { minutes: 30, label: 'Every 30 Minutes' },
-    { minutes: 60, label: 'Every Hour' },
-    { minutes: 0, label: 'Manually' },
+  const syncSchedules: { value: SyncSchedule; label: string }[] = [
+    { value: 'onStart', label: 'On Start' },
+    { value: 5, label: 'Every 5 Minutes' },
+    { value: 15, label: 'Every 15 Minutes' },
+    { value: 30, label: 'Every 30 Minutes' },
+    { value: 60, label: 'Every Hour' },
+    { value: 'manual', label: 'Manually' },
   ]
 
   const retention = [
     { days: 7, label: '1 Week' },
     { days: 14, label: '2 Weeks' },
-    { days: 30, label: '30 Days' },
+    { days: 30, label: '1 Month' },
     { days: 90, label: '3 Months' },
   ]
 
@@ -54,40 +55,65 @@
     { value: 'serif', label: 'System Serif' },
   ]
 
-  let pane = $state<Pane>('general')
+  let pane = $state<Pane>('appearance')
   let settings = $state<Settings | null>(null)
-  let account = $state<Account | null>(null)
+  let accounts = $state.raw<Account[]>([])
   let error = $state<string | null>(null)
-  let confirmingSignOut = $state(false)
-  let signingOut = $state(false)
-  let signOutButton = $state<HTMLButtonElement>()
+  let confirmingRemove = $state(false)
+  let removing = $state(false)
+  let removeButton = $state<HTMLButtonElement>()
   // Saves run one after another, so they reach config.json in the order made.
   let saving = Promise.resolve()
   // While saves are pending, `settings-changed` only echoes older states of this window.
   let pending = 0
 
+  const paneOf = (a: Account): Pane => `account:${a.id}`
+  /** The account whose pane shows. */
+  const account = $derived(accounts.find((a) => paneOf(a) === pane) ?? null)
   const current = $derived(
-    pane === 'account'
-      ? { label: account ? serviceTitle(account.server) : '' }
-      : panes.find((p) => p.pane === pane)!,
+    account
+      ? { label: account.description }
+      : pane === 'add-account'
+        ? { label: 'Add Account' }
+        : (panes.find((p) => p.pane === pane) ?? panes[0]),
   )
 
   onMount(() => {
     void api.onSettingsChanged((s) => {
       if (pending === 0) settings = s
     })
-    void api.onSignedIn((a) => (account = a))
-    void load()
+    void api.onAccountsChanged((session) => setAccounts(session.accounts))
+    void api.onSettingsPane((p) => show(p as Pane))
+    void load().then(async () => {
+      const asked = await api.takeSettingsPane()
+      if (asked) show(asked as Pane)
+    })
   })
 
   async function load() {
     try {
       const session = await api.session()
       settings = session.settings
-      account = session.account
+      setAccounts(session.accounts)
     } catch (e) {
       error = api.errorMessage(e)
     }
+  }
+
+  /** A removed account's pane gives way to the next account's, or the first section. */
+  function setAccounts(next: Account[]) {
+    const removed = pane.startsWith('account:') && !next.some((a) => paneOf(a) === pane)
+    accounts = next
+    if (removed) {
+      confirmingRemove = false
+      removing = false
+      pane = next[0] ? paneOf(next[0]) : panes[0].pane
+    }
+  }
+
+  function show(p: Pane) {
+    confirmingRemove = false
+    pane = p
   }
 
   $effect(() => {
@@ -114,20 +140,46 @@
     })
   }
 
-  async function signOut() {
-    signingOut = true
+  /** Applies a change to an account at once. Every window gets it through
+   * `accounts-changed`. A failed save shows the error and goes back. */
+  function changeAccount(id: string, change: AccountChange) {
+    accounts = accounts.map((a) => (a.id === id ? { ...a, ...change } : a))
+    api.updateAccount(id, change).then(
+      () => (error = null),
+      async (e) => {
+        await load()
+        error = api.errorMessage(e)
+      },
+    )
+  }
+
+  function renameAccount(input: HTMLInputElement, a: Account) {
+    const description = input.value.trim()
+    if (description && description !== a.description) changeAccount(a.id, { description })
+    else input.value = a.description
+  }
+
+  async function removeAccount(id: string) {
+    removing = true
     try {
-      await api.signOut()
+      await api.removeAccount(id)
     } catch (e) {
       error = api.errorMessage(e)
-      signingOut = false
+      removing = false
     }
   }
 
-  async function cancelSignOut() {
-    confirmingSignOut = false
+  async function cancelRemove() {
+    confirmingRemove = false
     await tick()
-    signOutButton?.focus()
+    removeButton?.focus()
+  }
+
+  async function addAccount(server: string, username: string, password: string) {
+    const session = await api.signIn(server, username, password)
+    setAccounts(session.accounts)
+    const added = session.accounts.find((a) => a.id === session.activeId)
+    if (added) show(paneOf(added))
   }
 
   let nav: HTMLElement
@@ -136,14 +188,14 @@
   slideHighlight(() => nav, () => pane)
 
   /** The sections in the order they're listed. */
-  const order = $derived<Pane[]>([...panes.map((p) => p.pane), ...(account ? ['account' as const] : [])])
+  const order = $derived<Pane[]>([...panes.map((p) => p.pane), ...accounts.map(paneOf), 'add-account'])
 
   /** Selects the section above or below. A focused section row passes the focus on. */
   async function stepPane(delta: 1 | -1) {
     const next = order[order.indexOf(pane) + delta]
     if (!next) return
     const hadFocus = nav.contains(document.activeElement)
-    pane = next
+    show(next)
     await tick()
     if (hadFocus) nav.querySelector<HTMLElement>('.selected')?.focus({ preventScroll: true })
   }
@@ -158,7 +210,7 @@
       return
     }
     if (e.key !== 'Escape') return
-    if (confirmingSignOut) void cancelSignOut()
+    if (confirmingRemove) void cancelRemove()
     else void api.closeWindow()
   }
 </script>
@@ -200,7 +252,7 @@
             class="nav-row"
             class:selected={pane === p.pane}
             aria-current={pane === p.pane ? 'page' : undefined}
-            onclick={() => (pane = p.pane)}
+            onclick={() => show(p.pane)}
           >
             <span class="highlight"></span>
             <p.icon size={18} strokeWidth={2} />
@@ -209,50 +261,50 @@
         </li>
       {/each}
     </ul>
-    {#if account}
-      <button
-        class="nav-row account"
-        class:selected={pane === 'account'}
-        aria-current={pane === 'account' ? 'page' : undefined}
-        onclick={() => (pane = 'account')}
-      >
-        <span class="highlight"></span>
-        <CircleUser size={28} strokeWidth={1.5} />
-        <span>
-          <strong>{serviceTitle(account.server)}</strong>
-          <small>{account.username}</small>
-        </span>
-      </button>
-    {/if}
+    <ul class="accounts" aria-label="Accounts">
+      {#each accounts as a (a.id)}
+        <li>
+          <button
+            class="nav-row account"
+            class:selected={pane === paneOf(a)}
+            aria-current={pane === paneOf(a) ? 'page' : undefined}
+            onclick={() => show(paneOf(a))}
+          >
+            <span class="highlight"></span>
+            <CircleUser size={28} strokeWidth={1.5} />
+            <span>
+              <strong>{a.description}</strong>
+              <small>{a.kind === 'greader' ? a.username : 'Feeds on this device'}</small>
+            </span>
+          </button>
+        </li>
+      {/each}
+      <li>
+        <button
+          class="nav-row"
+          class:selected={pane === 'add-account'}
+          aria-current={pane === 'add-account' ? 'page' : undefined}
+          onclick={() => show('add-account')}
+        >
+          <span class="highlight"></span>
+          <Plus size={18} strokeWidth={2} />
+          Add Account…
+        </button>
+      </li>
+    </ul>
   </nav>
 
   <main bind:this={main}>
     <header data-tauri-drag-region={dragRegion}>
       <h1>{current.label}</h1>
-      {#if pane === 'account' && account}<p>{account.username}</p>{/if}
+      {#if account?.kind === 'greader'}<p>{account.username}</p>{/if}
     </header>
 
     {#if error}<p class="error" role="alert">{error}</p>{/if}
 
     {#if settings}
       <div class="content">
-        {#if pane === 'general'}
-          <section>
-            <h2>Syncing</h2>
-            <div class="group">
-              <div class="row">
-                <label for="sync">Sync</label>
-                {@render select(
-                  'sync',
-                  settings.syncIntervalMinutes,
-                  syncIntervals.map((i) => ({ value: i.minutes, label: i.label })),
-                  (syncIntervalMinutes) => change({ syncIntervalMinutes }),
-                  (minutes) => `Every ${minutes} Minutes`,
-                )}
-              </div>
-            </div>
-          </section>
-        {:else if pane === 'appearance'}
+        {#if pane === 'appearance'}
           <section>
             <h2>Colors</h2>
             <div class="group">
@@ -331,30 +383,57 @@
             overrides={settings.shortcuts}
             onchange={(shortcuts) => change({ shortcuts })}
           />
-        {:else if pane === 'account' && account}
+        {:else if pane === 'add-account'}
           <section>
-            <h2>Account</h2>
+            <SignIn embedded submit={addAccount} />
+          </section>
+        {:else if account}
+          {@const a = account}
+          <section>
+            <h2>General</h2>
             <div class="group">
               <div class="row">
-                <span>Server</span>
-                <span class="value" title={account.server}>{account.server}</span>
+                <label for="description">Description</label>
+                <input
+                  id="description"
+                  class="text"
+                  value={a.description}
+                  autocomplete="off"
+                  spellcheck="false"
+                  onchange={(e) => renameAccount(e.currentTarget, a)}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter') e.currentTarget.blur()
+                  }}
+                />
               </div>
-              <div class="row">
-                <span>Username</span>
-                <span class="value">{account.username}</span>
-              </div>
+              {#if a.kind === 'greader'}
+                <div class="row">
+                  <span>Server</span>
+                  <span class="value" title={a.server}>{a.server}</span>
+                </div>
+              {/if}
             </div>
           </section>
           <section>
-            <h2>Storage</h2>
+            <h2>Syncing</h2>
             <div class="group">
               <div class="row">
-                <label for="keep-read">Keep read articles</label>
+                <label for="sync">Sync</label>
+                {@render select(
+                  'sync',
+                  a.sync,
+                  syncSchedules,
+                  (sync) => changeAccount(a.id, { sync }),
+                  (minutes) => `Every ${minutes} Minutes`,
+                )}
+              </div>
+              <div class="row">
+                <label for="keep-read">Keep read items</label>
                 {@render select(
                   'keep-read',
-                  settings.keepReadDays,
+                  a.keepReadDays,
                   retention.map((r) => ({ value: r.days, label: r.label })),
-                  (keepReadDays) => change({ keepReadDays }),
+                  (keepReadDays) => changeAccount(a.id, { keepReadDays }),
                   (days) => `${days} Days`,
                 )}
               </div>
@@ -362,29 +441,34 @@
             <p class="note">Starred articles are always kept.</p>
           </section>
           <section>
-            {#if confirmingSignOut}
-              <div class="group confirm" role="alertdialog" aria-labelledby="sign-out-question">
-                <p id="sign-out-question">
-                  <strong>Sign out of {serviceTitle(account.server)}?</strong>
+            <h2>Account</h2>
+            {#if confirmingRemove}
+              <div class="group confirm" role="alertdialog" aria-labelledby="remove-question">
+                <p id="remove-question">
+                  <strong>Remove {a.description}?</strong>
                   This removes the account and its articles from this computer. Changes that
                   haven’t synced yet are lost.
                 </p>
                 <div class="actions">
-                  <!-- Cancel takes the focus, so a second Return doesn't sign out. -->
+                  <!-- Cancel takes the focus, so a second Return doesn't remove it. -->
                   <!-- svelte-ignore a11y_autofocus -->
-                  <button class="button" autofocus onclick={cancelSignOut}>Cancel</button>
-                  <button class="button destructive" disabled={signingOut} onclick={signOut}>
-                    Sign Out
+                  <button class="button" autofocus onclick={cancelRemove}>Cancel</button>
+                  <button
+                    class="button destructive"
+                    disabled={removing}
+                    onclick={() => removeAccount(a.id)}
+                  >
+                    Remove
                   </button>
                 </div>
               </div>
             {:else}
               <button
-                class="button"
-                bind:this={signOutButton}
-                onclick={() => (confirmingSignOut = true)}
+                class="button wide"
+                bind:this={removeButton}
+                onclick={() => (confirmingRemove = true)}
               >
-                Sign Out…
+                Remove Account…
               </button>
             {/if}
           </section>
@@ -422,10 +506,13 @@
   }
 
   ul {
-    flex: 1;
     margin: 0;
     padding: 0;
     list-style: none;
+  }
+
+  ul:first-of-type {
+    flex: 1;
   }
 
   .nav-row {
@@ -594,6 +681,45 @@
     translate: 0 -50%;
     color: var(--text-2);
     pointer-events: none;
+  }
+
+  /* An editable value, drawn like the read-only ones until focused. */
+  input.text {
+    flex: 1;
+    min-width: 0;
+    height: 26px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    font: inherit;
+    color: var(--text-2);
+    text-align: right;
+  }
+
+  input.text:hover {
+    background: var(--hover);
+  }
+
+  input.text:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+    background: var(--reader-bg);
+    color: var(--text);
+    text-align: left;
+  }
+
+  /* A whole group's width, as a row of its own. */
+  .button.wide {
+    width: 100%;
+    height: 40px;
+    border: 1px solid var(--separator);
+    border-radius: 10px;
+    background: var(--hover);
+  }
+
+  .button.wide:hover {
+    background: var(--active);
   }
 
   .error {

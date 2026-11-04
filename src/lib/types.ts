@@ -42,13 +42,30 @@ export interface Library {
   counts: Counts
 }
 
-export interface Account {
-  /** The Google Reader API URL. */
-  server: string
-  username: string
+/** When an account syncs on its own: manually, once on start, or on start and then
+ * every so many minutes. */
+export type SyncSchedule = 'manual' | 'onStart' | number
+
+export type AccountKind =
+  /** A sync service. `server` is the Google Reader API URL. */
+  | { kind: 'greader'; server: string; username: string }
+  /** Feeds fetched on this device. */
+  | { kind: 'local' }
+
+export type Account = AccountKind & {
+  id: string
+  /** The name the UI shows. The user can change it. */
+  description: string
+  sync: SyncSchedule
+  /** How long read, unstarred articles stay in the cache. */
+  keepReadDays: number
+  /** Unread articles in its cache. */
+  unread: number
 }
 
 export interface SyncStatus {
+  /** The account it is about. */
+  accountId: string
   syncing: boolean
   /** Unix time in milliseconds. */
   lastSync: number | null
@@ -59,19 +76,22 @@ export interface SyncStatus {
 }
 
 export interface Session {
-  /** The saved account, also when signed out, to fill in the sign-in form. */
-  account: Account | null
+  accounts: Account[]
+  /** The account the main window shows. `null` only without accounts. */
+  activeId: string | null
+  /** The active account can sync. False when its token was rejected: the sign-in screen
+   * shows, filled in for it. */
   signedIn: boolean
+  /** The active account's. */
   status: SyncStatus
   settings: Settings
 }
 
-/** Settings from config.json, changed in the Settings window. */
+/** What `updateAccount` changes. */
+export type AccountChange = Partial<Pick<Account, 'description' | 'sync' | 'keepReadDays'>>
+
+/** Settings for every account, from config.json, changed in the Settings window. */
 export interface Settings {
-  /** Minutes between automatic syncs. 0 means manually. */
-  syncIntervalMinutes: number
-  /** How long read, unstarred articles stay in the cache. */
-  keepReadDays: number
   /** Ask before marking every article in a view as read. */
   confirmMarkAllRead: boolean
   theme: Theme

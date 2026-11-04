@@ -7,6 +7,7 @@
   import Reader from './lib/Reader.svelte'
   import Resizer from './lib/Resizer.svelte'
   import Sidebar from './lib/Sidebar.svelte'
+  import AccountSwitcher from './lib/AccountSwitcher.svelte'
   import SignIn from './lib/SignIn.svelte'
   import { isMac } from './lib/platform'
   import { arrowKeys, bindings, keyName } from './lib/shortcuts'
@@ -116,7 +117,20 @@
 {#if !store.ready}
   <!-- Blank until the session is known, so the sign-in screen doesn't flash. -->
 {:else if !store.signedIn}
-  <SignIn />
+  <!-- For an account whose token the server rejected, filled in; or the first account. -->
+  {#key store.activeId}
+    <SignIn
+      submit={(server, username, password) => store.signIn(server, username, password)}
+      account={store.account?.kind === 'greader' ? store.account : null}
+      initialError={store.status.unauthorized
+        ? `${store.account?.description} no longer accepts the sign-in. Sign in again.`
+        : store.status.error}
+    />
+  {/key}
+  {#if store.accounts.length > 1}
+    <!-- The other accounts still work. -->
+    <div class="other-accounts"><AccountSwitcher /></div>
+  {/if}
 {:else}
   <div class="app" class:resizing>
     <div
@@ -161,6 +175,15 @@
 {/if}
 
 <style>
+  .other-accounts {
+    position: fixed;
+    top: 8px;
+    right: 10px;
+    width: 260px;
+    display: flex;
+    justify-content: flex-end;
+  }
+
   .app {
     display: flex;
     height: 100%;
