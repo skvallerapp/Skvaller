@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::db::{ArticleRow, LocalFeed, NewFeed};
-use crate::full_text::{USER_AGENT, decode};
+use crate::full_text::{MAX_SCANNED_DEPTH, USER_AGENT, decode, scanned_depth};
 use crate::sync::{DAY, SUMMARY_CHARS, fetch_icons};
 use crate::text::plain_text;
 use crate::{Db, Error, Result, SyncReport};
@@ -51,14 +51,15 @@ pub async fn refresh(db: &Db, now: i64, keep_read_days: u32) -> Result<SyncRepor
     for feed in db.local_feeds()? {
         let (http, limit) = (http.clone(), limit.clone());
         fetches.spawn(async move {
-            let _permit = limit.acquire_owned().await;
+            // Held until the feed is stored, so only so many bodies wait in memory.
+            let permit = limit.acquire_owned().await;
             let fetched = fetch(&http, &feed.url, Some(&feed)).await;
-            (feed, fetched)
+            (feed, fetched, permit)
         });
     }
     let mut fetched = 0;
     while let Some(done) = fetches.join_next().await {
-        let Ok((feed, result)) = done else {
+        let Ok((feed, result, _permit)) = done else {
             continue;
         };
         match result {
@@ -95,7 +96,7 @@ pub async fn subscribe(db: &Db, url: &str, folder_id: Option<&str>, now: i64) ->
     let (page, parsed) = match parse(&page) {
         Some(parsed) => (page, parsed),
         None => {
-            let link = discover(&page).ok_or(Error::NoFeed)?;
+            let link = discover_off_runtime(&page).await.ok_or(Error::NoFeed)?;
             let page = fetch(&http, link.as_str(), None)
                 .await
                 .map_err(Error::Protocol)?
@@ -241,9 +242,26 @@ fn entry_key(links: &[model::Link], title: &Option<model::Text>, _uri: Option<&s
     }
 }
 
-/// The feed a web page links to with `<link rel="alternate">`, the first one.
-fn discover(page: &Page) -> Option<Url> {
-    let html = decode(&page.body, &page.content_type);
+/// `discover`, off the async runtime: parsing a large page takes a while.
+async fn discover_off_runtime(page: &Page) -> Option<Url> {
+    let (body, content_type, url) = (
+        page.body.clone(),
+        page.content_type.clone(),
+        page.url.clone(),
+    );
+    tokio::task::spawn_blocking(move || discover(&body, &content_type, &url))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// The feed a web page links to with `<link rel="alternate">`, the first one. `None`
+/// for a page that nests too deeply to parse in good time, like Reader View's guard.
+fn discover(body: &[u8], content_type: &str, base: &Url) -> Option<Url> {
+    let html = decode(body, content_type);
+    if scanned_depth(&html) > MAX_SCANNED_DEPTH {
+        return None;
+    }
     let document = Document::from(html.as_str());
     let types = [
         "application/rss+xml",
@@ -258,7 +276,7 @@ fn discover(page: &Page) -> Option<Url> {
             link.attr("type")
                 .is_some_and(|t| types.contains(&t.trim().to_ascii_lowercase().as_str()))
         })
-        .find_map(|link| page.url.join(link.attr("href")?.trim()).ok())
+        .find_map(|link| web_url(base.join(link.attr("href")?.trim()).ok()?))
 }
 
 /// Stores the feed's entries, and returns how many rows changed.
@@ -310,7 +328,7 @@ fn entry_url(entry: &model::Entry, base: &Url) -> String {
         .iter()
         .find(|l| l.rel.as_deref().is_none_or(|rel| rel == "alternate"))
         .or(entry.links.first());
-    link.and_then(|l| base.join(&l.href).ok())
+    link.and_then(|l| web_url(base.join(&l.href).ok()?))
         .map(String::from)
         .unwrap_or_default()
 }
@@ -336,7 +354,12 @@ fn site_url(feed: &model::Feed) -> Option<Url> {
     links()
         .find(|l| l.rel.as_deref() == Some("alternate"))
         .or_else(|| links().next())
-        .and_then(|l| Url::parse(&l.href).ok())
+        .and_then(|l| web_url(Url::parse(&l.href).ok()?))
+}
+
+/// Only http(s) addresses from a feed: it is untrusted.
+fn web_url(url: Url) -> Option<Url> {
+    matches!(url.scheme(), "http" | "https").then_some(url)
 }
 
 /// The feed's icon, else its logo, else the site's favicon.
@@ -344,8 +367,8 @@ fn icon_url(feed: &model::Feed, site: &Url) -> Option<String> {
     feed.icon
         .as_ref()
         .or(feed.logo.as_ref())
-        .and_then(|image| site.join(&image.uri).ok())
-        .or_else(|| site.join("/favicon.ico").ok())
+        .and_then(|image| web_url(site.join(&image.uri).ok()?))
+        .or_else(|| web_url(site.join("/favicon.ico").ok()?))
         .map(String::from)
 }
 

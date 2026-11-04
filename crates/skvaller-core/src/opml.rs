@@ -9,6 +9,28 @@ use serde::Serialize;
 use crate::db::NewFeed;
 use crate::{Db, Error, Result};
 
+/// Folders in real files nest a few levels at most.
+const MAX_DEPTH: usize = 100;
+
+/// How deeply `<outline>` elements nest, counted roughly from the text.
+fn outline_depth(xml: &str) -> usize {
+    let (mut depth, mut max) = (0usize, 0);
+    let mut rest = xml;
+    while let Some(i) = rest.find('<') {
+        rest = &rest[i + 1..];
+        if rest.starts_with("/outline") {
+            depth = depth.saturating_sub(1);
+        } else if rest.starts_with("outline") {
+            let end = rest.find('>').unwrap_or(rest.len());
+            if !rest[..end].ends_with('/') {
+                depth += 1;
+                max = max.max(depth);
+            }
+        }
+    }
+    max
+}
+
 #[derive(Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ImportReport {
     /// Feeds added.
@@ -66,6 +88,11 @@ pub fn export(db: &Db, title: &str) -> Result<String> {
 /// as the outermost one: Skvaller has one level. Feeds are not fetched here; the next
 /// refresh does that.
 pub fn import(db: &Db, xml: &str) -> Result<ImportReport> {
+    // The parser recurses per level: a crafted file nested thousands deep would
+    // overflow the stack and end the app.
+    if outline_depth(xml) > MAX_DEPTH {
+        return Err(Error::Protocol("the OPML file nests too deeply".into()));
+    }
     let document = OPML::from_str(xml).map_err(|_| Error::Protocol("not an OPML file".into()))?;
     let mut report = ImportReport::default();
     for outline in &document.body.outlines {
@@ -92,7 +119,16 @@ fn add(db: &Db, outline: &Outline, folder: Option<&str>, report: &mut ImportRepo
             report.skipped += 1;
             return Ok(());
         };
-        let site = outline.html_url.as_deref().and_then(|u| Url::parse(u).ok());
+        // Subscribed already, maybe by the address after a redirect.
+        if db.feed_by_url(&[url.as_str(), xml_url.trim()])?.is_some() {
+            report.skipped += 1;
+            return Ok(());
+        }
+        let site = outline
+            .html_url
+            .as_deref()
+            .and_then(|u| Url::parse(u).ok())
+            .filter(|u| matches!(u.scheme(), "http" | "https"));
         let icon = site.as_ref().and_then(|s| s.join("/favicon.ico").ok());
         let title = Some(name()).filter(|t| !t.is_empty());
         let added = db.add_local_feed(&NewFeed {
@@ -188,6 +224,26 @@ mod tests {
             }
         );
         assert!(import(&db, "<html></html>").is_err());
+    }
+
+    #[test]
+    fn a_file_nested_too_deeply_is_refused_before_parsing() {
+        let deep = format!(
+            "<opml version=\"2.0\"><body>{}{}</body></opml>",
+            "<outline text=\"x\">".repeat(5000),
+            "</outline>".repeat(5000)
+        );
+        let db = Db::open_in_memory().unwrap();
+        assert!(matches!(import(&db, &deep), Err(Error::Protocol(_))));
+        // Many feeds side by side are not deep.
+        let flat = format!(
+            "<opml version=\"2.0\"><body><outline text=\"F\">{}</outline></body></opml>",
+            (0..500)
+                .map(|i| format!("<outline text=\"{i}\" xmlUrl=\"https://e.example/{i}\"/>"))
+                .collect::<String>()
+        );
+        assert_eq!(outline_depth(&flat), 1);
+        assert_eq!(import(&db, &flat).unwrap().added, 500);
     }
 
     #[test]

@@ -22,7 +22,7 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 /// Parsing and Readability both slow down with the square of how deeply elements nest:
 /// 6,000 levels take seconds. Real pages stay under a hundred or so. A rough count of
 /// the tags guards the parser; the parsed document's depth guards Readability.
-const MAX_SCANNED_DEPTH: usize = 2000;
+pub(crate) const MAX_SCANNED_DEPTH: usize = 2000;
 const MAX_DEPTH: usize = 500;
 /// Browser-like, since some sites turn away anything else, but says what it is.
 pub(crate) const USER_AGENT: &str = concat!(
@@ -214,7 +214,7 @@ const END_TAG_REACH: usize = 16;
 /// How deeply tags nest, counted roughly from the text: a start tag opens an element,
 /// an end tag closes the nearest open one of its name. Stops counting past
 /// `MAX_SCANNED_DEPTH`. Overcounts on tags in comments, which real pages have few of.
-fn scanned_depth(html: &str) -> usize {
+pub(crate) fn scanned_depth(html: &str) -> usize {
     let bytes = html.as_bytes();
     let mut open: Vec<&str> = Vec::new();
     let mut max = 0;

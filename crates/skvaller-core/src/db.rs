@@ -851,10 +851,14 @@ impl Db {
             }
         }
         let ids: Vec<i64> = entries.iter().map(|(a, _)| a.id).collect();
-        tx.execute(
+        // An empty feed is more likely a glitch than every entry gone: forgetting them
+        // would bring the pruned ones back as new.
+        if !ids.is_empty() {
+            tx.execute(
             "DELETE FROM seen WHERE feed_id = ?1 AND article_id NOT IN (SELECT value FROM json_each(?2))",
             params![feed_id, json(&ids)],
         )?;
+        }
         tx.execute(
             "INSERT INTO seen (article_id, feed_id) SELECT value, ?1 FROM json_each(?2)
              WHERE true ON CONFLICT DO NOTHING",

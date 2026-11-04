@@ -165,6 +165,7 @@ function accounts(): Account[] {
 function session(): Session {
   const { active } = saved()
   return {
+    revision: Date.now(),
     accounts: accounts(),
     activeId: active,
     signedIn: active !== null,

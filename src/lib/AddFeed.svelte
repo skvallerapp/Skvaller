@@ -65,6 +65,13 @@
     }
   }
 
+  // Only focus moving to another element closes it; WebKit doesn't focus clicked
+  // buttons, so clicks outside close it in onWindowPointerdown.
+  function onFocusout(e: FocusEvent) {
+    const next = e.relatedTarget as Node | null
+    if (next && !busy && !root.contains(next)) open = false
+  }
+
   function onWindowPointerdown(e: PointerEvent) {
     if (open && !busy && !root.contains(e.target as Node)) open = false
   }
@@ -72,7 +79,7 @@
 
 <svelte:window onpointerdown={onWindowPointerdown} />
 
-<div bind:this={root}>
+<div bind:this={root} onfocusout={onFocusout}>
   <button
     class="icon-button"
     bind:this={trigger}
