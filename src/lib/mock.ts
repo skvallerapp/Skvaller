@@ -346,6 +346,7 @@ const commands: Record<string, (args: Args) => unknown> = {
   set_feed_reader_view: ({ feedId, on }) => {
     const feed = active().feeds.find((f) => f.id === feedId)
     if (feed) feed.readerView = on as boolean
+    emit('feeds-changed', commandAccount ?? saved().active)
   },
   set_read: ({ ids, read }) => update(ids as string[], { read: read as boolean }),
   set_starred: ({ ids, starred }) => update(ids as string[], { starred: starred as boolean }),

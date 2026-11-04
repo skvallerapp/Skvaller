@@ -140,6 +140,9 @@ export const onSettingsChanged = (handler: (settings: Settings) => void) =>
 /** Accounts were added, changed or removed, or another one became active. */
 export const onAccountsChanged = (handler: (session: Session) => void) => on('accounts-changed', handler)
 
+/** A feed's settings changed, such as Reader View, in the account with this ID. */
+export const onFeedsChanged = (handler: (accountId: string) => void) => on('feeds-changed', handler)
+
 /** The Settings window, open already, is asked to show a pane. */
 export const onSettingsPane = (handler: (pane: string) => void) => on('settings-pane', handler)
 
