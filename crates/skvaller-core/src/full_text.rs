@@ -217,6 +217,8 @@ const END_TAG_REACH: usize = 16;
 pub(crate) fn scanned_depth(html: &str) -> usize {
     let bytes = html.as_bytes();
     let mut open: Vec<&str> = Vec::new();
+    // Where in `open` the outermost SVG or MathML element is, while one is.
+    let mut foreign_at: Option<usize> = None;
     let mut max = 0;
     let mut i = 0;
     while let Some(offset) = bytes[i..].iter().position(|&b| b == b'<') {
@@ -229,11 +231,7 @@ pub(crate) fn scanned_depth(html: &str) -> usize {
             if body.starts_with(b">") || body.starts_with(b"->") {
                 continue;
             }
-            match [&b"-->"[..], b"--!>"]
-                .iter()
-                .filter_map(|end| find(body, end))
-                .min()
-            {
+            match comment_end(body) {
                 Some(end) => i += 3 + end,
                 None => return max,
             }
@@ -268,20 +266,24 @@ pub(crate) fn scanned_depth(html: &str) -> usize {
                 .position(|n| n.eq_ignore_ascii_case(name));
             if let Some(from_top) = found {
                 open.truncate(open.len() - 1 - from_top);
+                if foreign_at.is_some_and(|at| open.len() <= at) {
+                    foreign_at = None;
+                }
             }
             continue;
         }
         // Inside SVG and MathML, `<path/>` and the like open nothing; in HTML, `/>` closes
         // nothing. The search stops at the next `<`, so a page of tags that never close
         // can't make it quadratic.
-        let foreign = open
-            .iter()
-            .any(|n| n.eq_ignore_ascii_case("svg") || n.eq_ignore_ascii_case("math"));
+        let foreign = foreign_at.is_some();
         let tag_end = bytes[start..].iter().position(|&b| b == b'>' || b == b'<');
         let self_closing =
             tag_end.is_some_and(|e| bytes[start + e] == b'>' && bytes[start + e - 1] == b'/');
         if foreign && self_closing {
             continue;
+        }
+        if !foreign && (name.eq_ignore_ascii_case("svg") || name.eq_ignore_ascii_case("math")) {
+            foreign_at = Some(open.len());
         }
         open.push(name);
         max = max.max(open.len());
@@ -308,8 +310,18 @@ pub(crate) fn scanned_depth(html: &str) -> usize {
 /// parser runs with scripting off, which reads its content as markup.
 const RAW_TEXT: [&str; 5] = ["script", "style", "textarea", "title", "xmp"];
 
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
+/// Where a comment's body ends: at the first `-->` or `--!>`, in one pass.
+fn comment_end(body: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    while let Some(at) = body[i..].windows(2).position(|w| w == b"--") {
+        let dashes = i + at;
+        let rest = &body[dashes + 2..];
+        if rest.starts_with(b">") || rest.starts_with(b"!>") {
+            return Some(dashes);
+        }
+        i = dashes + 1;
+    }
+    None
 }
 
 /// How deeply the nodes under `root` nest.
@@ -418,6 +430,11 @@ mod tests {
             assert!(scanned_depth(&page) > MAX_SCANNED_DEPTH, "{start}");
         }
         assert!(scanned_depth(&"<div/>".repeat(MAX_SCANNED_DEPTH + 10)) > MAX_SCANNED_DEPTH);
+        // Many comments take one pass, not one per comment.
+        let comments = "<!--a-->".repeat(250_000);
+        let started = std::time::Instant::now();
+        assert_eq!(scanned_depth(&comments), 0);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]
