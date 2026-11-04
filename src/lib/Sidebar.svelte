@@ -195,17 +195,15 @@
 
 <nav class="sidebar" aria-label="Feeds">
   <div class="toolbar" data-tauri-drag-region={dragRegion}>
-    {#if !macWindow}
-      <!-- macOS opens Settings from the app menu, which a browser doesn't have. -->
-      <button
-        class="icon-button"
-        aria-label="Settings"
-        title={isMac ? 'Settings' : 'Settings (Ctrl+,)'}
-        onclick={() => openSettings()}
-      >
-        <SettingsIcon size={18} strokeWidth={2} />
-      </button>
-    {/if}
+    <!-- On macOS, ⌘, comes from the app menu, which a browser doesn't have. -->
+    <button
+      class="icon-button"
+      aria-label="Settings"
+      title={macWindow ? 'Settings (⌘,)' : isMac ? 'Settings' : 'Settings (Ctrl+,)'}
+      onclick={() => openSettings()}
+    >
+      <SettingsIcon size={18} strokeWidth={2} />
+    </button>
     <button
       class="icon-button sync"
       class:spinning={store.status.syncing}
