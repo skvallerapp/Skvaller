@@ -10,6 +10,7 @@
   import { formatSynced, serviceTitle } from './format'
   import { openSettings } from './api'
   import { animate, ms } from './motion'
+  import { activePane, focus } from './layout.svelte'
   import { dragRegion, inTauri, isMac, macWindow } from './platform'
   import { store } from './store.svelte'
   import type { Feed, Scope } from './types'
@@ -100,6 +101,30 @@
     return store.select(rows.slice(i + 1).find(unread) ?? { kind: 'all' })
   }
 
+  let nav: HTMLElement
+
+  /** Selects the row above or below, as the arrow keys do while the sidebar is in focus. */
+  export async function step(delta: 1 | -1) {
+    const all: Scope[] = [{ kind: 'all' }, ...rows]
+    let i = all.findIndex(isSelected)
+    // A feed in a collapsed folder has no row: step from its folder's.
+    const scope = store.scope
+    if (i === -1 && scope.kind === 'feed') {
+      const folderId = store.feed(scope.id)?.folderId
+      i = all.findIndex((r) => r.kind === 'folder' && r.id === folderId)
+    }
+    const next = all[i + delta]
+    if (!next) return
+    // A row with keyboard focus (or, on Linux, a clicked one) passes it on, so Enter
+    // and the focus ring stay on the selection.
+    const hadFocus = nav.contains(document.activeElement)
+    void store.select(next)
+    await tick()
+    const row = nav.querySelector<HTMLElement>('.row.selected')
+    row?.scrollIntoView({ block: 'nearest' })
+    if (hadFocus) row?.focus({ preventScroll: true })
+  }
+
   function isSelected(scope: Scope): boolean {
     const cur = store.scope
     if (cur.kind !== scope.kind) return false
@@ -176,8 +201,12 @@
     class="row"
     class:indent
     class:selected={isSelected(scope)}
+    aria-current={isSelected(scope) || undefined}
     out:leave|global
-    onclick={() => store.select(scope)}
+    onclick={() => {
+      focus.pane = 'sidebar'
+      void store.select(scope)
+    }}
     oncontextmenu={feed ? (e) => showFeedMenu(e, feed) : undefined}
   >
     {#if feed}
@@ -193,7 +222,7 @@
   </button>
 {/snippet}
 
-<nav class="sidebar" aria-label="Feeds">
+<nav class="sidebar" class:active={activePane() === 'sidebar'} aria-label="Feeds" bind:this={nav}>
   <div class="toolbar" data-tauri-drag-region={dragRegion}>
     <!-- On macOS, ⌘, comes from the app menu, which a browser doesn't have. -->
     <button
@@ -271,7 +300,12 @@
         aria-checked={store.view === v.view}
         tabindex={store.view === v.view ? 0 : -1}
         bind:this={viewButtons[i]}
-        onclick={() => store.setView(v.view)}
+        onclick={(e) => {
+          // A clicked button keeps the focus on Linux, and with it ← and →. Tab still
+          // reaches the switcher.
+          if (e.detail > 0) e.currentTarget.blur()
+          store.setView(v.view)
+        }}
       >
         <v.icon size={16} strokeWidth={2} />
       </button>
@@ -368,7 +402,7 @@
     color: inherit;
   }
 
-  .folder:has(.row.selected) .disclosure {
+  .active .folder:has(.row.selected) .disclosure {
     color: var(--accent-text);
   }
 
@@ -401,7 +435,16 @@
     background: var(--hover);
   }
 
+  /* The tint lowers the contrast of dimmer text, so it takes the full text color. */
   .row.selected {
+    background: var(--accent-muted);
+  }
+
+  .row.selected .count {
+    color: var(--text);
+  }
+
+  .active .row.selected {
     background: var(--accent);
     color: var(--accent-text);
   }
@@ -412,7 +455,7 @@
     height: 18px;
   }
 
-  .row.selected .count {
+  .active .row.selected .count {
     color: inherit;
   }
 

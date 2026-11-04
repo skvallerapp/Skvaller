@@ -4,7 +4,7 @@
   import Star from '@lucide/svelte/icons/star'
   import { tick, untrack } from 'svelte'
   import { formatTime } from './format'
-  import { layout, toggleSidebar } from './layout.svelte'
+  import { activePane, focus, layout, toggleSidebar } from './layout.svelte'
   import { animate } from './motion'
   import { dragRegion, macWindow } from './platform'
   import { store } from './store.svelte'
@@ -146,6 +146,10 @@
     if (top < viewport.scrollTop) viewport.scrollTop = top
     else if (top + ROW_HEIGHT > viewport.scrollTop + viewport.clientHeight)
       viewport.scrollTop = top + ROW_HEIGHT - viewport.clientHeight
+    // A row with keyboard focus (or, on Linux, a clicked one) passes it on, so Enter
+    // and the focus ring stay on the open article.
+    if (pane.contains(document.activeElement))
+      void tick().then(() => pane.querySelector<HTMLElement>('.row.selected')?.focus({ preventScroll: true }))
   })
 
   /** Marks all as read, asking first when the setting says so. */
@@ -169,7 +173,7 @@
   onblur={() => (confirming = false)}
 />
 
-<section class="list" aria-label="Articles">
+<section class="list" class:active={activePane() === 'list'} aria-label="Articles">
   <div
     class="toolbar"
     class:window-buttons={macWindow && !layout.sidebarOpen}
@@ -237,10 +241,14 @@
             <button
               class="row"
               class:selected={article.id === store.articleId}
+              aria-current={article.id === store.articleId || undefined}
               class:unread={!store.read.has(article.id)}
               style:height="{ROW_HEIGHT}px"
               style:transform="translateY({(first + i) * ROW_HEIGHT}px)"
-              onclick={() => store.open(article.id)}
+              onclick={() => {
+                focus.pane = 'list'
+                store.open(article.id)
+              }}
             >
               <span class="meta">
                 <span class="dot"></span>
@@ -386,6 +394,16 @@
   }
 
   .row.selected {
+    background: var(--accent-muted);
+  }
+
+  /* The tint lowers the contrast of dimmer text, so it takes the full text color. */
+  .row.selected .meta,
+  .row.selected:not(.unread) .title {
+    color: var(--text);
+  }
+
+  .active .row.selected {
     background: var(--accent);
     color: var(--accent-text);
   }
@@ -441,17 +459,17 @@
     color: var(--text-2);
   }
 
-  .row.selected .meta,
-  .row.selected .title,
-  .row.selected .dot {
+  .active .row.selected .meta,
+  .active .row.selected .title,
+  .active .row.selected .dot {
     color: inherit;
   }
 
-  .row.selected.unread .dot {
+  .active .row.selected.unread .dot {
     background: var(--accent-text);
   }
 
-  .row.selected :global(.star) {
+  .active .row.selected :global(.star) {
     color: inherit;
   }
 </style>

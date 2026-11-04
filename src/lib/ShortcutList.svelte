@@ -1,6 +1,6 @@
 <script lang="ts">
   import { isMac } from './platform'
-  import { bindings, fixedKeys, keyLabel, keyName, rebind, shortcutActions } from './shortcuts'
+  import { arrowKeys, bindings, keyLabel, keyName, rebind, shortcutActions } from './shortcuts'
   import type { Settings, ShortcutAction } from './types'
 
   type Overrides = Settings['shortcuts']
@@ -56,9 +56,8 @@
       if (e.metaKey || e.ctrlKey || e.altKey) notice = 'A shortcut is a single key, with or without Shift.'
       return
     }
-    const fixed = fixedKeys[key]
-    if (fixed) {
-      notice = `${keyLabel(key, isMac)} is always ${labelOf(fixed)}.`
+    if (arrowKeys.has(key)) {
+      notice = 'The arrow keys move in and between the sidebar and the article list.'
       return
     }
     // Enter has to keep pressing the focused button.
@@ -116,7 +115,7 @@
     {:else if recordingAction}
       Press Esc to cancel, or {isMac ? 'Delete' : 'Backspace'} for no key.
     {:else}
-      Click a key to change it. ↑ and ↓ also move between articles.
+      Click a key to change it. ↑ and ↓ move in the sidebar or the list, and ← and → move between them.
     {/if}
   </p>
   <button class="button restore" disabled={Object.keys(overrides).length === 0} onclick={restoreDefaults}>
