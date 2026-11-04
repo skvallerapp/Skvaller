@@ -349,3 +349,38 @@ fn article_ids_are_stable_and_positive() {
     // Pinned: a change would make every cached entry new again.
     assert_eq!(article_id("feed/x", "y"), 8_695_524_808_960_597_949);
 }
+
+#[tokio::test]
+async fn a_feed_unsubscribed_while_fetched_is_skipped_and_one_redirected_to_is_found() {
+    let server = MockServer::start().await;
+    serve(&server, "/feed.xml", xml(rss(TWO_ITEMS))).await;
+    let db = Db::open_in_memory().unwrap();
+    let url = format!("{}/feed.xml", server.uri());
+    let feed = subscribe(&db, &url, None, NOW).await.unwrap();
+
+    db.unsubscribe(&feed).unwrap();
+    let page = Page {
+        url: Url::parse(&url).unwrap(),
+        body: rss(TWO_ITEMS).into_bytes(),
+        content_type: String::new(),
+        etag: None,
+        last_modified: None,
+    };
+    let parsed = parse(&page).unwrap();
+    assert_eq!(store(&db, &feed, &parsed, &page, NOW).unwrap(), 0);
+    assert!(all(&db).is_empty());
+
+    // Subscribed by its address after redirects; asked for by the one before.
+    let feed = subscribe(&db, &url, None, NOW).await.unwrap();
+    db.with_conn(|c| {
+        c.execute(
+            "UPDATE feeds SET url = 'https://moved.example/feed' WHERE id = ?1",
+            [&feed],
+        )
+        .unwrap()
+    });
+    assert_eq!(
+        db.feed_by_url(&["https://moved.example/feed"]).unwrap(),
+        Some(feed)
+    );
+}

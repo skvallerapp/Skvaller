@@ -25,7 +25,7 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_SCANNED_DEPTH: usize = 2000;
 const MAX_DEPTH: usize = 500;
 /// Browser-like, since some sites turn away anything else, but says what it is.
-const USER_AGENT: &str = concat!(
+pub(crate) const USER_AGENT: &str = concat!(
     "Mozilla/5.0 (compatible; Skvaller/",
     env!("CARGO_PKG_VERSION"),
     "; +https://github.com/skvallerapp/Skvaller)"
@@ -78,9 +78,9 @@ pub async fn prefetch(db: &Db) -> Result<()> {
     Ok(())
 }
 
-/// One client for every page and local feed, so connections are reused. Not the API
-/// client: pages redirect, and they get no access token. It keeps no cookies.
-pub(crate) fn http() -> Result<reqwest::Client> {
+/// One client for every page, so connections are reused. Not the API client: pages
+/// redirect, and they get no access token. It keeps no cookies.
+fn http() -> Result<reqwest::Client> {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     if let Some(client) = CLIENT.get() {
         return Ok(client.clone());

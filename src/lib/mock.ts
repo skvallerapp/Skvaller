@@ -151,8 +151,11 @@ function save(value: SavedAccounts) {
   emit('accounts-changed', session())
 }
 
+/** The account the command being run names, else the active one. */
+let commandAccount: string | null = null
+
 function active(): Data {
-  return dataOf(saved().active ?? '1')
+  return dataOf(commandAccount ?? saved().active ?? '1')
 }
 
 function accounts(): Account[] {
@@ -211,7 +214,7 @@ function update(ids: string[], change: Partial<Article>) {
 }
 
 function sync() {
-  const id = saved().active
+  const id = commandAccount ?? saved().active
   if (!id) return
   const status = statusOf(id)
   status.syncing = true
@@ -250,9 +253,9 @@ const commands: Record<string, (args: Args) => unknown> = {
   },
   // Takes a moment, like fetching the feed. An address with "nofeed" in it has none.
   subscribe: async ({ url, folderId }) => {
+    const d = active()
     await new Promise((r) => setTimeout(r, 600))
     if (String(url).includes('nofeed')) throw { kind: 'noFeed', message: 'no feed found at this address' }
-    const d = active()
     const id = `feed/${url}`
     if (!d.feeds.some((f) => f.id === id)) {
       const title = String(url).replace(/^https?:\/\//, '').split('/')[0]
@@ -293,7 +296,10 @@ const commands: Record<string, (args: Args) => unknown> = {
   },
   import_opml: () => ({ added: 3, skipped: 1 }),
   export_opml: () => true,
-  set_active_account: ({ id }) => save({ ...saved(), active: id as string }),
+  set_active_account: ({ id }) => {
+    save({ ...saved(), active: id as string })
+    return session()
+  },
   update_account: ({ id, description, sync, keepReadDays }) => {
     const value = saved()
     const change = Object.fromEntries(
@@ -325,8 +331,9 @@ const commands: Record<string, (args: Args) => unknown> = {
   },
   // Takes a moment, like fetching a page. xkcd's pages have nothing readable.
   full_text: async ({ id }) => {
+    const { articles } = active()
     await new Promise((r) => setTimeout(r, 800))
-    const a = active().articles.find((x) => x.id === id)
+    const a = articles.find((x) => x.id === id)
     if (!a || a.feedId === 'xkcd') throw { kind: 'other', message: 'Nothing to show in Reader View' }
     return (
       `<p>${a.summary}</p><p>This is the <strong>Reader View</strong> of the article: the full text ` +
@@ -362,5 +369,10 @@ const commands: Record<string, (args: Args) => unknown> = {
 export async function invoke<T>(cmd: string, args: Args = {}): Promise<T> {
   const command = commands[cmd]
   if (!command) throw { kind: 'other', message: `Mock has no command "${cmd}"` }
-  return command(args) as T
+  commandAccount = (args.accountId as string | undefined) ?? null
+  try {
+    return command(args) as T
+  } finally {
+    commandAccount = null
+  }
 }

@@ -14,6 +14,12 @@ pub struct Config {
     pub accounts: Vec<Account>,
     /// The ID of the account the main window shows.
     pub active: Option<String>,
+    /// The number in the next account's ID. Only grows, so an ID, and with it a cache
+    /// file, is never reused.
+    pub next_id: u64,
+    /// Removed accounts whose cache files could not be deleted yet, such as on Windows
+    /// while still open. The next start deletes them.
+    pub removed: Vec<String>,
     /// Stored next to `accounts`, not nested, in the file.
     #[serde(flatten)]
     pub settings: Settings,
@@ -281,14 +287,26 @@ fn migrate(value: &mut serde_json::Value) {
     object.insert("active".into(), serde_json::json!(FIRST_ACCOUNT_ID));
 }
 
+trait OkOrDefault {
+    fn ok_or_default(self) -> Result<Config, Config>;
+}
+
+impl OkOrDefault for Option<Config> {
+    fn ok_or_default(self) -> Result<Config, Config> {
+        self.ok_or_else(Config::default)
+    }
+}
+
 impl Config {
-    /// A missing or unreadable file gives the defaults. A file from before several
-    /// accounts is migrated.
-    pub fn load(path: &Path) -> Self {
-        std::fs::read(path)
-            .ok()
-            .and_then(|bytes| Self::parse(&bytes))
-            .unwrap_or_default()
+    /// A missing file gives the defaults. A file from before several accounts is
+    /// migrated. `Err` with the defaults: the file is there but can't be read, and must
+    /// not be overwritten before it is kept somewhere.
+    pub fn load(path: &Path) -> Result<Self, Self> {
+        match std::fs::read(path) {
+            Ok(bytes) => Self::parse(&bytes).ok_or_default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(_) => Err(Self::default()),
+        }
     }
 
     fn parse(bytes: &[u8]) -> Option<Self> {
@@ -302,6 +320,11 @@ impl Config {
         {
             config.active = config.accounts.first().map(|a| a.id.clone());
         }
+        let past_ids = config
+            .accounts
+            .iter()
+            .filter_map(|a| a.id.parse::<u64>().ok());
+        config.next_id = config.next_id.max(past_ids.max().unwrap_or(0) + 1);
         Some(config)
     }
 
@@ -309,15 +332,12 @@ impl Config {
         self.accounts.iter().find(|a| a.id == id)
     }
 
-    /// An ID no account has: one more than the highest.
-    pub fn next_id(&self) -> String {
-        let max = self
-            .accounts
-            .iter()
-            .filter_map(|a| a.id.parse::<u64>().ok())
-            .max()
-            .unwrap_or(0);
-        (max + 1).to_string()
+    /// Takes an ID no account had before.
+    pub fn take_id(&mut self) -> String {
+        self.next_id = self.next_id.max(1);
+        let id = self.next_id.to_string();
+        self.next_id += 1;
+        id
     }
 
     /// Writes to a temporary file first, so a crash never leaves half a file.
@@ -433,7 +453,7 @@ mod tests {
         );
         assert_eq!(config.active.as_deref(), Some(FIRST_ACCOUNT_ID));
         assert!(!config.settings.confirm_mark_all_read);
-        assert_eq!(config.next_id(), "2");
+        assert_eq!(config.clone().take_id(), "2");
 
         // Manually did not sync on start either.
         let config = Config::parse(
@@ -468,5 +488,26 @@ mod tests {
         assert_eq!(back.accounts, config.accounts);
         assert_eq!(back.active, config.active);
         assert_eq!(AccountKind::Local.keychain_key(), None);
+    }
+
+    #[test]
+    fn ids_are_never_reused() {
+        let mut config = Config::default();
+        assert_eq!(config.take_id(), "1");
+        assert_eq!(config.take_id(), "2");
+        let json = serde_json::to_vec(&config).unwrap();
+        let mut back = Config::parse(&json).unwrap();
+        assert_eq!(back.take_id(), "3");
+    }
+
+    #[test]
+    fn an_unreadable_file_is_not_taken_for_an_empty_one() {
+        let dir = std::env::temp_dir().join(format!("skvaller-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        assert!(Config::load(&path).is_ok());
+        std::fs::write(&path, b"{ not json").unwrap();
+        assert!(Config::load(&path).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

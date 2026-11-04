@@ -85,7 +85,11 @@
     void api.onSettingsChanged((s) => {
       if (pending === 0) settings = s
     })
-    void api.onAccountsChanged((session) => setAccounts(session.accounts))
+    void api.onAccountsChanged((session) => {
+      // While changes are saving, an echo of an older one would undo the newer. A
+      // removed account still goes.
+      if (accountSaves === 0 || session.accounts.length !== accounts.length) setAccounts(session.accounts)
+    })
     void api.onSettingsPane((p) => show(p as Pane))
     void load().then(async () => {
       const asked = await api.takeSettingsPane()
@@ -146,15 +150,25 @@
 
   /** Applies a change to an account at once. Every window gets it through
    * `accounts-changed`. A failed save shows the error and goes back. */
+  let accountSaves = 0
+
   function changeAccount(id: string, change: AccountChange) {
     accounts = accounts.map((a) => (a.id === id ? { ...a, ...change } : a))
-    api.updateAccount(id, change).then(
-      () => (error = null),
-      async (e) => {
-        await load()
-        error = api.errorMessage(e)
-      },
-    )
+    accountSaves++
+    api
+      .updateAccount(id, change)
+      .then(
+        () => (error = null),
+        (e) => (error = api.errorMessage(e)),
+      )
+      .finally(async () => {
+        // The last save reloads, so the form shows what was saved.
+        if (--accountSaves === 0) {
+          const message = error
+          await load()
+          error = message
+        }
+      })
   }
 
   function renameAccount(input: HTMLInputElement, a: Account) {
@@ -246,6 +260,13 @@
       return
     }
     if (e.key !== 'Escape') return
+    // In a text field, Escape undoes the typing instead of closing the window.
+    const target = e.target as HTMLElement
+    if (target instanceof HTMLInputElement && target.type !== 'checkbox') {
+      if (target.id === 'description' && account) target.value = account.description
+      target.blur()
+      return
+    }
     if (confirmingRemove) void cancelRemove()
     else void api.closeWindow()
   }

@@ -470,20 +470,6 @@ impl Db {
             })?)
     }
 
-    /// Empties the cache, for a sign-in to a different account. Queued changes go too.
-    pub fn clear(&self) -> Result<()> {
-        // A transaction that rolls back on error. A failed BEGIN…COMMIT batch would leave
-        // the shared connection inside an open transaction.
-        let mut conn = self.lock();
-        let tx = conn.transaction()?;
-        tx.execute_batch(
-            "DELETE FROM pending; DELETE FROM articles; DELETE FROM feeds;
-             DELETE FROM folders; DELETE FROM meta;",
-        )?;
-        tx.commit()?;
-        Ok(())
-    }
-
     /// When the last sync finished, in Unix milliseconds.
     pub fn last_sync(&self) -> Result<Option<i64>> {
         self.meta(LAST_SYNC)
@@ -776,6 +762,18 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// The feed with one of these addresses, if any.
+    pub(crate) fn feed_by_url(&self, urls: &[&str]) -> Result<Option<String>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT id FROM feeds WHERE url IN (SELECT value FROM json_each(?1)) LIMIT 1",
+                [json(urls)],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     /// Adds a local account's feed. False if it is there already.
     pub(crate) fn add_local_feed(&self, feed: &NewFeed) -> Result<bool> {
         let added = self.lock().execute(
@@ -806,6 +804,15 @@ impl Db {
     ) -> Result<usize> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
+        // Unsubscribed while it was fetched.
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM feeds WHERE id = ?1)",
+            [feed_id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Ok(0);
+        }
         let mut stored = 0;
         {
             // Not one pruned or deleted already: it is in `seen` but not in `articles`.
@@ -1432,16 +1439,6 @@ mod tests {
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }
-    }
-
-    #[test]
-    fn clear_empties_everything() {
-        let db = db_with_article();
-        db.set_read(&[1], true).unwrap();
-        db.bump_newest_crawl(5).unwrap();
-        db.clear().unwrap();
-        assert_eq!(counts(&db), (0, 0, 0, 0));
-        assert_eq!(db.newest_crawl().unwrap(), None);
     }
 
     #[test]

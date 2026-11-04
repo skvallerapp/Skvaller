@@ -78,7 +78,7 @@
    * every key. */
   function ownsKey(e: KeyboardEvent): boolean {
     const target = e.target as Element
-    if (target.closest?.('input, textarea, select, [contenteditable], [role=dialog]')) return true
+    if (target.closest?.('input, textarea, select, [contenteditable], [role=dialog], [role=menu]')) return true
     if (!e.key.startsWith('Arrow')) return false
     return target.ownerDocument !== document || !!target.closest?.('[role=separator], [role=radiogroup]')
   }
@@ -127,7 +127,8 @@
         ? `${store.account?.description} no longer accepts the sign-in. Sign in again.`
         : store.status.error}
     >
-      {#if !store.accounts.some((a) => a.kind === 'local')}
+      <!-- Not to someone signing in again. -->
+      {#if !store.account && !store.accounts.some((a) => a.kind === 'local')}
         <LocalOption add={() => store.addLocalAccount()} />
       {/if}
     </SignIn>
