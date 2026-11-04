@@ -1,5 +1,4 @@
 <script lang="ts">
-  import Rss from '@lucide/svelte/icons/rss'
   import { apiUrl } from './format'
   import { macWindow } from './platform'
   import { store } from './store.svelte'
@@ -45,7 +44,6 @@
 {/if}
 <main class="sign-in">
   <form onsubmit={submit}>
-    <div class="icon"><Rss size={28} strokeWidth={2} /></div>
     <h1>Sign in to your sync service</h1>
     <p class="intro">
       Skvaller reads your feeds from a service that speaks the Google Reader API, such as FreshRSS.
@@ -105,17 +103,6 @@
     gap: 12px;
     width: 100%;
     max-width: 360px;
-  }
-
-  .icon {
-    display: grid;
-    place-items: center;
-    width: 52px;
-    height: 52px;
-    margin-bottom: 4px;
-    border-radius: 13px;
-    background: var(--accent);
-    color: var(--accent-text);
   }
 
   h1 {
