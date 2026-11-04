@@ -10,7 +10,7 @@ use crate::db::{ArticleRow, FeedRow, Flag};
 use crate::text::plain_text;
 use crate::{Client, Db, Result};
 
-const DAY: i64 = 24 * 60 * 60;
+pub(crate) const DAY: i64 = 24 * 60 * 60;
 /// Later syncs re-fetch this much before the newest crawl time already seen, so an
 /// article the server stored while the last sync ran is not missed.
 const CRAWL_OVERLAP: i64 = 60 * 60;
@@ -18,7 +18,7 @@ const CRAWL_OVERLAP: i64 = 60 * 60;
 /// The first sync fetches read articles from the same period (FR-5b, FR-5c).
 pub const DEFAULT_KEEP_READ_DAYS: u32 = 30;
 /// Length of the plain-text preview in the article list.
-const SUMMARY_CHARS: usize = 300;
+pub(crate) const SUMMARY_CHARS: usize = 300;
 /// Item IDs per `edit-tag` or `stream/items/contents` request.
 const BATCH: usize = 250;
 /// Larger icons are skipped. Favicons are a few kilobytes.
@@ -99,7 +99,7 @@ pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Re
         db.bump_newest_crawl(ms)?;
     }
     let pruned = db.prune(keep_read_since * 1000)?;
-    fetch_icons(client, db).await?;
+    fetch_icons(db, |url| client.resolve(url)).await?;
     db.set_last_sync(now * 1000)?;
     Ok(SyncReport {
         pushed,
@@ -131,9 +131,13 @@ async fn push(client: &Client, db: &Db) -> Result<usize> {
     Ok(pending.len())
 }
 
-/// Fetches the icons of feeds that are new or whose icon URL changed. An icon that
-/// can't be fetched now is tried again next sync; one that isn't an image is not.
-async fn fetch_icons(client: &Client, db: &Db) -> Result<()> {
+/// Fetches the icons of feeds that are new or whose icon URL changed, `resolve` making
+/// each URL absolute. An icon that can't be fetched now is tried again next sync; one
+/// that isn't an image is not.
+pub(crate) async fn fetch_icons(
+    db: &Db,
+    resolve: impl Fn(&str) -> Option<reqwest::Url>,
+) -> Result<()> {
     let stale = db.stale_icons()?;
     if stale.is_empty() {
         return Ok(());
@@ -141,7 +145,7 @@ async fn fetch_icons(client: &Client, db: &Db) -> Result<()> {
     // Not the API client: icons may redirect, and they get no access token.
     let http = reqwest::Client::builder().timeout(ICON_TIMEOUT).build()?;
     for (feed_id, url) in stale {
-        let Some(resolved) = client.resolve(&url) else {
+        let Some(resolved) = resolve(&url) else {
             db.set_icon(&feed_id, &url, None)?;
             continue;
         };

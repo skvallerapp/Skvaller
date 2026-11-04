@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::full_text::MAX_ATTEMPTS;
 use crate::{Error, Result, api};
 
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 /// Schema version 2. A new cache gets it plus the migrations after it, so each table
 /// is written down once.
@@ -82,6 +82,23 @@ WHEN old.url IS NOT new.url
 BEGIN
     DELETE FROM full_text WHERE article_id = new.id;
 END;
+";
+
+/// Schema version 3 to 4: the local account, whose feeds Skvaller fetches itself.
+const MIGRATE_3: &str = "
+-- The local account's feeds: where they are fetched from, and how it went last time.
+-- NULL for a sync account's feeds.
+ALTER TABLE feeds ADD COLUMN url TEXT;
+ALTER TABLE feeds ADD COLUMN site_url TEXT;
+ALTER TABLE feeds ADD COLUMN etag TEXT;
+ALTER TABLE feeds ADD COLUMN last_modified TEXT;
+ALTER TABLE feeds ADD COLUMN fetch_error TEXT; -- why the last fetch failed
+-- The local account's entries the feed still lists. One pruned from `articles` stays
+-- here, so the next fetch doesn't bring it back as new.
+CREATE TABLE seen (
+    article_id INTEGER PRIMARY KEY,
+    feed_id    TEXT NOT NULL REFERENCES feeds (id) ON DELETE CASCADE
+);
 ";
 
 /// Newest crawl time seen from the server, in Unix milliseconds.
@@ -160,6 +177,29 @@ pub struct Feed {
     pub icon: Option<String>,
     /// Open its articles in Reader View. A local setting, not synced.
     pub reader_view: bool,
+    /// The local account's feeds: the feed's URL, and its web site's.
+    pub url: Option<String>,
+    pub site_url: Option<String>,
+    /// The local account's feeds: why the last fetch failed.
+    pub fetch_error: Option<String>,
+}
+
+/// A local account's feed, as fetching it needs.
+pub(crate) struct LocalFeed {
+    pub id: String,
+    pub url: String,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+}
+
+/// A local account's feed to add.
+pub(crate) struct NewFeed<'a> {
+    pub id: &'a str,
+    pub url: &'a str,
+    pub title: &'a str,
+    pub site_url: Option<&'a str>,
+    pub folder_id: Option<&'a str>,
+    pub icon_url: Option<&'a str>,
 }
 
 /// An article without its HTML, for the article list.
@@ -242,9 +282,10 @@ impl Db {
         conn.pragma_update(None, "foreign_keys", true)?;
         let version: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         let steps = match version {
-            0 => format!("{SCHEMA} {MIGRATE_2}"),
-            1 => format!("{MIGRATE_1} {MIGRATE_2}"),
-            2 => MIGRATE_2.to_owned(),
+            0 => format!("{SCHEMA} {MIGRATE_2} {MIGRATE_3}"),
+            1 => format!("{MIGRATE_1} {MIGRATE_2} {MIGRATE_3}"),
+            2 => format!("{MIGRATE_2} {MIGRATE_3}"),
+            3 => MIGRATE_3.to_owned(),
             SCHEMA_VERSION => String::new(),
             _ => return Err(Error::CacheTooNew),
         };
@@ -275,8 +316,8 @@ impl Db {
     pub fn feeds(&self) -> Result<Vec<Feed>> {
         let conn = self.read();
         let mut stmt = conn.prepare(
-            "SELECT id, title, folder_id, subscribed, icon, reader_view FROM feeds
-             ORDER BY title COLLATE NOCASE",
+            "SELECT id, title, folder_id, subscribed, icon, reader_view, url, site_url, fetch_error
+             FROM feeds ORDER BY title COLLATE NOCASE",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(Feed {
@@ -286,6 +327,9 @@ impl Db {
                 subscribed: r.get(3)?,
                 icon: r.get(4)?,
                 reader_view: r.get(5)?,
+                url: r.get(6)?,
+                site_url: r.get(7)?,
+                fetch_error: r.get(8)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -705,6 +749,200 @@ impl Db {
              AND id NOT IN (SELECT article_id FROM pending)",
             [cutoff],
         )?)
+    }
+
+    /// The local account's feeds.
+    pub(crate) fn local_feeds(&self) -> Result<Vec<LocalFeed>> {
+        let conn = self.lock();
+        let mut stmt =
+            conn.prepare("SELECT id, url, etag, last_modified FROM feeds WHERE url IS NOT NULL")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(LocalFeed {
+                id: r.get(0)?,
+                url: r.get(1)?,
+                etag: r.get(2)?,
+                last_modified: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Adds a local account's feed. False if it is there already.
+    pub(crate) fn add_local_feed(&self, feed: &NewFeed) -> Result<bool> {
+        let added = self.lock().execute(
+            "INSERT INTO feeds (id, title, folder_id, subscribed, icon_url, url, site_url)
+             VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6) ON CONFLICT DO NOTHING",
+            params![
+                feed.id,
+                feed.title,
+                feed.folder_id,
+                feed.icon_url,
+                feed.url,
+                feed.site_url
+            ],
+        )?;
+        Ok(added > 0)
+    }
+
+    /// Stores what a local account's feed lists now: new entries as unread articles,
+    /// changes to cached ones. Read and starred state stay as the user left them, and a
+    /// renamed feed keeps its title. An entry without a date keeps the date it got when
+    /// first seen (`dated` false). Returns how many rows changed.
+    pub(crate) fn store_local_feed(
+        &self,
+        feed_id: &str,
+        entries: &[(ArticleRow, bool)],
+        etag: Option<&str>,
+        last_modified: Option<&str>,
+    ) -> Result<usize> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        let mut stored = 0;
+        {
+            // Not one pruned or deleted already: it is in `seen` but not in `articles`.
+            let mut article = tx.prepare(
+                "INSERT INTO articles
+                     (id, feed_id, title, author, url, published, read, starred, summary, html)
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, 0, 0, ?7, ?8
+                 WHERE NOT EXISTS (SELECT 1 FROM seen WHERE article_id = ?1)
+                    OR EXISTS (SELECT 1 FROM articles WHERE id = ?1)
+                 ON CONFLICT (id) DO UPDATE SET
+                     title = excluded.title,
+                     author = excluded.author,
+                     url = excluded.url,
+                     published = IIF(?9, excluded.published, published),
+                     summary = excluded.summary,
+                     html = excluded.html
+                 WHERE feed_id = excluded.feed_id AND (
+                       title != excluded.title
+                    OR author != excluded.author
+                    OR url != excluded.url
+                    OR (?9 AND published != excluded.published)
+                    OR html != excluded.html)",
+            )?;
+            for (a, dated) in entries {
+                stored += article.execute(params![
+                    a.id,
+                    feed_id,
+                    a.title,
+                    a.author,
+                    a.url,
+                    a.published,
+                    a.summary,
+                    a.html,
+                    dated,
+                ])?;
+            }
+        }
+        let ids: Vec<i64> = entries.iter().map(|(a, _)| a.id).collect();
+        tx.execute(
+            "DELETE FROM seen WHERE feed_id = ?1 AND article_id NOT IN (SELECT value FROM json_each(?2))",
+            params![feed_id, json(&ids)],
+        )?;
+        tx.execute(
+            "INSERT INTO seen (article_id, feed_id) SELECT value, ?1 FROM json_each(?2)
+             WHERE true ON CONFLICT DO NOTHING",
+            params![feed_id, json(&ids)],
+        )?;
+        tx.execute(
+            "UPDATE feeds SET etag = ?2, last_modified = ?3, fetch_error = NULL WHERE id = ?1",
+            params![feed_id, etag, last_modified],
+        )?;
+        tx.commit()?;
+        Ok(stored)
+    }
+
+    /// Records why fetching a local account's feed failed, or that it worked (`None`).
+    pub(crate) fn set_fetch_error(&self, feed_id: &str, error: Option<&str>) -> Result<()> {
+        self.lock().execute(
+            "UPDATE feeds SET fetch_error = ?2 WHERE id = ?1",
+            params![feed_id, error],
+        )?;
+        Ok(())
+    }
+
+    /// Drops every queued change. The local account has no server to send them to.
+    pub(crate) fn clear_all_pending(&self) -> Result<()> {
+        self.lock().execute("DELETE FROM pending", [])?;
+        Ok(())
+    }
+
+    /// Removes a feed with its articles, starred ones too.
+    pub fn unsubscribe(&self, feed_id: &str) -> Result<()> {
+        self.lock()
+            .execute("DELETE FROM feeds WHERE id = ?1", [feed_id])?;
+        Ok(())
+    }
+
+    pub fn rename_feed(&self, feed_id: &str, title: &str) -> Result<()> {
+        self.lock().execute(
+            "UPDATE feeds SET title = ?2 WHERE id = ?1",
+            params![feed_id, title],
+        )?;
+        Ok(())
+    }
+
+    /// Moves a feed into a folder, or out of any with `None`.
+    pub fn move_feed(&self, feed_id: &str, folder_id: Option<&str>) -> Result<()> {
+        self.lock().execute(
+            "UPDATE feeds SET folder_id = ?2 WHERE id = ?1",
+            params![feed_id, folder_id],
+        )?;
+        Ok(())
+    }
+
+    /// The folder with this title, ignoring case, or else a new one. Returns its ID.
+    /// IDs are `folder/<n>` and never change, so a rename keeps what refers to them.
+    pub fn create_folder(&self, title: &str) -> Result<String> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        let existing: Option<String> = tx
+            .query_row(
+                "SELECT id FROM folders WHERE title = ?1 COLLATE NOCASE",
+                [title],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let id = match existing {
+            Some(id) => id,
+            None => {
+                let n: i64 = tx.query_row(
+                    "SELECT coalesce(max(CAST(substr(id, 8) AS INTEGER)), 0) + 1 FROM folders
+                     WHERE id LIKE 'folder/%'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                let id = format!("folder/{n}");
+                tx.execute(
+                    "INSERT INTO folders (id, title) VALUES (?1, ?2)",
+                    params![id, title],
+                )?;
+                id
+            }
+        };
+        tx.commit()?;
+        Ok(id)
+    }
+
+    pub fn rename_folder(&self, folder_id: &str, title: &str) -> Result<()> {
+        self.lock().execute(
+            "UPDATE folders SET title = ?2 WHERE id = ?1",
+            params![folder_id, title],
+        )?;
+        Ok(())
+    }
+
+    /// Removes a folder. Its feeds stay, in no folder.
+    pub fn delete_folder(&self, folder_id: &str) -> Result<()> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "UPDATE feeds SET folder_id = NULL WHERE folder_id = ?1",
+            [folder_id],
+        )?;
+        tx.execute("DELETE FROM folders WHERE id = ?1", [folder_id])?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub(crate) fn newest_crawl(&self) -> Result<Option<i64>> {
@@ -1222,5 +1460,30 @@ mod tests {
         db.bump_newest_crawl(20).unwrap();
         db.bump_newest_crawl(10).unwrap();
         assert_eq!(db.newest_crawl().unwrap(), Some(20));
+    }
+
+    #[test]
+    fn version_3_cache_gets_local_feed_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "{SCHEMA} {MIGRATE_2}
+             INSERT INTO feeds (id, title, subscribed) VALUES ('feed/1', 'A', 1);
+             PRAGMA user_version = 3;"
+        ))
+        .unwrap();
+
+        let db = Db::init(conn).unwrap();
+
+        let feed = &db.feeds().unwrap()[0];
+        assert_eq!(
+            (feed.url.as_deref(), feed.fetch_error.as_deref()),
+            (None, None)
+        );
+        assert!(db.local_feeds().unwrap().is_empty());
+        let version: i32 = db.with_conn(|c| {
+            c.pragma_query_value(None, "user_version", |r| r.get(0))
+                .unwrap()
+        });
+        assert_eq!(version, SCHEMA_VERSION);
     }
 }

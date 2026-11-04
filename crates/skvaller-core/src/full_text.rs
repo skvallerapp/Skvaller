@@ -78,9 +78,9 @@ pub async fn prefetch(db: &Db) -> Result<()> {
     Ok(())
 }
 
-/// One client for every page, so connections are reused. Not the API client: pages
-/// redirect, and they get no access token. It keeps no cookies.
-fn http() -> Result<reqwest::Client> {
+/// One client for every page and local feed, so connections are reused. Not the API
+/// client: pages redirect, and they get no access token. It keeps no cookies.
+pub(crate) fn http() -> Result<reqwest::Client> {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     if let Some(client) = CLIENT.get() {
         return Ok(client.clone());
@@ -140,7 +140,7 @@ async fn fetch_page(http: &reqwest::Client, url: &str) -> Result<Option<(String,
 
 /// Decodes like a browser, mostly: a byte order mark, else the Content-Type charset,
 /// else a `<meta>` charset in the first 1024 bytes, else UTF-8.
-fn decode(body: &[u8], content_type: &str) -> String {
+pub(crate) fn decode(body: &[u8], content_type: &str) -> String {
     let encoding = content_type
         .split(';')
         .skip(1)
