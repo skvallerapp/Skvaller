@@ -1177,7 +1177,7 @@ async fn run_sync(app: &AppHandle, rt: &Arc<Runtime>) {
         let _ = app.emit(SYNC_STATUS_EVENT, status);
     };
 
-    let work = async {
+    let sync_once = async {
         let account = state.config().account(&rt.id).cloned()?;
         // `None` for the local account, which fetches its feeds itself.
         let client = match account.kind {
@@ -1222,11 +1222,18 @@ async fn run_sync(app: &AppHandle, rt: &Arc<Runtime>) {
         })
     };
 
+    // Reported while the gate is held: a sign-in that stops syncs reports after it, so
+    // its fresh status is the last a window gets.
+    let work = async {
+        let status = sync_once.await?;
+        *lock(&rt.last_error) = status.error.clone();
+        let synced = status.error.is_none();
+        emit(status);
+        Some(synced)
+    };
+
     match rt.sync_gate.run(work).await {
-        Outcome::Done(Some(status)) => {
-            let synced = status.error.is_none();
-            *lock(&rt.last_error) = status.error.clone();
-            emit(status);
+        Outcome::Done(Some(synced)) => {
             if synced {
                 let rt = rt.clone();
                 tauri::async_runtime::spawn(async move { prefetch(&rt).await });
