@@ -1239,8 +1239,9 @@ async fn run_sync(app: &AppHandle, rt: &Arc<Runtime>) {
                 tauri::async_runtime::spawn(async move { prefetch(&rt).await });
             }
         }
-        Outcome::Stopped => emit(status(SyncStatus::default())),
-        Outcome::Done(None) | Outcome::Busy => {}
+        // What stops a sync reports the status after it: a sign-in its fresh one, and a
+        // removed account needs none.
+        Outcome::Stopped | Outcome::Done(None) | Outcome::Busy => {}
     }
 }
 

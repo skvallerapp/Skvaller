@@ -69,7 +69,9 @@
 
     <label>
       <span>Server</span>
+      <!-- svelte-ignore a11y_autofocus -->
       <input
+        autofocus={!embedded && !account}
         bind:value={server}
         placeholder="https://rss.example.com"
         autocapitalize="off"
@@ -84,7 +86,9 @@
     </label>
     <label>
       <span>API password</span>
-      <input type="password" bind:value={password} required />
+      <!-- Signing in again: only the password is missing. -->
+      <!-- svelte-ignore a11y_autofocus -->
+      <input type="password" autofocus={!embedded && !!account} bind:value={password} required />
     </label>
     <p class="hint">
       In FreshRSS, allow API access under Settings → Authentication, then set an API password under
