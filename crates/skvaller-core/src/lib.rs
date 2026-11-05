@@ -4,6 +4,7 @@ mod api;
 mod db;
 mod error;
 mod full_text;
+mod html;
 mod keychain;
 mod local;
 mod opml;
