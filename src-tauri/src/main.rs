@@ -9,7 +9,9 @@ mod config;
 mod sync_gate;
 
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
-use tauri::{AppHandle, Manager, WindowEvent};
+use tauri::webview::NewWindowResponse;
+use tauri::{AppHandle, Manager, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_opener::OpenerExt;
 
 const SETTINGS_MENU_ITEM: &str = "settings";
 
@@ -48,6 +50,7 @@ fn main() {
             app.manage(state);
             commands::update_badge(app.handle());
             commands::start_background_sync(app.handle().clone());
+            create_main_window(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -81,6 +84,31 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Skvaller");
+}
+
+/// The main window, from tauri.conf.json. Article links ask for a new window (see
+/// `readyLinks` in articleHtml.ts): it is refused, and an http(s) link opens in the
+/// system browser instead.
+fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == "main")
+        .expect("tauri.conf.json defines the main window");
+    let handle = app.clone();
+    WebviewWindowBuilder::from_config(app, config)?
+        .on_new_window(move |url, _| {
+            if matches!(url.scheme(), "http" | "https")
+                && let Err(e) = handle.opener().open_url(url.as_str(), None::<&str>)
+            {
+                eprintln!("Opening {url} failed: {e}");
+            }
+            NewWindowResponse::Deny
+        })
+        .build()?;
+    Ok(())
 }
 
 /// The default menu, with Settings… after About in the app menu.

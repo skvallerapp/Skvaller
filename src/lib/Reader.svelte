@@ -55,8 +55,10 @@
   // on top of the app CSP. allow-same-origin is there only so the frame can load the
   // bundled fonts; with scripts off, nothing in it can use that access. NEVER add
   // allow-scripts next to it: article scripts would then run as the app, with IPC.
+  // allow-popups is there for links, which open as new windows that the app refuses and
+  // opens in the system browser; see `readyArticle`.
   // Only our own header fields are escaped. The body is shown as the feed sent it,
-  // except for media and http URLs; see `readyArticle`.
+  // except for media, http URLs and links; see `readyArticle`.
   // The settings the frame shows are set on its root, so changing one doesn't reload the
   // article. The HTML starts with them too, so a new article doesn't flash.
   const frameRoot = $derived({
@@ -73,9 +75,9 @@
     root.style.setProperty('--headline-font', frameRoot.headlineFont)
   }
 
-  /** Escaped text, as a link when there is a URL. `onLinkClick` opens it in the browser. */
+  /** Escaped text, as a link to the system browser when there is a URL. */
   function linked(text: string, url: string | null | undefined) {
-    return url ? `<a href="${escapeHtml(url)}">${escapeHtml(text)}</a>` : escapeHtml(text)
+    return url ? `<a href="${escapeHtml(url)}" target="_blank">${escapeHtml(text)}</a>` : escapeHtml(text)
   }
 
   const srcdoc = $derived.by(() => {
@@ -88,7 +90,7 @@
         <h1>${linked(article.title, article.url)}</h1>
         <div class="source">${escapeHtml(article.author)}<br>${linked(feed?.title ?? '', feed?.siteUrl)}</div>
       </header>
-      ${readyArticle((showFullText ? store.fullText : store.html) ?? '')}
+      ${readyArticle((showFullText ? store.fullText : store.html) ?? '', article.url)}
     </article></body></html>`
   })
 
@@ -121,30 +123,14 @@
     if (root) styleFrameRoot(root)
   })
 
-  // Links in the article open in the system browser, never in the frame. The frame is
-  // same-origin, so the app can listen to its events while its own scripts stay off.
-  // Relative links resolve against the article's URL, since the frame has no base.
-  // Keys pressed while reading go to the app's shortcuts.
+  // Keys pressed while reading go to the app's shortcuts. The frame is same-origin, so
+  // the app can listen to its events while its own scripts stay off. Not in WebKit,
+  // which runs no listeners in a frame without scripts.
   function onFrameLoad() {
     const doc = frame?.contentDocument
     // A setting changed while the frame loaded went to the blank document before it.
     if (doc) styleFrameRoot(doc.documentElement)
-    doc?.addEventListener('click', onLinkClick)
-    doc?.addEventListener('auxclick', onLinkClick)
     doc?.addEventListener('keydown', onkeydown)
-  }
-
-  function onLinkClick(e: MouseEvent) {
-    if (e.button > 1) return
-    const link = (e.target as Element).closest?.('a, area')
-    if (!link) return
-    const href = (
-      link.getAttribute('href') ?? link.getAttributeNS('http://www.w3.org/1999/xlink', 'href') ?? ''
-    ).trim()
-    // A link within the article scrolls it.
-    if (href.startsWith('#')) return
-    e.preventDefault()
-    if (href) openInBrowser(href, article?.url)
   }
 
   /** Scrolls the article a page down (1) or up (-1). At its end, opens the next one. */
@@ -226,7 +212,7 @@
     {#if store.html !== null && !(loadingFullText && store.awaitingFullText)}
       <!-- A new frame when Reader View content swaps in, for the same reason. -->
       {#key showFullText}
-        <iframe title={article.title} sandbox="allow-same-origin" {srcdoc} bind:this={frame} onload={onFrameLoad}></iframe>
+        <iframe title={article.title} sandbox="allow-same-origin allow-popups" {srcdoc} bind:this={frame} onload={onFrameLoad}></iframe>
       {/key}
     {/if}
   {:else}
