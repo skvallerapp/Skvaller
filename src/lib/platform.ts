@@ -4,9 +4,6 @@ export const inTauri = '__TAURI_INTERNALS__' in window
 /** For key names and shortcuts, which follow the platform in a browser too. */
 export const isMac = /Macintosh/.test(navigator.userAgent)
 
-/** Windows has no badge on the taskbar icon. */
-export const isWindows = /Windows/.test(navigator.userAgent)
-
 /** The app on macOS, which hides the title bar and draws its window buttons over the
  * sidebar (see tauri.conf.json). The layout makes room for the buttons, and the window
  * has to be draggable from the toolbars instead. A browser on a Mac has neither. */

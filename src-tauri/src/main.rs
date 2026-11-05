@@ -1,6 +1,9 @@
 // Prevents an extra console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// Drawn for Windows only; tested everywhere.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+mod badge;
 mod commands;
 mod config;
 mod sync_gate;

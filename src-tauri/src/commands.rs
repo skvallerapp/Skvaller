@@ -309,28 +309,35 @@ fn default_description(kind: &AccountKind) -> String {
 }
 
 /// Shows the unread articles of every account on the app icon, or nothing when the
-/// setting is off or there are none. Windows has no such badge.
+/// setting is off or there are none: a badge count on macOS and Linux, and on Windows,
+/// which has none, a drawn overlay on the taskbar button.
 pub fn update_badge(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let count: i64 = if state.config().settings.unread_badge {
+        state
+            .runtimes()
+            .iter()
+            .filter_map(|rt| rt.db.unread_total().ok())
+            .sum()
+    } else {
+        0
+    };
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
     #[cfg(not(target_os = "windows"))]
-    {
-        let state = app.state::<AppState>();
-        let count: i64 = if state.config().settings.unread_badge {
-            state
-                .runtimes()
-                .iter()
-                .filter_map(|rt| rt.db.unread_total().ok())
-                .sum()
-        } else {
-            0
-        };
-        if let Some(window) = app.get_webview_window("main")
-            && let Err(e) = window.set_badge_count((count > 0).then_some(count))
-        {
-            eprintln!("Setting the unread badge failed: {e}");
-        }
-    }
+    let shown = window.set_badge_count((count > 0).then_some(count));
     #[cfg(target_os = "windows")]
-    let _ = app;
+    let shown = window.set_overlay_icon((count > 0).then(|| {
+        tauri::image::Image::new_owned(
+            crate::badge::draw(count),
+            crate::badge::SIZE,
+            crate::badge::SIZE,
+        )
+    }));
+    if let Err(e) = shown {
+        eprintln!("Setting the unread badge failed: {e}");
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
