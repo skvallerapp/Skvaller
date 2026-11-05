@@ -67,15 +67,17 @@
     return s.lastSync ? formatSynced(s.lastSync) : 'Not synced yet'
   })
 
+  /** SQLite's NOCASE order, which the cache sorts each list by: ASCII case folded, the
+   * rest by code point, as UTF-8 bytes compare. */
+  const nocase = (a: string, b: string) => {
+    const points = (s: string) => Array.from(s, (c) => c.codePointAt(0)! + (c >= 'A' && c <= 'Z' ? 32 : 0))
+    const [x, y] = [points(a), points(b)]
+    for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i] - y[i]
+    return x.length - y.length
+  }
+
   // The folders and the feeds in no folder, in the order the setting asks: folders first,
   // or all A–Z together. Each list is A–Z already.
-  /** SQLite's NOCASE order, which the cache sorts each list by: ASCII case folded, the
-   * rest by code point. */
-  const nocase = (a: string, b: string) => {
-    const fold = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase())
-    const [x, y] = [fold(a), fold(b)]
-    return x < y ? -1 : x > y ? 1 : 0
-  }
   type Entry = { kind: 'folder'; id: string; folder: Folder } | { kind: 'feed'; id: string; feed: Feed }
   const entries: Entry[] = $derived.by(() => {
     const folders = shownFolders.map((folder): Entry => ({ kind: 'folder', id: folder.id, folder }))
