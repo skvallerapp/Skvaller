@@ -4286,6 +4286,7 @@ dependencies = [
  "dom_smoothie",
  "encoding_rs",
  "feed-rs",
+ "html5ever 0.40.1",
  "keyring",
  "opml",
  "reqwest",

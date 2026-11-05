@@ -5,7 +5,6 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use dom_query::Document;
 use feed_rs::model;
 use reqwest::header::{CONTENT_TYPE, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
 use reqwest::{StatusCode, Url};
@@ -13,7 +12,8 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::db::{ArticleRow, LocalFeed, NewFeed};
-use crate::full_text::{MAX_SCANNED_DEPTH, USER_AGENT, decode, scanned_depth};
+use crate::full_text::{USER_AGENT, decode};
+use crate::html;
 use crate::sync::{DAY, SUMMARY_CHARS, fetch_icons};
 use crate::text::plain_text;
 use crate::{Db, Error, Result, SyncReport};
@@ -296,11 +296,7 @@ fn discover(body: &[u8], content_type: &str, base: &Url) -> Option<Url> {
         .to_ascii_lowercase()
         .find("<body")
         .unwrap_or(html.len());
-    let html = &html[..end];
-    if scanned_depth(html) > MAX_SCANNED_DEPTH {
-        return None;
-    }
-    let document = Document::from(html);
+    let document = html::parse(&html[..end], html::MAX_DEPTH)?;
     let types = [
         "application/rss+xml",
         "application/atom+xml",

@@ -4,12 +4,13 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use dom_query::{Document, NodeRef};
+use dom_query::NodeRef;
 use encoding_rs::Encoding;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::{StatusCode, Url};
 
 use crate::db::FullText;
+use crate::html::{self, MAX_DEPTH};
 use crate::{Db, Result};
 
 /// Failed fetches of a page before it is given up on, until the user asks again.
@@ -19,11 +20,6 @@ const PREFETCH_PAGES: usize = 30;
 /// Larger pages are not read. A long article page is a few hundred kilobytes.
 const MAX_PAGE_BYTES: usize = 2 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(15);
-/// Parsing and Readability both slow down with the square of how deeply elements nest:
-/// 6,000 levels take seconds. Real pages stay under a hundred or so. A rough count of
-/// the tags guards the parser; the parsed document's depth guards Readability.
-pub(crate) const MAX_SCANNED_DEPTH: usize = 2000;
-const MAX_DEPTH: usize = 500;
 /// Browser-like, since some sites turn away anything else, but says what it is.
 pub(crate) const USER_AGENT: &str = concat!(
     "Mozilla/5.0 (compatible; Skvaller/",
@@ -183,10 +179,9 @@ fn label(name: &str) -> Option<&'static Encoding> {
 /// if nothing readable was found, or the page nests too deeply to read in good time.
 /// Takes milliseconds to tens of milliseconds: keep it off the async runtime.
 fn extract(html: &str, url: &str) -> Option<String> {
-    if scanned_depth(html) > MAX_SCANNED_DEPTH {
-        return None;
-    }
-    let document = Document::from(html);
+    // The parse stops at the limit; moved nodes can end up deeper, so the finished tree
+    // is measured too before Readability, which is as slow on deep trees.
+    let document = html::parse(html, MAX_DEPTH)?;
     if depth(document.root()) > MAX_DEPTH {
         return None;
     }
@@ -198,130 +193,6 @@ fn extract(html: &str, url: &str) -> Option<String> {
         return None;
     }
     Some(article.content.to_string())
-}
-
-/// Elements without an end tag, or whose end tag is often left out. They don't count.
-const UNCOUNTED: [&str; 31] = [
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
-    "track", "wbr", "p", "li", "dt", "dd", "option", "optgroup", "tr", "td", "th", "thead",
-    "tbody", "tfoot", "colgroup", "rb", "rt", "rp", "html",
-];
-
-/// End tags looked for this far down the open ones. Real pages close what they open
-/// near the top; a stray end tag is ignored, as a browser would.
-const END_TAG_REACH: usize = 16;
-
-/// How deeply tags nest, counted roughly from the text: a start tag opens an element,
-/// an end tag closes the nearest open one of its name. Stops counting past
-/// `MAX_SCANNED_DEPTH`. Overcounts on tags in comments, which real pages have few of.
-pub(crate) fn scanned_depth(html: &str) -> usize {
-    let bytes = html.as_bytes();
-    let mut open: Vec<&str> = Vec::new();
-    // Where in `open` the outermost SVG or MathML element is, while one is.
-    let mut foreign_at: Option<usize> = None;
-    let mut max = 0;
-    let mut i = 0;
-    while let Some(offset) = bytes[i..].iter().position(|&b| b == b'<') {
-        i += offset + 1;
-        // Tags in comments are text: an end tag there must not close a real element, or
-        // a crafted page reads as flat. Each skip ends at the earliest point a parser
-        // could end it, so nothing a parser reads as a tag goes uncounted.
-        if bytes[i..].starts_with(b"!--") {
-            let body = &bytes[i + 3..];
-            if body.starts_with(b">") || body.starts_with(b"->") {
-                continue;
-            }
-            match comment_end(body) {
-                Some(end) => i += 3 + end,
-                None => return max,
-            }
-            continue;
-        }
-        // Any other `<!` or `<?`, CDATA included, is a comment to the next `>`.
-        if matches!(bytes.get(i), Some(b'!' | b'?')) {
-            match bytes[i..].iter().position(|&b| b == b'>') {
-                Some(end) => i += end,
-                None => return max,
-            }
-            continue;
-        }
-        let closing = bytes.get(i) == Some(&b'/');
-        let start = i + usize::from(closing);
-        let len = bytes[start..]
-            .iter()
-            .take_while(|b| b.is_ascii_alphanumeric())
-            .count();
-        if len == 0 || !bytes[start].is_ascii_alphabetic() {
-            continue;
-        }
-        let name = &html[start..start + len];
-        if UNCOUNTED.iter().any(|u| u.eq_ignore_ascii_case(name)) {
-            continue;
-        }
-        if closing {
-            let found = open
-                .iter()
-                .rev()
-                .take(END_TAG_REACH)
-                .position(|n| n.eq_ignore_ascii_case(name));
-            if let Some(from_top) = found {
-                open.truncate(open.len() - 1 - from_top);
-                if foreign_at.is_some_and(|at| open.len() <= at) {
-                    foreign_at = None;
-                }
-            }
-            continue;
-        }
-        // Inside SVG and MathML, `<path/>` and the like open nothing; in HTML, `/>` closes
-        // nothing. The search stops at the next `<`, so a page of tags that never close
-        // can't make it quadratic.
-        let foreign = foreign_at.is_some();
-        let tag_end = bytes[start..].iter().position(|&b| b == b'>' || b == b'<');
-        let self_closing =
-            tag_end.is_some_and(|e| bytes[start + e] == b'>' && bytes[start + e - 1] == b'/');
-        if foreign && self_closing {
-            continue;
-        }
-        if !foreign && (name.eq_ignore_ascii_case("svg") || name.eq_ignore_ascii_case("math")) {
-            foreign_at = Some(open.len());
-        }
-        open.push(name);
-        max = max.max(open.len());
-        if max > MAX_SCANNED_DEPTH {
-            break;
-        }
-        // Their content is text up to their own end tag, end tags of others included;
-        // not in SVG or MathML, where they are elements like any other.
-        if !foreign && RAW_TEXT.iter().any(|r| r.eq_ignore_ascii_case(name)) {
-            let end = format!("</{name}");
-            let found = bytes[start..]
-                .windows(end.len())
-                .position(|w| w.eq_ignore_ascii_case(end.as_bytes()));
-            match found {
-                Some(at) => i = start + at,
-                None => return max,
-            }
-        }
-    }
-    max
-}
-
-/// Elements whose content a browser reads as text, not tags. Not `noscript`: the
-/// parser runs with scripting off, which reads its content as markup.
-const RAW_TEXT: [&str; 5] = ["script", "style", "textarea", "title", "xmp"];
-
-/// Where a comment's body ends: at the first `-->` or `--!>`, in one pass.
-fn comment_end(body: &[u8]) -> Option<usize> {
-    let mut i = 0;
-    while let Some(at) = body[i..].windows(2).position(|w| w == b"--") {
-        let dashes = i + at;
-        let rest = &body[dashes + 2..];
-        if rest.starts_with(b">") || rest.starts_with(b"!>") {
-            return Some(dashes);
-        }
-        i = dashes + 1;
-    }
-    None
 }
 
 /// How deeply the nodes under `root` nest.
@@ -382,59 +253,27 @@ mod tests {
             )
         };
         let start = Instant::now();
-        // Caught by the scan, before parsing.
         assert_eq!(extract(&nested(400_000), "https://example.com/"), None);
-        // Passes the scan, caught after parsing.
         assert_eq!(
             extract(&nested(MAX_DEPTH + 10), "https://example.com/"),
             None
         );
-        // End tags of uncounted elements don't cancel the elements around them.
-        let p_in_divs = "<div><p></p>".repeat(MAX_SCANNED_DEPTH + 1);
-        assert_eq!(extract(&p_in_divs, "https://example.com/"), None);
+        // Rebuilt formatting elements nest as deep as divs do.
+        assert_eq!(
+            extract(&"<b><div></b>".repeat(100_000), "https://example.com/"),
+            None
+        );
         assert!(
-            start.elapsed() < Duration::from_secs(2),
+            start.elapsed() < Duration::from_secs(3),
             "{:?}",
             start.elapsed()
         );
-        // Real pages nest far less, and self-closing SVG shapes open nothing.
+        // Real pages nest far less.
         let icons = "<svg><path d=\"M0\"/><circle r=\"1\"/></svg>".repeat(3000);
         let text = "Some text. ".repeat(100);
         let page = format!("<html><body><article>{icons}<p>{text}</p></article></body></html>");
-        assert!(scanned_depth(&page) < 10);
         assert!(extract(&page, "https://example.com/").is_some());
         assert!(extract(&nested(50), "https://example.com/").is_some());
-        assert!(scanned_depth(ARTICLE) < 20);
-        // End tags in comments, CDATA and scripts are text, not ends of the divs.
-        for hidden in [
-            "<!--</div>-->",
-            "<![CDATA[</div>]]>",
-            "<script>'</div>'</script>",
-        ] {
-            let crafted = format!("<div>{hidden}").repeat(MAX_SCANNED_DEPTH + 10);
-            assert!(scanned_depth(&crafted) > MAX_SCANNED_DEPTH, "{hidden}");
-        }
-        // Nor do openings that a parser ends sooner than they seem to, or tags that
-        // look closed or raw but aren't.
-        let divs = "<div>".repeat(MAX_SCANNED_DEPTH + 10);
-        for start in [
-            "<![CDATA[>",
-            "<!-- --!>",
-            "<!-->",
-            "<!--->",
-            "<noscript>",
-            "<svg><title>",
-            "<svg><style>",
-        ] {
-            let page = format!("{start}{divs}");
-            assert!(scanned_depth(&page) > MAX_SCANNED_DEPTH, "{start}");
-        }
-        assert!(scanned_depth(&"<div/>".repeat(MAX_SCANNED_DEPTH + 10)) > MAX_SCANNED_DEPTH);
-        // Many comments take one pass, not one per comment.
-        let comments = "<!--a-->".repeat(250_000);
-        let started = std::time::Instant::now();
-        assert_eq!(scanned_depth(&comments), 0);
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]
