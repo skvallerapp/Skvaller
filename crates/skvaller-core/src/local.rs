@@ -288,15 +288,14 @@ async fn discover_off_runtime(page: &Page) -> Option<Url> {
 /// The feed a web page links to with `<link rel="alternate">`, the first one. `None`
 /// for a page that nests too deeply to parse in good time, like Reader View's guard.
 fn discover(body: &[u8], content_type: &str, base: &Url) -> Option<Url> {
-    // The links are in the head. Only its start is parsed: however a page nests, so
-    // little can't take long.
+    // The links are in the head, so only its start is parsed.
     let start = &body[..body.len().min(MAX_HEAD_BYTES)];
     let html = decode(start, content_type);
     let end = html
         .to_ascii_lowercase()
         .find("<body")
         .unwrap_or(html.len());
-    let document = html::parse(&html[..end], html::MAX_DEPTH)?;
+    let document = html::parse(&html[..end])?;
     let types = [
         "application/rss+xml",
         "application/atom+xml",

@@ -4,13 +4,12 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use dom_query::NodeRef;
 use encoding_rs::Encoding;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::{StatusCode, Url};
 
 use crate::db::FullText;
-use crate::html::{self, MAX_DEPTH};
+use crate::html;
 use crate::{Db, Result};
 
 /// Failed fetches of a page before it is given up on, until the user asks again.
@@ -179,12 +178,7 @@ fn label(name: &str) -> Option<&'static Encoding> {
 /// if nothing readable was found, or the page nests too deeply to read in good time.
 /// Takes milliseconds to tens of milliseconds: keep it off the async runtime.
 fn extract(html: &str, url: &str) -> Option<String> {
-    // The parse stops at the limit; moved nodes can end up deeper, so the finished tree
-    // is measured too before Readability, which is as slow on deep trees.
-    let document = html::parse(html, MAX_DEPTH)?;
-    if depth(document.root()) > MAX_DEPTH {
-        return None;
-    }
+    let document = html::parse(html)?;
     // Errors are a bad URL or no content: nothing readable either way.
     let mut readability =
         dom_smoothie::Readability::with_document(document, Some(url), None).ok()?;
@@ -193,21 +187,6 @@ fn extract(html: &str, url: &str) -> Option<String> {
         return None;
     }
     Some(article.content.to_string())
-}
-
-/// How deeply the nodes under `root` nest.
-fn depth(root: NodeRef<'_>) -> usize {
-    let mut max = 0;
-    let mut stack = vec![(root, 0)];
-    while let Some((node, d)) = stack.pop() {
-        max = max.max(d);
-        let mut child = node.first_child();
-        while let Some(c) = child {
-            child = c.next_sibling();
-            stack.push((c, d + 1));
-        }
-    }
-    max
 }
 
 #[cfg(test)]
@@ -255,7 +234,7 @@ mod tests {
         let start = Instant::now();
         assert_eq!(extract(&nested(400_000), "https://example.com/"), None);
         assert_eq!(
-            extract(&nested(MAX_DEPTH + 10), "https://example.com/"),
+            extract(&nested(html::MAX_DEPTH + 10), "https://example.com/"),
             None
         );
         // Rebuilt formatting elements nest as deep as divs do.
