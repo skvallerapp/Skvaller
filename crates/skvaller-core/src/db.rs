@@ -1614,7 +1614,7 @@ mod tests {
     #[test]
     fn ids_longer_than_64_bits_are_kept() {
         let db = db_with_article();
-        let hex = "5d0cfa30d1892a8d3f00002e";
+        let hex = "x5d0cfa30d1892a8d3f00002e";
         db.upsert_articles(&[ArticleRow {
             id: hex.into(),
             ..article(2, "feed/1", false, false)

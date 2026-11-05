@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use reqwest::header::AUTHORIZATION;
+use reqwest::header::{AUTHORIZATION, LOCATION};
 use reqwest::redirect::Policy;
 use reqwest::{RequestBuilder, StatusCode, Url};
 use serde::Deserialize;
@@ -29,6 +29,8 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// a sync forever.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const LONG_ID_PREFIX: &str = "tag:google.com,2005:reader/item/";
+/// Marks a cached ID longer than 64 bits. See [`parse_item_id`].
+const HEX_ID: &str = "x";
 
 #[derive(Clone)]
 pub struct Client {
@@ -44,19 +46,31 @@ impl Client {
     /// [`Client::base`] tells which one answered.
     pub async fn login(base: &str, username: &str, password: &str) -> Result<Self> {
         let base = base.trim_end_matches('/');
-        let mut result = Self::login_at(base, username, password).await;
+        let redirect = match Self::login_at(base, username, password).await? {
+            Ok(client) => return Ok(client),
+            Err(redirect) => redirect,
+        };
         if !base.ends_with(FRESHRSS_PATH) {
-            // Not the API, or a page that is not one: anything but an answer about the
-            // password or the network.
-            if let Err(Error::Protocol(_)) = result {
-                result =
-                    Self::login_at(&format!("{base}{FRESHRSS_PATH}"), username, password).await;
+            let freshrss = format!("{base}{FRESHRSS_PATH}");
+            if let Ok(client) = Self::login_at(&freshrss, username, password).await? {
+                return Ok(client);
             }
         }
-        result
+        // Redirects aren't followed, but where to is the likely fix, such as https.
+        Err(Error::Protocol(match redirect {
+            Some(to) => format!("no Google Reader API at this address; it redirects to {to}"),
+            None => "no Google Reader API at this address".into(),
+        }))
     }
 
-    async fn login_at(base: &str, username: &str, password: &str) -> Result<Self> {
+    /// `Err` if there is no API at `base`: a redirect (with where to, if given), Not
+    /// Found, or a page without a token, such as a web site's own. Other errors are the
+    /// server's answer.
+    async fn login_at(
+        base: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<Result<Self, Option<String>>> {
         let mut client = Self::new(base, "")?;
         let res = client
             .http
@@ -71,15 +85,28 @@ impl Client {
             ])
             .send()
             .await?;
-        check(res.status())?;
+        let status = res.status();
+        if status.is_redirection() {
+            let to = res.headers().get(LOCATION).and_then(|v| v.to_str().ok());
+            return Ok(Err(to.map(|to| to.chars().take(200).collect())));
+        }
+        if matches!(
+            status,
+            StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+        ) {
+            return Ok(Err(None));
+        }
+        check(status)?;
         let body = res.text().await?;
-        client.token = body
+        let Some(token) = body
             .lines()
             .find_map(|line| line.strip_prefix("Auth="))
             .filter(|token| !token.is_empty())
-            .ok_or_else(|| Error::Protocol("no Auth token in the sign-in response".into()))?
-            .to_owned();
-        Ok(client)
+        else {
+            return Ok(Err(None));
+        };
+        client.token = token.to_owned();
+        Ok(Ok(client))
     }
 
     /// Builds a client from a token saved by an earlier [`Client::login`].
@@ -175,7 +202,13 @@ impl Client {
             #[serde(default)]
             items: Vec<Item>,
         }
-        let form: Vec<_> = ids.iter().map(|id| ("i", long_item_id(id))).collect();
+        let form: Vec<_> = ids
+            .iter()
+            .filter_map(|id| Some(("i", long_item_id(id)?)))
+            .collect();
+        if form.is_empty() {
+            return Ok(Vec::new());
+        }
         let req = self.post("stream/items/contents").form(&form);
         let page: Page = self.json(req).await?;
         Ok(page.items)
@@ -196,7 +229,13 @@ impl Client {
         tag: &str,
         add: bool,
     ) -> Result<()> {
-        let mut form: Vec<_> = ids.iter().map(|id| ("i", long_item_id(id))).collect();
+        let mut form: Vec<_> = ids
+            .iter()
+            .filter_map(|id| Some(("i", long_item_id(id)?)))
+            .collect();
+        if form.is_empty() {
+            return Ok(());
+        }
         form.push((if add { "a" } else { "r" }, tag.to_owned()));
         form.push(("T", write_token.to_owned()));
         let res = self.post("edit-tag").form(&form).send().await?;
@@ -258,17 +297,13 @@ pub(crate) fn next_page(next: Option<String>, current: &Option<String>) -> Optio
 
 /// An item ID as the cache keeps it. Servers send IDs in a short and a long form, and a
 /// sync needs both to name the same item. 64-bit IDs (FreshRSS, Miniflux) come as decimal
-/// (`"1730000000000001"`) or as 16 hex digits in the long form
+/// (`"1730000000000001"`) or as up to 16 hex digits in the long form
 /// (`"tag:google.com,2005:reader/item/0006246b5f1e0001"`), and are kept as signed
 /// decimal. Longer ones, such as The Old Reader's 24-digit ObjectIds, are hex in both
-/// forms, and are kept as lowercase hex. None of those is a valid decimal `i64`, so the
-/// two kinds can't be mixed up.
+/// forms, and are kept as `x` and lowercase hex, so they can't read as a decimal ID.
 pub(crate) fn parse_item_id(id: &str) -> Option<String> {
     let id = id.trim();
     match id.strip_prefix(LONG_ID_PREFIX) {
-        Some(hex) if hex.len() == 16 => u64::from_str_radix(hex, 16)
-            .ok()
-            .map(|v| (v as i64).to_string()),
         Some(hex) => hex_id(hex),
         None => decimal_id(id).map(|v| v.to_string()).or_else(|| hex_id(id)),
     }
@@ -289,15 +324,24 @@ fn decimal_id(id: &str) -> Option<i64> {
 }
 
 fn hex_id(hex: &str) -> Option<String> {
-    (!hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit()))
-        .then(|| hex.to_ascii_lowercase())
+    if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    if hex.len() <= 16 {
+        let v = u64::from_str_radix(hex, 16).ok()?;
+        return Some((v as i64).to_string());
+    }
+    Some(format!("{HEX_ID}{}", hex.to_ascii_lowercase()))
 }
 
-/// The long form of an ID from [`parse_item_id`].
-fn long_item_id(id: &str) -> String {
-    match id.parse::<i64>() {
-        Ok(v) => format!("{LONG_ID_PREFIX}{:016x}", v as u64),
-        Err(_) => format!("{LONG_ID_PREFIX}{id}"),
+/// The long form of an ID from [`parse_item_id`]. `None` for anything else, rather than
+/// an ID that names another item.
+fn long_item_id(id: &str) -> Option<String> {
+    match id.strip_prefix(HEX_ID) {
+        Some(hex) => hex_id(hex)
+            .is_some()
+            .then(|| format!("{LONG_ID_PREFIX}{hex}")),
+        None => decimal_id(id).map(|v| format!("{LONG_ID_PREFIX}{:016x}", v as u64)),
     }
 }
 
@@ -403,8 +447,8 @@ mod tests {
             Some("1730000000000001".into())
         );
         assert_eq!(
-            long_item_id("1730000000000001"),
-            "tag:google.com,2005:reader/item/0006256d03762001"
+            long_item_id("1730000000000001").as_deref(),
+            Some("tag:google.com,2005:reader/item/0006256d03762001")
         );
         assert_eq!(
             parsed("tag:google.com,2005:reader/item/ffffffffffffffff"),
@@ -413,34 +457,58 @@ mod tests {
         assert_eq!(parsed("18446744073709551615"), Some("-1".into()));
         assert_eq!(parsed("-1"), Some("-1".into()));
         assert_eq!(
-            long_item_id("-1"),
-            "tag:google.com,2005:reader/item/ffffffffffffffff"
+            long_item_id("-1").as_deref(),
+            Some("tag:google.com,2005:reader/item/ffffffffffffffff")
         );
         assert_eq!(parsed("nope"), None);
+        // A bare hex ID, as caches from before the `x` have them, names no item.
+        assert_eq!(long_item_id("5d0cfa30d1892a8d3f00002e"), None);
+        assert_eq!(long_item_id("0012"), None);
         assert_eq!(parsed(""), None);
     }
 
     #[test]
     fn keeps_longer_item_ids_as_hex() {
         let long = "tag:google.com,2005:reader/item/5D0CFA30D1892A8D3F00002E";
-        assert_eq!(parsed(long), Some("5d0cfa30d1892a8d3f00002e".into()));
+        assert_eq!(parsed(long), Some("x5d0cfa30d1892a8d3f00002e".into()));
         assert_eq!(
             parsed("5d0cfa30d1892a8d3f00002e"),
-            Some("5d0cfa30d1892a8d3f00002e".into())
+            Some("x5d0cfa30d1892a8d3f00002e".into())
         );
         // All digits, but too long for 64 bits: still hex, as in the long form.
         assert_eq!(
             parsed("001234567890123456789012"),
-            Some("001234567890123456789012".into())
+            Some("x001234567890123456789012".into())
         );
         assert_eq!(
-            long_item_id("001234567890123456789012"),
-            "tag:google.com,2005:reader/item/001234567890123456789012"
+            long_item_id("x5d0cfa30d1892a8d3f00002e").as_deref(),
+            Some("tag:google.com,2005:reader/item/5d0cfa30d1892a8d3f00002e")
         );
+        // 18 hex digits that look decimal: not the same item as that decimal ID.
+        assert_ne!(
+            parsed("tag:google.com,2005:reader/item/123456789012345678"),
+            parsed("123456789012345678")
+        );
+    }
+
+    #[test]
+    fn short_long_forms_and_odd_shapes_are_one_item() {
+        // A long form without the padding, and a short form in hex.
         assert_eq!(
-            long_item_id("5d0cfa30d1892a8d3f00002e"),
-            "tag:google.com,2005:reader/item/5d0cfa30d1892a8d3f00002e"
+            parsed("tag:google.com,2005:reader/item/3039"),
+            Some("12345".into())
         );
+        assert_eq!(parsed("0012"), parsed("tag:google.com,2005:reader/item/12"));
+        for long in [
+            "tag:google.com,2005:reader/item/0006256d03762001",
+            "tag:google.com,2005:reader/item/ffffffffffffffff",
+            "tag:google.com,2005:reader/item/3039",
+            "tag:google.com,2005:reader/item/00157a17b192950b65be3791",
+            "tag:google.com,2005:reader/item/123456789012345678",
+        ] {
+            let id = parsed(long).unwrap();
+            assert_eq!(parsed(&long_item_id(&id).unwrap()), Some(id), "{long}");
+        }
     }
 
     #[test]

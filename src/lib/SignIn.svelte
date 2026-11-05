@@ -10,8 +10,9 @@
     service: Service
     /** Signs in. A thrown `CommandError` shows under the form. */
     submit: (server: string, username: string, password: string) => Promise<void>
-    /** Fills in the form, to sign in to this account again. */
-    account?: { server: string; username: string } | null
+    /** Fills in the form, to sign in to this account again. Its description is the
+     * heading: a saved address can't tell Miniflux from any other server. */
+    account?: { server: string; username: string; description: string } | null
     /** Shown until the next attempt. */
     initialError?: string | null
     /** Back to the list of services; none when signing in again. */
@@ -35,7 +36,9 @@
   const messages = $derived<Record<CommandError['kind'], string>>({
     unauthorized: `Wrong ${service.username.toLowerCase()} or ${service.password.toLowerCase()}.`,
     badUrl: 'Enter the server address, such as https://rss.example.com.',
-    network: 'Could not reach the server. Check the address and your connection.',
+    network: service.server
+      ? `Could not reach ${service.name}. Check your connection.`
+      : 'Could not reach the server. Check the address and your connection.',
     noFeed: '',
     other: '',
   })
@@ -57,15 +60,29 @@
   }
 </script>
 
-<form onsubmit={submit}>
+<!-- Escape from any field goes back to the list, like Back. -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<form
+  onsubmit={submit}
+  onkeydown={(e) => {
+    // Not while signing in: its result would have nowhere to show.
+    if (e.key === 'Escape' && back && !busy && !e.isComposing) {
+      e.preventDefault()
+      e.stopPropagation()
+      back()
+    }
+  }}
+>
   <header>
     {#if back}
-      <button type="button" class="back" onclick={back} aria-label="All services">
+      <button type="button" class="back" onclick={back} disabled={busy} aria-label="All services">
         <ChevronLeft size={18} />
       </button>
     {/if}
     <ServiceLogo {service} size={embedded ? 24 : 28} />
-    <svelte:element this={embedded ? 'h2' : 'h1'} class="title" class:small={embedded}>{service.name}</svelte:element>
+    <svelte:element this={embedded ? 'h2' : 'h1'} class="title" class:small={embedded}>
+      {account?.description || service.name}
+    </svelte:element>
   </header>
 
   {#if !service.server}
@@ -149,7 +166,11 @@
     color: var(--text-2);
   }
 
-  .back:hover {
+  .back:disabled {
+    opacity: 0.4;
+  }
+
+  .back:hover:not(:disabled) {
     background: var(--hover);
     color: var(--text);
   }
