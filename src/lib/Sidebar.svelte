@@ -69,13 +69,20 @@
 
   // The folders and the feeds in no folder, in the order the setting asks: folders first,
   // or all A–Z together. Each list is A–Z already.
+  /** SQLite's NOCASE order, which the cache sorts each list by: ASCII case folded, the
+   * rest by code point. */
+  const nocase = (a: string, b: string) => {
+    const fold = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase())
+    const [x, y] = [fold(a), fold(b)]
+    return x < y ? -1 : x > y ? 1 : 0
+  }
   type Entry = { kind: 'folder'; id: string; folder: Folder } | { kind: 'feed'; id: string; feed: Feed }
   const entries: Entry[] = $derived.by(() => {
     const folders = shownFolders.map((folder): Entry => ({ kind: 'folder', id: folder.id, folder }))
     const feeds = looseFeeds.map((feed): Entry => ({ kind: 'feed', id: feed.id, feed }))
     if (store.settings.sortSubscriptions !== 'alphabetical') return [...folders, ...feeds]
     const title = (e: Entry) => (e.kind === 'folder' ? e.folder.title : e.feed.title)
-    return [...folders, ...feeds].sort((a, b) => title(a).localeCompare(title(b), undefined, { sensitivity: 'base' }))
+    return [...folders, ...feeds].sort((a, b) => nocase(title(a), title(b)))
   })
 
   // The rows below All, in sidebar order: each folder, then its feeds when open, and the
