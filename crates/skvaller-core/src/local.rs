@@ -79,10 +79,10 @@ pub async fn refresh(db: &Db, now: i64, keep_read_days: u32) -> Result<SyncRepor
             Err(e) => db.set_fetch_error(&feed.id, Some(&e.message()))?,
         }
     }
-    // Every feed out of reach is more likely the network than every site down: a
-    // failure, so it is tried again, as a sync account's would be.
     // Pruning needs no network, so the retention period holds offline too.
     let pruned = db.prune((now - i64::from(keep_read_days) * DAY) * 1000)?;
+    // Every feed out of reach is more likely the network than every site down: a
+    // failure, so it is tried again, as a sync account's would be.
     if tried > 0 && reached == 0 {
         return Err(Error::Local("could not reach any feed".into()));
     }
