@@ -45,16 +45,14 @@ export function escapeHtml(s: string): string {
 }
 
 /**
- * Completes what the user typed into an API URL: `https://` when no scheme is given,
- * and FreshRSS's `/api/greader.php` when there is no path.
+ * Completes what the user typed into a server address: `https://` when no scheme is
+ * given. Signing in finds the API path itself, such as FreshRSS's `/api/greader.php`.
  */
-export function apiUrl(input: string): string {
+export function serverUrl(input: string): string {
   let s = input.trim()
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = `https://${s}`
   try {
-    const url = new URL(s)
-    if (url.pathname === '/' || url.pathname === '') url.pathname = '/api/greader.php'
-    return url.toString().replace(/\/$/, '')
+    return new URL(s).toString().replace(/\/$/, '')
   } catch {
     return s
   }

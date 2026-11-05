@@ -123,9 +123,7 @@ async fn a_web_page_leads_to_the_feed_it_links_to() {
     assert_eq!(articles[0].title, "Atom one");
     assert_eq!(articles[0].author, "Ada");
     assert_eq!(
-        db.article_html(articles[0].id.parse().unwrap())
-            .unwrap()
-            .unwrap(),
+        db.article_html(&articles[0].id).unwrap().unwrap(),
         "<p>Body</p>"
     );
 }
@@ -192,7 +190,7 @@ async fn a_refresh_keeps_what_the_user_did_and_asks_only_for_changes() {
     let feed = subscribe(&db, &format!("{}/feed.xml", server.uri()), None, NOW)
         .await
         .unwrap();
-    let ids: Vec<i64> = all(&db).iter().map(|a| a.id.parse().unwrap()).collect();
+    let ids: Vec<String> = all(&db).into_iter().map(|a| a.id).collect();
     db.set_read(&ids, true).unwrap();
     db.set_starred(&ids[..1], true).unwrap();
     db.rename_feed(&feed, "My Kernel").unwrap();
@@ -279,7 +277,7 @@ async fn a_pruned_entry_does_not_come_back_while_the_feed_lists_it() {
     let feed = subscribe(&db, &format!("{}/feed.xml", server.uri()), None, NOW)
         .await
         .unwrap();
-    let old = article_id(&feed, "a1");
+    let old = article_id(&feed, "a1").to_string();
     db.set_read(&[old], true).unwrap();
 
     // Long after: the read one is pruned, and stays gone.

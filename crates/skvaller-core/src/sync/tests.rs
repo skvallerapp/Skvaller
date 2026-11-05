@@ -1,4 +1,4 @@
-//! Sync against a fake FreshRSS server.
+//! Sync against a fake server, shaped like FreshRSS unless a test says otherwise.
 
 use serde_json::{Value, json};
 use wiremock::matchers::{body_string_contains, header, method, path, query_param};
@@ -43,9 +43,9 @@ impl Fake {
             .and(header("authorization", "GoogleLogin auth=tok"))
     }
 
-    /// Mounts the read endpoints of a sync. `contents` is what `stream/contents` returns
-    /// for the given `ot`.
-    async fn serve(&self, ot: i64, contents: Vec<Value>, unread: &[i64], starred: &[i64]) {
+    /// Mounts the read endpoints of a sync. `recent` is what the reading list has newer
+    /// than `ot`; `stream/items/contents` serves those items by ID.
+    async fn serve(&self, ot: i64, recent: Vec<Value>, unread: &[i64], starred: &[i64]) {
         let subs = json!({ "subscriptions": [
             { "id": "feed/1", "title": "Kernel Notes", "iconUrl": "/f.php?h=1",
               "categories": [{ "id": "user/-/label/Tech", "label": "Tech" }] },
@@ -54,10 +54,17 @@ impl Fake {
         ]});
         self.mount(self.get("subscription/list").respond_with(ok_json(subs)))
             .await;
+        let recent_ids: Vec<Value> = recent.iter().map(|i| json!({ "id": i["id"] })).collect();
         self.mount(
-            self.get(&format!("stream/contents/{READING_LIST}"))
+            self.get("stream/items/ids")
+                .and(query_param("s", READING_LIST))
                 .and(query_param("ot", ot.to_string()))
-                .respond_with(ok_json(json!({ "items": contents }))),
+                .respond_with(ok_json(json!({ "itemRefs": recent_ids }))),
+        )
+        .await;
+        self.mount(
+            self.post("stream/items/contents")
+                .respond_with(ById(recent)),
         )
         .await;
         self.mount(
@@ -75,11 +82,11 @@ impl Fake {
         .await;
     }
 
-    fn flags(&self, id: i64) -> Option<(bool, bool)> {
+    fn flags(&self, id: impl ToString) -> Option<(bool, bool)> {
         self.db.with_conn(|c| {
             c.query_row(
                 "SELECT read, starred FROM articles WHERE id = ?1",
-                [id],
+                [id.to_string()],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .ok()
@@ -89,6 +96,29 @@ impl Fake {
 
 fn ok_json(body: Value) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(body)
+}
+
+/// Answers `stream/items/contents` with the items the form asks for.
+struct ById(Vec<Value>);
+
+impl wiremock::Respond for ById {
+    fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+        let body = String::from_utf8_lossy(&req.body);
+        let asked = |item: &&Value| {
+            let id = item["id"].as_str().unwrap();
+            body.split('&').any(|field| field == form_field(id))
+        };
+        ok_json(json!({ "items": self.0.iter().filter(asked).collect::<Vec<_>>() }))
+    }
+}
+
+/// How `i=<long ID>` looks in a form body.
+fn form_field(long_id: &str) -> String {
+    let encoded = long_id
+        .replace(':', "%3A")
+        .replace(',', "%2C")
+        .replace('/', "%2F");
+    format!("i={encoded}")
 }
 
 fn item_refs(ids: &[i64]) -> Value {
@@ -121,7 +151,7 @@ fn item(id: i64, feed: &str, crawl: i64, read: bool, starred: bool) -> Value {
 
 /// How `i=<id>` looks in a form body.
 fn form_id(id: i64) -> String {
-    format!("i=tag%3Agoogle.com%2C2005%3Areader%2Fitem%2F{id:016x}")
+    form_field(&format!("tag:google.com,2005:reader/item/{id:016x}"))
 }
 
 #[tokio::test]
@@ -154,6 +184,61 @@ async fn login_with_a_wrong_password_is_unauthorized() {
 }
 
 #[tokio::test]
+async fn login_tries_the_address_as_typed_first() {
+    // Miniflux and The Old Reader: the API is at the server's root.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/accounts/ClientLogin"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("Auth=root\n"))
+        .mount(&server)
+        .await;
+    let client = Client::login(&format!("{}/", server.uri()), "carl", "pw")
+        .await
+        .unwrap();
+    assert_eq!(
+        (client.base(), client.token()),
+        (server.uri().as_str(), "root")
+    );
+}
+
+#[tokio::test]
+async fn login_falls_back_to_the_freshrss_path() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("{API}/accounts/ClientLogin")))
+        .respond_with(ResponseTemplate::new(200).set_body_string("Auth=frss\n"))
+        .mount(&server)
+        .await;
+    // FreshRSS's own page, not the API.
+    Mock::given(method("POST"))
+        .and(path("/accounts/ClientLogin"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<html>"))
+        .mount(&server)
+        .await;
+    let client = Client::login(&server.uri(), "carl", "pw").await.unwrap();
+    assert_eq!(client.base(), format!("{}{API}", server.uri()));
+    assert_eq!(client.token(), "frss");
+}
+
+#[tokio::test]
+async fn login_rejected_at_the_address_as_typed_tries_nothing_else() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/accounts/ClientLogin"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("{API}/accounts/ClientLogin")))
+        .respond_with(ResponseTemplate::new(200).set_body_string("Auth=x\n"))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let err = Client::login(&server.uri(), "carl", "nope").await;
+    assert!(matches!(err, Err(Error::Unauthorized)));
+}
+
+#[tokio::test]
 async fn revoked_token_is_unauthorized() {
     let fake = Fake::new().await;
     fake.mount(Mock::given(method("GET")).respond_with(ResponseTemplate::new(401)))
@@ -178,16 +263,20 @@ async fn first_sync_fetches_unread_starred_and_the_last_30_days() {
         &[3],
     )
     .await;
-    // Unread 5 and starred 3 are older than 30 days, so they come by ID.
+    // Unread 5 and starred 3 are older than 30 days: only their IDs are listed as such.
     let old = NOW - 400 * DAY;
     fake.mount(
         fake.post("stream/items/contents")
             .and(body_string_contains(form_id(5)))
             .and(body_string_contains(form_id(3)))
-            .respond_with(ok_json(json!({ "items": [
+            .and(body_string_contains(form_id(11)))
+            .respond_with(ById(vec![
+                item(11, "feed/2", recent, false, false),
+                item(10, "feed/1", recent, true, false),
                 item(5, "feed/1", old, false, false),
                 item(3, "feed/2", old, true, true),
-            ]})))
+            ]))
+            .with_priority(1)
             .expect(1),
     )
     .await;
@@ -262,18 +351,24 @@ async fn next_sync_fetches_since_the_newest_crawl_and_follows_server_state() {
         .await
         .unwrap();
 
-    // Elsewhere, 11 was read and 10 starred. One new article arrived.
+    // Elsewhere, 11 was read and 10 starred. One new article arrived, and the overlap
+    // lists 11 again: only the new one is fetched.
     fake.server.reset().await;
     fake.serve(
         crawl - CRAWL_OVERLAP,
-        vec![item(12, "feed/1", crawl + 60, false, false)],
+        vec![
+            item(12, "feed/1", crawl + 60, false, false),
+            item(11, "feed/2", crawl, true, false),
+        ],
         &[12],
         &[10],
     )
     .await;
     fake.mount(
         fake.post("stream/items/contents")
-            .respond_with(ok_json(json!({})))
+            .and(body_string_contains(form_id(11)))
+            .respond_with(ResponseTemplate::new(500))
+            .with_priority(1)
             .expect(0),
     )
     .await;
@@ -313,8 +408,8 @@ async fn queued_changes_are_sent_then_cleared() {
     sync(&fake.client, &fake.db, NOW, DEFAULT_KEEP_READ_DAYS)
         .await
         .unwrap();
-    fake.db.set_read(&[1], true).unwrap();
-    fake.db.set_starred(&[2], false).unwrap();
+    fake.db.set_read(&["1"], true).unwrap();
+    fake.db.set_starred(&["2"], false).unwrap();
 
     fake.server.reset().await;
     fake.serve(crawl - CRAWL_OVERLAP, vec![], &[], &[]).await;
@@ -378,7 +473,7 @@ async fn failed_push_keeps_the_queue_and_the_local_state() {
     sync(&fake.client, &fake.db, NOW, DEFAULT_KEEP_READ_DAYS)
         .await
         .unwrap();
-    fake.db.set_read(&[1], true).unwrap();
+    fake.db.set_read(&["1"], true).unwrap();
 
     fake.server.reset().await;
     fake.serve(
@@ -404,7 +499,10 @@ async fn failed_push_keeps_the_queue_and_the_local_state() {
             .await
             .is_err()
     );
-    assert_eq!(fake.db.pending().unwrap(), [(1, Flag::Read, true)]);
+    assert_eq!(
+        fake.db.pending().unwrap(),
+        [("1".to_owned(), Flag::Read, true)]
+    );
     assert_eq!(fake.flags(1), Some((true, false)));
 }
 
@@ -471,7 +569,7 @@ async fn live_write() {
     sync(&client, &db, unix_now(), DEFAULT_KEEP_READ_DAYS)
         .await
         .unwrap();
-    let id: i64 = db.with_conn(|c| {
+    let id: String = db.with_conn(|c| {
         c.query_row(
             "SELECT id FROM articles WHERE NOT read AND NOT starred LIMIT 1",
             [],
@@ -480,14 +578,17 @@ async fn live_write() {
         .expect("needs an unread, unstarred article")
     });
     let on_server = async || {
-        let unread = client.item_ids(READING_LIST, Some(READ)).await.unwrap();
-        let starred = client.item_ids(STARRED, None).await.unwrap();
+        let unread = client
+            .item_ids(READING_LIST, Some(READ), None)
+            .await
+            .unwrap();
+        let starred = client.item_ids(STARRED, None, None).await.unwrap();
         (!unread.contains(&id), starred.contains(&id))
     };
     println!("article {id}");
 
-    db.set_read(&[id], true).unwrap();
-    db.set_starred(&[id], true).unwrap();
+    db.set_read(&[&id], true).unwrap();
+    db.set_starred(&[&id], true).unwrap();
     let report = sync(&client, &db, unix_now(), DEFAULT_KEEP_READ_DAYS)
         .await
         .unwrap();
@@ -498,8 +599,8 @@ async fn live_write() {
         "read and starred on the server"
     );
 
-    db.set_read(&[id], false).unwrap();
-    db.set_starred(&[id], false).unwrap();
+    db.set_read(&[&id], false).unwrap();
+    db.set_starred(&[&id], false).unwrap();
     let report = sync(&client, &db, unix_now(), DEFAULT_KEEP_READ_DAYS)
         .await
         .unwrap();
@@ -512,22 +613,29 @@ async fn live_write() {
 async fn pages_are_followed_and_a_repeated_continuation_stops() {
     let fake = Fake::new().await;
     let crawl = NOW - DAY;
+    let items = vec![
+        item(1, "feed/1", crawl, true, false),
+        item(2, "feed/1", crawl, true, false),
+    ];
     // Page 1 points to page 2; page 2 wrongly repeats its own continuation.
-    fake.serve(NOW - 30 * DAY, vec![], &[], &[]).await;
+    fake.serve(NOW - 30 * DAY, items, &[], &[]).await;
     fake.mount(
-        fake.get(&format!("stream/contents/{READING_LIST}"))
+        fake.get("stream/items/ids")
+            .and(query_param("s", READING_LIST))
             .and(query_param("c", "p2"))
             .respond_with(ok_json(json!({
-                "items": [item(1, "feed/1", crawl, true, false)], "continuation": "p2" })))
+                "itemRefs": [{ "id": "1" }], "continuation": "p2" })))
             .with_priority(1)
             .expect(1),
     )
     .await;
     fake.mount(
-        fake.get(&format!("stream/contents/{READING_LIST}"))
+        fake.get("stream/items/ids")
+            .and(query_param("s", READING_LIST))
+            .and(query_param("ot", (NOW - 30 * DAY).to_string()))
             .and(wiremock::matchers::query_param_is_missing("c"))
             .respond_with(ok_json(json!({
-                "items": [item(2, "feed/1", crawl, true, false)], "continuation": "p2" })))
+                "itemRefs": [{ "id": "2" }], "continuation": "p2" })))
             .with_priority(1)
             .expect(1),
     )
@@ -555,18 +663,15 @@ async fn feed_only_feeds_are_fetched_on_their_own() {
     )
     .await;
     fake.mount(
-        fake.get("stream/contents/feed/3")
-            .and(query_param("ot", (NOW - 30 * DAY).to_string()))
-            .respond_with(ok_json(
-                json!({ "items": [item(30, "feed/3", crawl, false, false)] }),
-            )),
+        fake.get("stream/items/ids")
+            .and(query_param("s", "feed/3"))
+            .respond_with(ok_json(item_refs(&[30]))),
     )
     .await;
     fake.mount(
-        fake.get("stream/items/ids")
-            .and(query_param("s", "feed/3"))
-            .and(query_param("xt", READ))
-            .respond_with(ok_json(item_refs(&[30]))),
+        fake.post("stream/items/contents")
+            .respond_with(ById(vec![item(30, "feed/3", crawl, false, false)]))
+            .with_priority(1),
     )
     .await;
 
@@ -688,4 +793,69 @@ async fn failed_icon_fetch_is_retried() {
     }
 
     assert!(fake.db.feeds().unwrap().iter().all(|f| f.icon.is_none()));
+}
+
+/// The Old Reader: 24-digit hex IDs, short in ID lists and long in articles, and no
+/// `crawlTimeMsec`.
+#[tokio::test]
+async fn ids_longer_than_64_bits_sync_both_ways() {
+    let fake = Fake::new().await;
+    let (a, b) = ("5d0cfa30d1892a8d3f00002e", "5d0cfa30d1892a8d3f00002f");
+    let crawl = NOW - DAY;
+    let tor_item = |hex: &str, read: bool| {
+        let mut v = item(0, "feed/5d0c", crawl, read, false);
+        v["id"] = json!(format!("tag:google.com,2005:reader/item/{hex}"));
+        v.as_object_mut().unwrap().remove("crawlTimeMsec");
+        v
+    };
+    fake.serve(
+        NOW - 30 * DAY,
+        vec![tor_item(a, false), tor_item(b, true)],
+        &[],
+        &[],
+    )
+    .await;
+    fake.mount(
+        fake.get("stream/items/ids")
+            .and(query_param("xt", READ))
+            .respond_with(ok_json(json!({ "itemRefs": [{ "id": a }] })))
+            .with_priority(1),
+    )
+    .await;
+
+    let report = sync(&fake.client, &fake.db, NOW, DEFAULT_KEEP_READ_DAYS)
+        .await
+        .unwrap();
+
+    assert_eq!(report.fetched, 2);
+    assert_eq!(fake.flags(a), Some((false, false)));
+    assert_eq!(fake.flags(b), Some((true, false)));
+    // From timestampUsec.
+    assert_eq!(fake.db.newest_crawl().unwrap(), Some(crawl * 1000));
+
+    fake.db.set_read(&[a], true).unwrap();
+    fake.mount(
+        fake.get("stream/items/ids")
+            .and(query_param("ot", (crawl - CRAWL_OVERLAP).to_string()))
+            .respond_with(ok_json(json!({ "itemRefs": [] }))),
+    )
+    .await;
+    fake.mount(
+        fake.get("token")
+            .respond_with(ResponseTemplate::new(200).set_body_string("wtok")),
+    )
+    .await;
+    fake.mount(
+        fake.post("edit-tag")
+            .and(body_string_contains(form_field(&format!(
+                "tag:google.com,2005:reader/item/{a}"
+            ))))
+            .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
+            .expect(1),
+    )
+    .await;
+    let report = sync(&fake.client, &fake.db, NOW + 900, DEFAULT_KEEP_READ_DAYS)
+        .await
+        .unwrap();
+    assert_eq!(report.pushed, 1);
 }

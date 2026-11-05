@@ -1,24 +1,26 @@
 <script lang="ts">
-  import type { Snippet } from 'svelte'
+  import ChevronLeft from '@lucide/svelte/icons/chevron-left'
   import { errorMessage } from './api'
-  import { apiUrl, sentence } from './format'
-  import { macWindow } from './platform'
+  import { sentence, serverUrl } from './format'
+  import ServiceLogo from './ServiceLogo.svelte'
+  import type { Service } from './services'
   import type { CommandError } from './types'
 
   interface Props {
+    service: Service
     /** Signs in. A thrown `CommandError` shows under the form. */
     submit: (server: string, username: string, password: string) => Promise<void>
     /** Fills in the form, to sign in to this account again. */
     account?: { server: string; username: string } | null
     /** Shown until the next attempt. */
     initialError?: string | null
-    /** In the Settings window, instead of the whole main window. */
+    /** Back to the list of services; none when signing in again. */
+    back?: () => void
+    /** In the Settings window: a smaller heading. */
     embedded?: boolean
-    /** Under the form, such as other ways to add an account. */
-    children?: Snippet
   }
 
-  let { submit: signIn, account = null, initialError = null, embedded = false, children }: Props = $props()
+  let { service, submit: signIn, account = null, initialError = null, back, embedded = false }: Props = $props()
 
   // Filled in once; the user's typing wins after that.
   // svelte-ignore state_referenced_locally
@@ -30,21 +32,21 @@
   // svelte-ignore state_referenced_locally
   let error = $state<string | null>(initialError)
 
-  const messages: Record<CommandError['kind'], string> = {
-    unauthorized: 'Wrong username or API password.',
+  const messages = $derived<Record<CommandError['kind'], string>>({
+    unauthorized: `Wrong ${service.username.toLowerCase()} or ${service.password.toLowerCase()}.`,
     badUrl: 'Enter the server address, such as https://rss.example.com.',
     network: 'Could not reach the server. Check the address and your connection.',
     noFeed: '',
     other: '',
-  }
+  })
 
   async function submit(e: SubmitEvent) {
     e.preventDefault()
     busy = true
     error = null
     try {
-      server = apiUrl(server)
-      await signIn(server, username, password)
+      if (!service.server) server = serverUrl(server)
+      await signIn(service.server ?? server, username, password)
       password = ''
     } catch (err) {
       // Tauri's own errors are plain strings.
@@ -55,23 +57,23 @@
   }
 </script>
 
-{#if macWindow && !embedded}
-  <!-- The title bar is hidden on macOS: an empty strip to drag the window by. Not the
-       whole screen, so text stays selectable and the scrollbar keeps working. -->
-  <div class="drag-strip" data-tauri-drag-region></div>
-{/if}
-<svelte:element this={embedded ? 'div' : 'main'} class="sign-in" class:embedded>
-  <form onsubmit={submit}>
-    {#if !embedded}<h1>Sign in to your sync service</h1>{/if}
-    <p class="intro">
-      Skvaller reads your feeds from a service that speaks the Google Reader API, such as FreshRSS.
-    </p>
+<form onsubmit={submit}>
+  <header>
+    {#if back}
+      <button type="button" class="back" onclick={back} aria-label="All services">
+        <ChevronLeft size={18} />
+      </button>
+    {/if}
+    <ServiceLogo {service} size={embedded ? 24 : 28} />
+    <svelte:element this={embedded ? 'h2' : 'h1'} class="title" class:small={embedded}>{service.name}</svelte:element>
+  </header>
 
+  {#if !service.server}
     <label>
       <span>Server</span>
       <!-- svelte-ignore a11y_autofocus -->
       <input
-        autofocus={!embedded && !account}
+        autofocus={!account}
         bind:value={server}
         placeholder="https://rss.example.com"
         autocapitalize="off"
@@ -80,86 +82,83 @@
         required
       />
     </label>
-    <label>
-      <span>Username</span>
-      <input bind:value={username} autocapitalize="off" autocorrect="off" spellcheck="false" required />
-    </label>
-    <label>
-      <span>API password</span>
-      <!-- Signing in again: only the password is missing. -->
-      <!-- svelte-ignore a11y_autofocus -->
-      <input type="password" autofocus={!embedded && !!account} bind:value={password} required />
-    </label>
-    <p class="hint">
-      In FreshRSS, allow API access under Settings → Authentication, then set an API password under
-      Profile. Skvaller keeps only a sign-in token in your keychain, never the password.
-    </p>
+  {/if}
+  <label>
+    <span>{service.username}</span>
+    <!-- svelte-ignore a11y_autofocus -->
+    <input
+      bind:value={username}
+      type={service.username === 'Email' ? 'email' : 'text'}
+      autofocus={!!service.server && !account}
+      autocapitalize="off"
+      autocorrect="off"
+      spellcheck="false"
+      required
+    />
+  </label>
+  <label>
+    <span>{service.password}</span>
+    <!-- Signing in again: only the password is missing. -->
+    <!-- svelte-ignore a11y_autofocus -->
+    <input type="password" autofocus={!!account} bind:value={password} required />
+  </label>
+  <p class="hint">
+    {service.help} Skvaller keeps only a sign-in token in your keychain, never the password.
+  </p>
 
-    {#if error}<p class="error" role="alert">{error}</p>{/if}
+  {#if error}<p class="error" role="alert">{error}</p>{/if}
 
-    <button class="primary" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
-    {@render children?.()}
-  </form>
-</svelte:element>
+  <button class="primary" disabled={busy}>{busy ? 'Signing in…' : 'Sign In'}</button>
+</form>
 
 <style>
-  .drag-strip {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: var(--toolbar-height);
-  }
-
-  .sign-in {
-    display: grid;
-    place-items: center;
-    height: 100%;
-    padding: 24px;
-    background: var(--sidebar-bg);
-    overflow-y: auto;
-  }
-
-  .sign-in.embedded {
-    display: block;
-    height: auto;
-    padding: 0;
-    background: none;
-    overflow: visible;
-  }
-
-  .embedded form {
-    max-width: none;
-  }
-
   form {
     display: flex;
     flex-direction: column;
     gap: 12px;
-    width: 100%;
-    max-width: 360px;
   }
 
-  h1 {
-    margin: 0;
-    font-size: 22px;
-    font-weight: 800;
-    letter-spacing: -0.01em;
-  }
-
-  .intro,
-  .hint {
-    margin: 0;
-    color: var(--text-2);
-    line-height: 1.45;
-  }
-
-  .intro {
+  header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     margin-bottom: 8px;
   }
 
+  .title {
+    margin: 0;
+    padding: 0;
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    text-transform: none;
+    color: var(--text);
+  }
+
+  .title.small {
+    font-size: 17px;
+  }
+
+  .back {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    margin-left: -6px;
+    border-radius: 7px;
+    color: var(--text-2);
+  }
+
+  .back:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
+
   .hint {
+    margin: 0;
     font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-2);
   }
 
   label {
