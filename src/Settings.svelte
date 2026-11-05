@@ -435,7 +435,7 @@
   <main bind:this={main}>
     <header data-tauri-drag-region={dragRegion}>
       {#if account && subpage}
-        <button class="back" onclick={backToAccount}>
+        <button class="back" aria-label="Back to {account.description}" onclick={backToAccount}>
           <ChevronLeft size={16} strokeWidth={2} />{account.description}
         </button>
       {/if}

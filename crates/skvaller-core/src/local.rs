@@ -81,10 +81,11 @@ pub async fn refresh(db: &Db, now: i64, keep_read_days: u32) -> Result<SyncRepor
     }
     // Every feed out of reach is more likely the network than every site down: a
     // failure, so it is tried again, as a sync account's would be.
+    // Pruning needs no network, so the retention period holds offline too.
+    let pruned = db.prune((now - i64::from(keep_read_days) * DAY) * 1000)?;
     if tried > 0 && reached == 0 {
         return Err(Error::Local("could not reach any feed".into()));
     }
-    let pruned = db.prune((now - i64::from(keep_read_days) * DAY) * 1000)?;
     fetch_icons(db, |url| Url::parse(url).ok(), None).await?;
     db.set_last_sync(now * 1000)?;
     Ok(SyncReport {

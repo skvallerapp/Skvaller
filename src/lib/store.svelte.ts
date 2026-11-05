@@ -561,13 +561,15 @@ class Store {
       const ids = new Set(list.map((a) => a.id))
       const kept = this.visible.filter((a) => !ids.has(a.id) && keep(a))
       if (kept.length > 0) {
-        // Absent from the fresh list, it is read (Unread view) or unstarred (Starred view)
-        // now, whatever the local state says.
+        // Absent from the fresh list of all articles or of a feed, it is read (Unread view)
+        // or unstarred (Starred view) now, whatever the local state says. From a folder's,
+        // its feed may have moved instead: the local state stays.
         const unread = selection.view === 'unread'
+        const implied = selection.scope.kind !== 'folder'
         const local = (a: Article) => ({
           ...a,
-          read: unread || this.read.has(a.id),
-          starred: unread && this.starred.has(a.id),
+          read: (implied && unread) || this.read.has(a.id),
+          starred: (!implied || unread) && this.starred.has(a.id),
         })
         list = [...list, ...kept.map(local)]
         list.sort((a, b) => b.published - a.published)
