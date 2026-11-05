@@ -8,8 +8,8 @@
 //! grows, and parsing stops, a chunk at a time, once any node is deeper than allowed.
 
 use std::borrow::Cow;
-use std::cell::Cell;
-use std::rc::Rc;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 
 use dom_query::{Document, NodeId};
 use html5ever::tendril::{StrTendril, TendrilSink};
@@ -22,18 +22,18 @@ use html5ever::{Attribute, ParseOpts, QualName, parse_document};
 pub(crate) const MAX_DEPTH: usize = 500;
 
 /// The page is fed to the parser this much at a time; between pieces, a page found too
-/// deep is given up on. Small enough that the piece after the limit costs milliseconds.
-const CHUNK_BYTES: usize = 16 * 1024;
+/// deep is given up on. The piece that crosses the limit can nest a few hundred levels
+/// past it, and costs the square of that.
+const CHUNK_BYTES: usize = 4 * 1024;
 
-/// `html` as a document, or `None` if anything in it nests deeper than `max_depth`.
-/// Parses as `Document::from` does, with scripting off.
-pub(crate) fn parse(html: &str, max_depth: usize) -> Option<Document> {
-    let too_deep = Rc::new(Cell::new(false));
-    let sink = Bounded {
-        doc: Document::default(),
-        max_depth,
-        too_deep: too_deep.clone(),
-    };
+/// Attributes of repeated `<html>` and `<body>` tags that are merged into the first one.
+/// Each is compared with all the element has, so a page of such tags would take minutes;
+/// real pages repeat them a few times at most.
+const MAX_MERGED_ATTRS: usize = 256;
+
+/// `html` as a document, or `None` if anything in it, template contents too, nests deeper
+/// than `MAX_DEPTH`. Parses as `Document::from` does, with scripting off.
+pub(crate) fn parse(html: &str) -> Option<Document> {
     let opts = ParseOpts {
         tokenizer: TokenizerOpts::default(),
         tree_builder: TreeBuilderOpts {
@@ -41,7 +41,7 @@ pub(crate) fn parse(html: &str, max_depth: usize) -> Option<Document> {
             ..Default::default()
         },
     };
-    let mut parser = parse_document(sink, opts);
+    let mut parser = parse_document(Bounded::default(), opts);
     let mut start = 0;
     while start < html.len() {
         let mut end = (start + CHUNK_BYTES).min(html.len());
@@ -49,51 +49,91 @@ pub(crate) fn parse(html: &str, max_depth: usize) -> Option<Document> {
             end += 1;
         }
         parser.process(StrTendril::from(&html[start..end]));
-        if too_deep.get() {
+        if parser.tokenizer.sink.sink.too_deep.get() {
             return None;
         }
         start = end;
     }
-    let doc = parser.finish();
-    (!too_deep.get()).then_some(doc)
+    parser.finish()
+}
+
+/// How deeply the nodes of `doc` nest, the document itself at 0. Template contents count
+/// as a child of their template.
+fn depth(doc: &Document) -> usize {
+    let mut max = 0;
+    let mut stack = vec![(doc.root(), 0)];
+    while let Some((node, d)) = stack.pop() {
+        max = max.max(d);
+        let contents = node.element_ref().and_then(|e| e.template_contents);
+        if let Some(contents) = contents.and_then(|id| doc.tree.get(&id)) {
+            stack.push((contents, d + 1));
+        }
+        let mut child = node.first_child();
+        while let Some(c) = child {
+            child = c.next_sibling();
+            stack.push((c, d + 1));
+        }
+    }
+    max
 }
 
 /// dom_query's document, as html5ever builds it, noting when a node is attached deeper
-/// than `max_depth`.
+/// than `MAX_DEPTH`.
+#[derive(Default)]
 struct Bounded {
     doc: Document,
-    max_depth: usize,
-    too_deep: Rc<Cell<bool>>,
+    too_deep: Cell<bool>,
+    /// Each template's contents, which dom_query keeps outside the tree, to its template.
+    templates: RefCell<HashMap<NodeId, NodeId>>,
+    merged_attrs: Cell<usize>,
 }
 
 impl Bounded {
-    /// Whether a child of `parent` is too deep. The walk up stops at the limit, so it
-    /// costs no more than that however deep the page tries to go.
-    fn check(&self, parent: &NodeId) {
-        if self.too_deep.get() {
-            return;
+    /// How many ancestors `node` has, up to `MAX_DEPTH`, counting through templates. The
+    /// walk stops at the limit, so it costs no more than that however deep the page goes.
+    fn ancestors(&self, node: &NodeId) -> usize {
+        let templates = self.templates.borrow();
+        let mut count = 0;
+        let mut top = *node;
+        while count < MAX_DEPTH {
+            for id in self
+                .doc
+                .tree
+                .ancestor_ids_of_it(&top, Some(MAX_DEPTH - count))
+            {
+                count += 1;
+                top = id;
+            }
+            match templates.get(&top) {
+                Some(template) if count < MAX_DEPTH => {
+                    count += 1;
+                    top = *template;
+                }
+                _ => break,
+            }
         }
-        let ancestors = self
-            .doc
-            .tree
-            .ancestor_ids_of_it(parent, Some(self.max_depth))
-            .count();
-        if ancestors + 1 >= self.max_depth {
+        count
+    }
+
+    /// Notes if a child of `parent` would be deeper than `MAX_DEPTH`.
+    fn check(&self, parent: &NodeId) {
+        if !self.too_deep.get() && self.ancestors(parent) >= MAX_DEPTH {
             self.too_deep.set(true);
         }
     }
 }
 
-/// Everything goes to the document; the four ways of attaching a node check the depth
-/// first. Moving children (`reparent_children`) can deepen nodes already there; the next
-/// node attached below them measures their true depth.
+/// Everything goes to the document; the three ways of attaching a node check the depth
+/// first. Moving nodes (`reparent_children`, or attaching one already in the tree) can
+/// deepen what is below them unseen: nodes still open are measured again when the next
+/// node is attached under them, and the finished tree is measured whole.
 impl TreeSink for Bounded {
     type Handle = NodeId;
-    type Output = Document;
+    type Output = Option<Document>;
     type ElemName<'a> = <Document as TreeSink>::ElemName<'a>;
 
-    fn finish(self) -> Document {
-        self.doc
+    fn finish(self) -> Option<Document> {
+        (!self.too_deep.get() && depth(&self.doc) <= MAX_DEPTH).then_some(self.doc)
     }
 
     fn parse_error(&self, msg: Cow<'static, str>) {
@@ -109,7 +149,13 @@ impl TreeSink for Bounded {
     }
 
     fn create_element(&self, name: QualName, attrs: Vec<Attribute>, flags: ElementFlags) -> NodeId {
-        self.doc.create_element(name, attrs, flags)
+        let template = flags.template;
+        let id = self.doc.create_element(name, attrs, flags);
+        if template {
+            let contents = self.doc.get_template_contents(&id);
+            self.templates.borrow_mut().insert(contents, id);
+        }
+        id
     }
 
     fn create_comment(&self, text: StrTendril) -> NodeId {
@@ -175,7 +221,11 @@ impl TreeSink for Bounded {
     }
 
     fn add_attrs_if_missing(&self, target: &NodeId, attrs: Vec<Attribute>) {
-        self.doc.add_attrs_if_missing(target, attrs);
+        let merged = self.merged_attrs.get() + attrs.len();
+        if merged <= MAX_MERGED_ATTRS {
+            self.merged_attrs.set(merged);
+            self.doc.add_attrs_if_missing(target, attrs);
+        }
     }
 
     fn associate_with_form(
@@ -192,7 +242,6 @@ impl TreeSink for Bounded {
     }
 
     fn reparent_children(&self, node: &NodeId, new_parent: &NodeId) {
-        self.check(new_parent);
         self.doc.reparent_children(node, new_parent);
     }
 
@@ -229,20 +278,23 @@ mod tests {
 
     use super::*;
 
-    const MAX: usize = MAX_DEPTH;
-
     #[test]
     fn a_normal_page_parses_as_dom_query_would() {
         let page = r#"<!doctype html><html><head><title>T</title><link rel="alternate" href="/f"></head>
             <body><article><h1>Hi</h1><p>One <b>two <i>three</b> four</i></p>
             <table><tr><td>cell</td></tr></table><svg><path/></svg><template><p>t</p></template>
             </article></body></html>"#;
-        let ours = parse(page, MAX).expect("shallow");
+        let ours = parse(page).expect("shallow");
         assert_eq!(ours.html(), Document::from(page).html());
+        let article = include_str!("../testdata/article.html");
+        assert_eq!(
+            parse(article).expect("shallow").html(),
+            Document::from(article).html()
+        );
         // Across chunk boundaries, with multibyte text, too.
         let long = format!("<p>{}</p>", "Smörgåsbord är gött. ".repeat(3000));
         assert_eq!(
-            parse(&long, MAX).unwrap().html(),
+            parse(&long).unwrap().html(),
             Document::from(long.as_str()).html()
         );
     }
@@ -281,7 +333,7 @@ mod tests {
         let budget = Duration::from_secs(if cfg!(debug_assertions) { 3 } else { 1 });
         for (name, page) in pages {
             let started = Instant::now();
-            assert!(parse(&page, MAX).is_none(), "{name} was parsed");
+            assert!(parse(&page).is_none(), "{name} was parsed");
             assert!(
                 started.elapsed() < budget,
                 "{name} took {:?}",
@@ -294,9 +346,46 @@ mod tests {
     fn the_limit_is_on_depth_not_on_size() {
         // Wide is fine: a million siblings are no deeper than one.
         let wide = format!("<ul>{}</ul>", "<li>x</li>".repeat(50_000));
-        assert!(parse(&wide, MAX).is_some());
-        let deep = |levels: usize| format!("{}{}", "<div>".repeat(levels), "</div>".repeat(levels));
-        assert!(parse(&deep(400), MAX).is_some());
-        assert!(parse(&deep(600), MAX).is_none());
+        assert!(parse(&wide).is_some());
+        // The document is at 0, `<html>` at 1 and `<body>` at 2, so the deepest div is at
+        // the limit.
+        let deep = |levels: usize| "<div>".repeat(levels);
+        let at_limit = parse(&deep(MAX_DEPTH - 2)).expect("at the limit");
+        assert_eq!(depth(&at_limit), MAX_DEPTH);
+        assert!(parse(&deep(MAX_DEPTH - 1)).is_none());
+    }
+
+    #[test]
+    fn template_contents_count_toward_the_depth() {
+        let deep = format!("<template>{}", "<div>".repeat(MAX_DEPTH));
+        assert!(parse(&deep).is_none());
+        assert!(parse(&"<template>".repeat(MAX_DEPTH)).is_none());
+        let shallow = parse("<template><p>t</p></template>").expect("shallow");
+        // Document, html, head, template, contents, p, text.
+        assert_eq!(depth(&shallow), 6);
+    }
+
+    #[test]
+    fn repeated_html_and_body_tags_are_merged_only_so_far() {
+        let page = format!(
+            "<html a=1><body b=1><html a=2 c=1>{}",
+            (0..100_000)
+                .map(|i| format!("<body x{i}>"))
+                .collect::<String>()
+        );
+        let started = Instant::now();
+        let doc = parse(&page).expect("shallow");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        // The first merges go in as they would; the rest are dropped.
+        let html = doc.select("html");
+        assert_eq!(html.attr("a").as_deref(), Some("1"));
+        assert_eq!(html.attr("c").as_deref(), Some("1"));
+        let body = doc.select("body");
+        assert!(body.has_attr("x0"));
+        assert!(!body.has_attr("x99999"));
     }
 }
