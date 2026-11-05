@@ -561,7 +561,14 @@ class Store {
       const ids = new Set(list.map((a) => a.id))
       const kept = this.visible.filter((a) => !ids.has(a.id) && keep(a))
       if (kept.length > 0) {
-        const local = (a: Article) => ({ ...a, read: this.read.has(a.id), starred: this.starred.has(a.id) })
+        // Absent from the fresh list, it is read (Unread view) or unstarred (Starred view)
+        // now, whatever the local state says.
+        const unread = selection.view === 'unread'
+        const local = (a: Article) => ({
+          ...a,
+          read: unread || this.read.has(a.id),
+          starred: unread && this.starred.has(a.id),
+        })
         list = [...list, ...kept.map(local)]
         list.sort((a, b) => b.published - a.published)
       }
