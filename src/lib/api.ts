@@ -103,12 +103,11 @@ export async function confirm(message: string, title: string, okLabel: string): 
   return ask(message, { title, kind: 'warning', okLabel, cancelLabel: 'Cancel' })
 }
 
-/** Opens an http(s) URL in the system browser, resolving a relative one against `base`.
- * Anything else is ignored. */
-export function openInBrowser(url: string, base?: string) {
+/** Opens an http(s) URL in the system browser. Anything else is ignored. */
+export function openInBrowser(url: string) {
   let parsed: URL
   try {
-    parsed = new URL(url.trim(), base || undefined)
+    parsed = new URL(url.trim())
   } catch {
     return
   }
