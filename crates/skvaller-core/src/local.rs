@@ -327,7 +327,7 @@ fn store(db: &Db, feed_id: &str, feed: &model::Feed, page: &Page, now: i64) -> R
                 .unwrap_or_default();
             let date = entry.published.or(entry.updated);
             let row = ArticleRow {
-                id: article_id(feed_id, &entry.id),
+                id: article_id(feed_id, &entry.id).to_string(),
                 feed_id: feed_id.to_owned(),
                 feed_title: String::new(),
                 title: entry.title.as_ref().map(text).unwrap_or_default(),

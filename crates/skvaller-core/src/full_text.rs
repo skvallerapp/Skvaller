@@ -29,7 +29,7 @@ pub(crate) const USER_AGENT: &str = concat!(
 /// The article's full text: from the cache, or else fetched from its web page and
 /// cached. `Ok(None)`: the page has nothing readable, or the article is gone. A page
 /// given up on is fetched again only with `retry`. `Err`: try again later.
-pub async fn load(db: &Db, id: i64, retry: bool) -> Result<Option<String>> {
+pub async fn load(db: &Db, id: &str, retry: bool) -> Result<Option<String>> {
     match db.full_text(id)? {
         Some(FullText::Html(html)) => return Ok(Some(html)),
         Some(FullText::Failed(attempts)) if attempts >= MAX_ATTEMPTS && !retry => {
@@ -66,7 +66,7 @@ pub async fn load(db: &Db, id: i64, retry: bool) -> Result<Option<String>> {
 /// offline. Pages that fail are skipped; only cache errors stop it.
 pub async fn prefetch(db: &Db) -> Result<()> {
     for id in db.full_text_wanted(PREFETCH_PAGES)? {
-        if let Err(e @ crate::Error::Db(_)) = load(db, id, false).await {
+        if let Err(e @ crate::Error::Db(_)) = load(db, &id, false).await {
             return Err(e);
         }
     }
@@ -351,7 +351,7 @@ mod tests {
 
     fn article(id: i64) -> ArticleRow {
         ArticleRow {
-            id,
+            id: id.to_string(),
             feed_id: "feed/1".into(),
             feed_title: String::new(),
             title: String::new(),
@@ -386,10 +386,10 @@ mod tests {
         let db = db_with_page(&format!("{}/post", server.uri()));
 
         for _ in 0..2 {
-            let html = load(&db, 1, false).await.unwrap().unwrap();
+            let html = load(&db, "1", false).await.unwrap().unwrap();
             assert!(html.contains("The scheduler picks the next task"));
         }
-        assert_eq!(load(&db, 2, false).await.unwrap(), None);
+        assert_eq!(load(&db, "2", false).await.unwrap(), None);
     }
 
     #[tokio::test]
@@ -403,10 +403,10 @@ mod tests {
         let db = db_with_page(&format!("{}/post", server.uri()));
 
         for _ in 0..MAX_ATTEMPTS {
-            assert!(load(&db, 1, false).await.is_err());
+            assert!(load(&db, "1", false).await.is_err());
         }
-        assert_eq!(load(&db, 1, false).await.unwrap(), None);
-        assert!(load(&db, 1, true).await.is_err());
+        assert_eq!(load(&db, "1", false).await.unwrap(), None);
+        assert!(load(&db, "1", true).await.is_err());
     }
 
     #[tokio::test]
@@ -419,9 +419,9 @@ mod tests {
             .await;
         let db = db_with_page(&format!("{}/post", server.uri()));
 
-        assert_eq!(load(&db, 1, false).await.unwrap(), None);
-        assert_eq!(load(&db, 1, false).await.unwrap(), None);
-        assert_eq!(load(&db, 1, true).await.unwrap(), None);
+        assert_eq!(load(&db, "1", false).await.unwrap(), None);
+        assert_eq!(load(&db, "1", false).await.unwrap(), None);
+        assert_eq!(load(&db, "1", true).await.unwrap(), None);
     }
 
     #[tokio::test]
@@ -442,7 +442,6 @@ mod tests {
                 .mount(&server)
                 .await;
             db.upsert_articles(&[ArticleRow {
-                id,
                 feed_id: feed_id.into(),
                 url: format!("{}{at}", server.uri()),
                 ..article(id)
@@ -454,8 +453,11 @@ mod tests {
         prefetch(&db).await.unwrap();
         prefetch(&db).await.unwrap();
 
-        assert!(matches!(db.full_text(1).unwrap(), Some(FullText::Html(_))));
-        assert_eq!(db.full_text(2).unwrap(), Some(FullText::Failed(2)));
-        assert_eq!(db.full_text(4).unwrap(), None);
+        assert!(matches!(
+            db.full_text("1").unwrap(),
+            Some(FullText::Html(_))
+        ));
+        assert_eq!(db.full_text("2").unwrap(), Some(FullText::Failed(2)));
+        assert_eq!(db.full_text("4").unwrap(), None);
     }
 }

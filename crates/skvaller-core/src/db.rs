@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::full_text::MAX_ATTEMPTS;
 use crate::{Error, Result, api};
 
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 
 /// Schema version 2. A new cache gets it plus the migrations after it, so each table
 /// is written down once.
@@ -103,6 +103,64 @@ CREATE TABLE seen (
 );
 ";
 
+/// Schema version 4 to 5: article IDs become text, for servers whose IDs don't fit in 64
+/// bits. 64-bit IDs keep their decimal form, so the rows carry over as they are. SQLite
+/// can't change a column's type, so the tables are copied; foreign keys are off
+/// meanwhile, or dropping `articles` would empty the tables that refer to it.
+const MIGRATE_4: &str = "
+CREATE TABLE articles_v5 (
+    id        TEXT PRIMARY KEY,
+    feed_id   TEXT NOT NULL REFERENCES feeds (id) ON DELETE CASCADE,
+    title     TEXT NOT NULL,
+    author    TEXT NOT NULL,
+    url       TEXT NOT NULL,
+    published INTEGER NOT NULL, -- Unix milliseconds
+    read      INTEGER NOT NULL,
+    starred   INTEGER NOT NULL,
+    summary   TEXT NOT NULL,    -- plain text, for the article list
+    html      TEXT NOT NULL     -- untrusted; last, so scans of the other columns skip it
+);
+INSERT INTO articles_v5
+    SELECT CAST(id AS TEXT), feed_id, title, author, url, published, read, starred, summary,
+           html
+    FROM articles;
+CREATE TABLE pending_v5 (
+    article_id TEXT NOT NULL REFERENCES articles (id) ON DELETE CASCADE,
+    flag       TEXT NOT NULL CHECK (flag IN ('read', 'starred')),
+    value      INTEGER NOT NULL,
+    PRIMARY KEY (article_id, flag)
+);
+INSERT INTO pending_v5 SELECT CAST(article_id AS TEXT), flag, value FROM pending;
+CREATE TABLE full_text_v5 (
+    article_id TEXT PRIMARY KEY REFERENCES articles (id) ON DELETE CASCADE,
+    html       TEXT,             -- untrusted; NULL until extracted
+    attempts   INTEGER NOT NULL  -- failed fetches; at full_text::MAX_ATTEMPTS, given up
+);
+INSERT INTO full_text_v5 SELECT CAST(article_id AS TEXT), html, attempts FROM full_text;
+CREATE TABLE seen_v5 (
+    article_id TEXT PRIMARY KEY,
+    feed_id    TEXT NOT NULL REFERENCES feeds (id) ON DELETE CASCADE
+);
+INSERT INTO seen_v5 SELECT CAST(article_id AS TEXT), feed_id FROM seen;
+DROP TABLE pending;
+DROP TABLE full_text;
+DROP TABLE seen;
+DROP TABLE articles;
+ALTER TABLE articles_v5 RENAME TO articles;
+ALTER TABLE pending_v5 RENAME TO pending;
+ALTER TABLE full_text_v5 RENAME TO full_text;
+ALTER TABLE seen_v5 RENAME TO seen;
+CREATE INDEX articles_by_published ON articles (published DESC);
+CREATE INDEX articles_by_feed ON articles (feed_id, published DESC);
+CREATE INDEX articles_unread ON articles (published DESC) WHERE NOT read;
+CREATE INDEX articles_starred ON articles (published DESC) WHERE starred;
+CREATE TRIGGER full_text_follows_url AFTER UPDATE OF url ON articles
+WHEN old.url IS NOT new.url
+BEGIN
+    DELETE FROM full_text WHERE article_id = new.id;
+END;
+";
+
 /// Newest crawl time seen from the server, in Unix milliseconds.
 const NEWEST_CRAWL: &str = "newest_crawl";
 /// When the last sync finished, in Unix milliseconds.
@@ -150,7 +208,8 @@ pub(crate) struct FeedRow {
 }
 
 pub(crate) struct ArticleRow {
-    pub id: i64,
+    /// As [`api::parse_item_id`] makes it.
+    pub id: String,
     pub feed_id: String,
     /// Used only if the feed is not cached yet.
     pub feed_title: String,
@@ -212,7 +271,8 @@ pub(crate) struct NewFeed<'a> {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArticleSummary {
-    /// The item ID as a decimal string: it can exceed what a JavaScript number holds.
+    /// The item ID: decimal, or hex for IDs longer than 64 bits. Not a number, as it can
+    /// exceed what a JavaScript number holds.
     pub id: String,
     pub feed_id: String,
     pub title: String,
@@ -285,21 +345,24 @@ impl Db {
     }
 
     fn init(conn: Connection) -> Result<Self> {
-        conn.pragma_update(None, "foreign_keys", true)?;
         let version: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         let steps = match version {
-            0 => format!("{SCHEMA} {MIGRATE_2} {MIGRATE_3}"),
-            1 => format!("{MIGRATE_1} {MIGRATE_2} {MIGRATE_3}"),
-            2 => format!("{MIGRATE_2} {MIGRATE_3}"),
-            3 => MIGRATE_3.to_owned(),
+            0 => format!("{SCHEMA} {MIGRATE_2} {MIGRATE_3} {MIGRATE_4}"),
+            1 => format!("{MIGRATE_1} {MIGRATE_2} {MIGRATE_3} {MIGRATE_4}"),
+            2 => format!("{MIGRATE_2} {MIGRATE_3} {MIGRATE_4}"),
+            3 => format!("{MIGRATE_3} {MIGRATE_4}"),
+            4 => MIGRATE_4.to_owned(),
             SCHEMA_VERSION => String::new(),
             _ => return Err(Error::CacheTooNew),
         };
         if !steps.is_empty() {
+            // See MIGRATE_4. Bundled SQLite starts with them on.
+            conn.pragma_update(None, "foreign_keys", false)?;
             conn.execute_batch(&format!(
                 "BEGIN; {steps} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
             ))?;
         }
+        conn.pragma_update(None, "foreign_keys", true)?;
         Ok(Self {
             conn: Mutex::new(conn),
             reader: None,
@@ -364,7 +427,7 @@ impl Db {
         let params: Vec<&String> = param.into_iter().collect();
         let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
             Ok(ArticleSummary {
-                id: r.get::<_, i64>(0)?.to_string(),
+                id: r.get(0)?,
                 feed_id: r.get(1)?,
                 title: r.get(2)?,
                 author: r.get(3)?,
@@ -379,7 +442,7 @@ impl Db {
     }
 
     /// The article's untrusted HTML, if it is cached.
-    pub fn article_html(&self, id: i64) -> Result<Option<String>> {
+    pub fn article_html(&self, id: &str) -> Result<Option<String>> {
         Ok(self
             .read()
             .query_row("SELECT html FROM articles WHERE id = ?1", [id], |r| {
@@ -389,7 +452,7 @@ impl Db {
     }
 
     /// The article's web page URL, if the article is cached.
-    pub(crate) fn article_url(&self, id: i64) -> Result<Option<String>> {
+    pub(crate) fn article_url(&self, id: &str) -> Result<Option<String>> {
         Ok(self
             .read()
             .query_row("SELECT url FROM articles WHERE id = ?1", [id], |r| r.get(0))
@@ -398,7 +461,7 @@ impl Db {
 
     /// The article's Reader View text, or how often fetching it failed. `None` if it
     /// was never tried.
-    pub(crate) fn full_text(&self, id: i64) -> Result<Option<FullText>> {
+    pub(crate) fn full_text(&self, id: &str) -> Result<Option<FullText>> {
         Ok(self
             .read()
             .query_row(
@@ -415,7 +478,7 @@ impl Db {
     }
 
     /// Does nothing if the article left the cache meanwhile.
-    pub(crate) fn set_full_text(&self, id: i64, html: &str) -> Result<()> {
+    pub(crate) fn set_full_text(&self, id: &str, html: &str) -> Result<()> {
         self.lock().execute(
             "INSERT INTO full_text (article_id, html, attempts)
              SELECT id, ?2, 0 FROM articles WHERE id = ?1
@@ -427,7 +490,7 @@ impl Db {
 
     /// Counts a failed fetch. A `permanent` failure, such as a page with nothing
     /// readable, gives up at once.
-    pub(crate) fn full_text_failed(&self, id: i64, permanent: bool) -> Result<()> {
+    pub(crate) fn full_text_failed(&self, id: &str, permanent: bool) -> Result<()> {
         let attempts = if permanent { MAX_ATTEMPTS } else { 1 };
         self.lock().execute(
             "INSERT INTO full_text (article_id, html, attempts)
@@ -477,16 +540,16 @@ impl Db {
     }
 
     /// Marks articles read or unread locally, and queues the changes for the server.
-    pub fn set_read(&self, ids: &[i64], read: bool) -> Result<()> {
+    pub fn set_read(&self, ids: &[impl AsRef<str>], read: bool) -> Result<()> {
         self.set_flag(ids, Flag::Read, read)
     }
 
     /// Stars or unstars articles locally, and queues the changes for the server.
-    pub fn set_starred(&self, ids: &[i64], starred: bool) -> Result<()> {
+    pub fn set_starred(&self, ids: &[impl AsRef<str>], starred: bool) -> Result<()> {
         self.set_flag(ids, Flag::Starred, starred)
     }
 
-    fn set_flag(&self, ids: &[i64], flag: Flag, value: bool) -> Result<()> {
+    fn set_flag(&self, ids: &[impl AsRef<str>], flag: Flag, value: bool) -> Result<()> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         {
@@ -498,7 +561,8 @@ impl Db {
                 "INSERT INTO pending (article_id, flag, value) VALUES (?1, ?2, ?3)
                  ON CONFLICT DO UPDATE SET value = excluded.value",
             )?;
-            for &id in ids {
+            for id in ids {
+                let id = id.as_ref();
                 if update.execute(params![id, value])? > 0 {
                     queue.execute(params![id, col, value])?;
                 }
@@ -509,7 +573,7 @@ impl Db {
     }
 
     /// Queued changes, as `(article ID, flag, value)`.
-    pub(crate) fn pending(&self) -> Result<Vec<(i64, Flag, bool)>> {
+    pub(crate) fn pending(&self) -> Result<Vec<(String, Flag, bool)>> {
         let conn = self.lock();
         let mut stmt = conn.prepare("SELECT article_id, flag, value FROM pending")?;
         let rows = stmt.query_map([], |r| {
@@ -525,7 +589,12 @@ impl Db {
 
     /// Drops queued changes the server has accepted. A change the user made again in the
     /// meantime has a different value and stays queued.
-    pub(crate) fn clear_pending(&self, flag: Flag, value: bool, ids: &[i64]) -> Result<()> {
+    pub(crate) fn clear_pending(
+        &self,
+        flag: Flag,
+        value: bool,
+        ids: &[impl AsRef<str>],
+    ) -> Result<()> {
         self.lock().execute(
             "DELETE FROM pending WHERE flag = ?1 AND value = ?2
              AND article_id IN (SELECT value FROM json_each(?3))",
@@ -624,7 +693,7 @@ impl Db {
 
     /// Unread articles of Reader View feeds whose full text is not cached and not given
     /// up on, newest first.
-    pub(crate) fn full_text_wanted(&self, limit: usize) -> Result<Vec<i64>> {
+    pub(crate) fn full_text_wanted(&self, limit: usize) -> Result<Vec<String>> {
         let conn = self.read();
         let mut stmt = conn.prepare(
             "SELECT a.id FROM articles a JOIN feeds f ON f.id = a.feed_id
@@ -704,7 +773,7 @@ impl Db {
     }
 
     /// The IDs in `ids` that are not cached yet.
-    pub(crate) fn missing_ids(&self, ids: &[i64]) -> Result<Vec<i64>> {
+    pub(crate) fn missing_ids(&self, ids: &[impl AsRef<str>]) -> Result<Vec<String>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT DISTINCT value FROM json_each(?1)
@@ -717,7 +786,7 @@ impl Db {
     /// Sets `flag` on every cached article from the server's full list: for
     /// [`Flag::Read`], `ids` are the unread articles; for [`Flag::Starred`], the starred
     /// ones. Articles with a queued change for `flag` are left alone.
-    pub(crate) fn reconcile(&self, flag: Flag, ids: &[i64]) -> Result<usize> {
+    pub(crate) fn reconcile(&self, flag: Flag, ids: &[impl AsRef<str>]) -> Result<usize> {
         let col = flag.column();
         let target = match flag {
             Flag::Read => "id NOT IN (SELECT value FROM json_each(?1))",
@@ -851,7 +920,7 @@ impl Db {
                 ])?;
             }
         }
-        let ids: Vec<i64> = entries.iter().map(|(a, _)| a.id).collect();
+        let ids: Vec<&str> = entries.iter().map(|(a, _)| a.id.as_str()).collect();
         // An empty feed is more likely a glitch than every entry gone: forgetting them
         // would bring the pruned ones back as new.
         if !ids.is_empty() {
@@ -1014,8 +1083,9 @@ impl Db {
     }
 }
 
-fn json<T: serde::Serialize>(values: &[T]) -> String {
-    serde_json::to_string(values).expect("a slice of IDs serializes")
+fn json(values: &[impl AsRef<str>]) -> String {
+    let values: Vec<&str> = values.iter().map(AsRef::as_ref).collect();
+    serde_json::to_string(&values).expect("a slice of IDs serializes")
 }
 
 #[cfg(test)]
@@ -1058,7 +1128,7 @@ mod tests {
 
     fn article(id: i64, feed_id: &str, read: bool, starred: bool) -> ArticleRow {
         ArticleRow {
-            id,
+            id: id.to_string(),
             feed_id: feed_id.into(),
             feed_title: "Old feed".into(),
             title: format!("Article {id}"),
@@ -1076,7 +1146,7 @@ mod tests {
         db.with_conn(|c| {
             c.query_row(
                 "SELECT read, starred FROM articles WHERE id = ?1",
-                [id],
+                [id.to_string()],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap()
@@ -1104,12 +1174,18 @@ mod tests {
     #[test]
     fn local_change_is_queued() {
         let db = db_with_article();
-        db.set_read(&[1], true).unwrap();
-        db.set_starred(&[1], true).unwrap();
+        db.set_read(&["1"], true).unwrap();
+        db.set_starred(&["1"], true).unwrap();
         assert_eq!(flags(&db, 1), (true, true));
         let mut pending = db.pending().unwrap();
         pending.sort_by_key(|p| p.1.column());
-        assert_eq!(pending, [(1, Flag::Read, true), (1, Flag::Starred, true)]);
+        assert_eq!(
+            pending,
+            [
+                ("1".to_owned(), Flag::Read, true),
+                ("1".to_owned(), Flag::Starred, true)
+            ]
+        );
     }
 
     #[test]
@@ -1120,23 +1196,29 @@ mod tests {
             article(3, "feed/1", false, false),
         ])
         .unwrap();
-        db.set_read(&[1, 2, 3, 9], true).unwrap();
+        db.set_read(&["1", "2", "3", "9"], true).unwrap();
         let mut pending = db.pending().unwrap();
-        pending.sort_by_key(|p| p.0);
-        assert_eq!(pending, [(1, Flag::Read, true), (3, Flag::Read, true)]);
+        pending.sort_by_key(|p| p.0.clone());
+        assert_eq!(
+            pending,
+            [
+                ("1".to_owned(), Flag::Read, true),
+                ("3".to_owned(), Flag::Read, true)
+            ]
+        );
     }
 
     #[test]
     fn setting_the_current_value_queues_nothing() {
         let db = db_with_article();
-        db.set_read(&[1], false).unwrap();
+        db.set_read(&["1"], false).unwrap();
         assert!(db.pending().unwrap().is_empty());
     }
 
     #[test]
     fn server_update_does_not_overwrite_a_queued_change() {
         let db = db_with_article();
-        db.set_read(&[1], true).unwrap();
+        db.set_read(&["1"], true).unwrap();
         db.upsert_articles(&[article(1, "feed/1", false, true)])
             .unwrap();
         // Read keeps the queued local value; starred has no queued change and follows the server.
@@ -1148,25 +1230,25 @@ mod tests {
         let db = db_with_article();
         db.upsert_articles(&[article(2, "feed/1", false, false)])
             .unwrap();
-        db.set_read(&[1], true).unwrap();
+        db.set_read(&["1"], true).unwrap();
         // The server still lists both as unread, and article 2 as starred.
-        db.reconcile(Flag::Read, &[1, 2]).unwrap();
-        db.reconcile(Flag::Starred, &[2]).unwrap();
+        db.reconcile(Flag::Read, &["1", "2"]).unwrap();
+        db.reconcile(Flag::Starred, &["2"]).unwrap();
         assert_eq!(flags(&db, 1), (true, false));
         assert_eq!(flags(&db, 2), (false, true));
         // Neither is unread on the server any more.
-        db.reconcile(Flag::Read, &[]).unwrap();
+        db.reconcile(Flag::Read, &[] as &[&str]).unwrap();
         assert_eq!(flags(&db, 2), (true, true));
     }
 
     #[test]
     fn clear_pending_keeps_a_change_made_since() {
         let db = db_with_article();
-        db.set_read(&[1], true).unwrap();
-        db.set_read(&[1], false).unwrap();
-        db.clear_pending(Flag::Read, true, &[1]).unwrap();
-        assert_eq!(db.pending().unwrap(), [(1, Flag::Read, false)]);
-        db.clear_pending(Flag::Read, false, &[1]).unwrap();
+        db.set_read(&["1"], true).unwrap();
+        db.set_read(&["1"], false).unwrap();
+        db.clear_pending(Flag::Read, true, &["1"]).unwrap();
+        assert_eq!(db.pending().unwrap(), [("1".to_owned(), Flag::Read, false)]);
+        db.clear_pending(Flag::Read, false, &["1"]).unwrap();
         assert!(db.pending().unwrap().is_empty());
     }
 
@@ -1203,11 +1285,11 @@ mod tests {
             article(2, "feed/1", false, false),
         ])
         .unwrap();
-        db.set_read(&[2], true).unwrap();
+        db.set_read(&["2"], true).unwrap();
         db.replace_subscriptions(&[feed("feed/2", None)]).unwrap();
         assert_eq!(counts(&db), (0, 2, 2, 1));
         // Once the change is sent, the unstarred article goes.
-        db.clear_pending(Flag::Read, true, &[2]).unwrap();
+        db.clear_pending(Flag::Read, true, &["2"]).unwrap();
         db.replace_subscriptions(&[feed("feed/2", None)]).unwrap();
         assert_eq!(counts(&db), (0, 2, 1, 0));
     }
@@ -1220,7 +1302,7 @@ mod tests {
                 .unwrap(),
             1
         );
-        assert_eq!(db.missing_ids(&[1, 2, 2, 3]).unwrap(), [3]);
+        assert_eq!(db.missing_ids(&["1", "2", "2", "3"]).unwrap(), ["3"]);
         let old_feed = db.with_conn(|c| {
             c.query_row(
                 "SELECT title, subscribed FROM feeds WHERE id = 'feed/9'",
@@ -1250,7 +1332,7 @@ mod tests {
             1
         );
         // A server change to a flag with a queued change is not a change.
-        db.set_starred(&[1], true).unwrap();
+        db.set_starred(&["1"], true).unwrap();
         assert_eq!(
             db.upsert_articles(&[article(1, "feed/1", true, false)])
                 .unwrap(),
@@ -1280,10 +1362,10 @@ mod tests {
             article(50, "feed/1", true, false), // recent
         ])
         .unwrap();
-        db.set_read(&[4], false).unwrap();
-        db.set_read(&[4], true).unwrap();
+        db.set_read(&["4"], false).unwrap();
+        db.set_read(&["4"], true).unwrap();
         assert_eq!(db.prune(10_000).unwrap(), 1);
-        assert_eq!(db.missing_ids(&[1, 2, 3, 4, 50]).unwrap(), [3]);
+        assert_eq!(db.missing_ids(&["1", "2", "3", "4", "50"]).unwrap(), ["3"]);
     }
 
     #[test]
@@ -1301,9 +1383,9 @@ mod tests {
         assert!(!db.feeds().unwrap()[0].reader_view);
         db.upsert_articles(&[article(1, "feed/1", false, false)])
             .unwrap();
-        db.set_full_text(1, "<p>x</p>").unwrap();
+        db.set_full_text("1", "<p>x</p>").unwrap();
         assert_eq!(
-            db.full_text(1).unwrap(),
+            db.full_text("1").unwrap(),
             Some(FullText::Html("<p>x</p>".into()))
         );
     }
@@ -1316,19 +1398,19 @@ mod tests {
             ..article(3, "feed/1", true, false)
         };
         db.upsert_articles(&[at("https://example.com/a")]).unwrap();
-        assert_eq!(db.full_text(3).unwrap(), None);
-        db.full_text_failed(3, false).unwrap();
-        db.full_text_failed(3, false).unwrap();
-        assert_eq!(db.full_text(3).unwrap(), Some(FullText::Failed(2)));
-        db.full_text_failed(3, true).unwrap();
-        db.full_text_failed(3, false).unwrap();
+        assert_eq!(db.full_text("3").unwrap(), None);
+        db.full_text_failed("3", false).unwrap();
+        db.full_text_failed("3", false).unwrap();
+        assert_eq!(db.full_text("3").unwrap(), Some(FullText::Failed(2)));
+        db.full_text_failed("3", true).unwrap();
+        db.full_text_failed("3", false).unwrap();
         assert_eq!(
-            db.full_text(3).unwrap(),
+            db.full_text("3").unwrap(),
             Some(FullText::Failed(MAX_ATTEMPTS))
         );
-        db.set_full_text(3, "<p>full</p>").unwrap();
+        db.set_full_text("3", "<p>full</p>").unwrap();
         assert_eq!(
-            db.full_text(3).unwrap(),
+            db.full_text("3").unwrap(),
             Some(FullText::Html("<p>full</p>".into()))
         );
 
@@ -1338,17 +1420,17 @@ mod tests {
             ..at("https://example.com/a")
         }])
         .unwrap();
-        assert!(db.full_text(3).unwrap().is_some());
+        assert!(db.full_text("3").unwrap().is_some());
         db.upsert_articles(&[at("https://example.com/b")]).unwrap();
-        assert_eq!(db.full_text(3).unwrap(), None);
+        assert_eq!(db.full_text("3").unwrap(), None);
 
-        db.set_full_text(3, "<p>full</p>").unwrap();
+        db.set_full_text("3", "<p>full</p>").unwrap();
         db.prune(10_000).unwrap();
-        assert_eq!(db.full_text(3).unwrap(), None);
+        assert_eq!(db.full_text("3").unwrap(), None);
         // An article that left the cache gets no row.
-        db.set_full_text(3, "<p>full</p>").unwrap();
-        db.full_text_failed(3, true).unwrap();
-        assert_eq!(db.full_text(3).unwrap(), None);
+        db.set_full_text("3", "<p>full</p>").unwrap();
+        db.full_text_failed("3", true).unwrap();
+        assert_eq!(db.full_text("3").unwrap(), None);
     }
 
     #[test]
@@ -1370,9 +1452,9 @@ mod tests {
             with_url(7, "feed/1", false),       // given up on
         ])
         .unwrap();
-        db.set_full_text(2, "<p>x</p>").unwrap();
-        db.full_text_failed(6, false).unwrap();
-        db.full_text_failed(7, true).unwrap();
+        db.set_full_text("2", "<p>x</p>").unwrap();
+        db.full_text_failed("6", false).unwrap();
+        db.full_text_failed("7", true).unwrap();
         assert!(db.full_text_wanted(10).unwrap().is_empty());
 
         db.set_feed_reader_view("feed/1", true).unwrap();
@@ -1381,8 +1463,8 @@ mod tests {
             .unwrap();
         assert!(db.feeds().unwrap()[0].reader_view);
 
-        assert_eq!(db.full_text_wanted(10).unwrap(), [6, 1]);
-        assert_eq!(db.full_text_wanted(1).unwrap(), [6]);
+        assert_eq!(db.full_text_wanted(10).unwrap(), ["6", "1"]);
+        assert_eq!(db.full_text_wanted(1).unwrap(), ["6"]);
     }
 
     fn ids(db: &Db, selection: Selection) -> Vec<String> {
@@ -1405,7 +1487,7 @@ mod tests {
             article(3, "feed/2", false, false),
         ])
         .unwrap();
-        db.set_read(&[3], true).unwrap();
+        db.set_read(&["3"], true).unwrap();
 
         let all = |view| Selection {
             view,
@@ -1435,8 +1517,8 @@ mod tests {
         assert_eq!(counts.unread_by_feed.get("feed/2"), None);
         assert_eq!(counts.starred_by_feed.get("feed/1"), None);
         assert_eq!(counts.starred_by_feed.get("feed/2"), Some(&1));
-        assert_eq!(db.article_html(1).unwrap(), Some(String::new()));
-        assert_eq!(db.article_html(9).unwrap(), None);
+        assert_eq!(db.article_html("1").unwrap(), Some(String::new()));
+        assert_eq!(db.article_html("9").unwrap(), None);
         assert_eq!(db.folders().unwrap().len(), 1);
         assert_eq!(db.feeds().unwrap().len(), 2);
 
@@ -1473,6 +1555,74 @@ mod tests {
         db.bump_newest_crawl(20).unwrap();
         db.bump_newest_crawl(10).unwrap();
         assert_eq!(db.newest_crawl().unwrap(), Some(20));
+    }
+
+    #[test]
+    fn version_4_cache_keeps_its_articles_with_text_ids() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "{SCHEMA} {MIGRATE_2} {MIGRATE_3}
+             INSERT INTO feeds (id, title, subscribed) VALUES ('feed/1', 'A', 1);
+             INSERT INTO articles VALUES
+                 (1730000000000001, 'feed/1', 'T', '', 'https://example.com/a', 5, 1, 0, '', ''),
+                 (-7, 'feed/1', 'U', '', '', 4, 0, 1, '', '');
+             INSERT INTO pending VALUES (1730000000000001, 'read', 1);
+             INSERT INTO full_text VALUES (1730000000000001, '<p>x</p>', 0);
+             INSERT INTO seen VALUES (-7, 'feed/1');
+             PRAGMA user_version = 4;"
+        ))
+        .unwrap();
+
+        let db = Db::init(conn).unwrap();
+
+        let all = Selection {
+            view: View::All,
+            scope: Scope::All,
+        };
+        assert_eq!(ids(&db, all), ["1730000000000001", "-7"]);
+        assert_eq!(
+            db.pending().unwrap(),
+            [("1730000000000001".to_owned(), Flag::Read, true)]
+        );
+        let (types, seen, broken, fks): (String, String, i64, bool) = db.with_conn(|c| {
+            c.query_row(
+                "SELECT (SELECT group_concat(DISTINCT typeof(id)) FROM articles),
+                        (SELECT article_id FROM seen),
+                        (SELECT count(*) FROM pragma_foreign_key_check),
+                        (SELECT foreign_keys FROM pragma_foreign_keys)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+        });
+        assert_eq!(
+            (types.as_str(), seen.as_str(), broken, fks),
+            ("text", "-7", 0, true)
+        );
+        assert!(db.full_text("1730000000000001").unwrap().is_some());
+        // The trigger and the cascades came along.
+        db.upsert_articles(&[ArticleRow {
+            url: "https://example.com/b".into(),
+            ..article(1730000000000001, "feed/1", true, false)
+        }])
+        .unwrap();
+        assert_eq!(db.full_text("1730000000000001").unwrap(), None);
+        db.unsubscribe("feed/1").unwrap();
+        assert_eq!(counts(&db), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn ids_longer_than_64_bits_are_kept() {
+        let db = db_with_article();
+        let hex = "5d0cfa30d1892a8d3f00002e";
+        db.upsert_articles(&[ArticleRow {
+            id: hex.into(),
+            ..article(2, "feed/1", false, false)
+        }])
+        .unwrap();
+        db.set_read(&[hex], true).unwrap();
+        assert_eq!(db.pending().unwrap(), [(hex.to_owned(), Flag::Read, true)]);
+        assert_eq!(db.missing_ids(&["1", hex, "abc"]).unwrap(), ["abc"]);
     }
 
     #[test]

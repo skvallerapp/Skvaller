@@ -550,9 +550,10 @@ pub async fn sign_in(
     username: String,
     password: String,
 ) -> CommandResult<Session> {
-    let server = server.trim().trim_end_matches('/').to_owned();
     let username = username.trim().to_owned();
-    let client = Client::login(&server, &username, &password).await?;
+    let client = Client::login(server.trim(), &username, &password).await?;
+    // The API URL that answered, which may have FreshRSS's path added.
+    let server = client.base().to_owned();
     let kind = AccountKind::Greader { server, username };
     let (key, token) = (
         kind.keychain_key()
@@ -829,10 +830,7 @@ pub async fn article_html(
     account_id: String,
     id: String,
 ) -> CommandResult<Option<String>> {
-    Ok(state
-        .runtime(&account_id)?
-        .db
-        .article_html(parse_id(&id)?)?)
+    Ok(state.runtime(&account_id)?.db.article_html(&id)?)
 }
 
 /// The article's Reader View text, extracted from its web page: cached, or else
@@ -846,7 +844,7 @@ pub async fn full_text(
     retry: bool,
 ) -> CommandResult<String> {
     let rt = state.runtime(&account_id)?;
-    load_full_text(&rt.db, parse_id(&id)?, retry)
+    load_full_text(&rt.db, &id, retry)
         .await?
         .ok_or_else(|| CommandError::other("the page has nothing to show in Reader View"))
 }
@@ -876,10 +874,7 @@ pub async fn set_read(
     ids: Vec<String>,
     read: bool,
 ) -> CommandResult<()> {
-    state
-        .runtime(&account_id)?
-        .db
-        .set_read(&parse_ids(&ids)?, read)?;
+    state.runtime(&account_id)?.db.set_read(&ids, read)?;
     update_badge(&app);
     Ok(())
 }
@@ -891,10 +886,7 @@ pub async fn set_starred(
     ids: Vec<String>,
     starred: bool,
 ) -> CommandResult<()> {
-    Ok(state
-        .runtime(&account_id)?
-        .db
-        .set_starred(&parse_ids(&ids)?, starred)?)
+    Ok(state.runtime(&account_id)?.db.set_starred(&ids, starred)?)
 }
 
 /// The account, if it is the local one: only its feeds and folders are managed here. A
@@ -1168,15 +1160,6 @@ pub fn show_settings_window(app: &AppHandle) -> tauri::Result<()> {
         .expect("tauri.conf.json defines the Settings window");
     WebviewWindowBuilder::from_config(app, config)?.build()?;
     Ok(())
-}
-
-fn parse_ids(ids: &[String]) -> CommandResult<Vec<i64>> {
-    ids.iter().map(|id| parse_id(id)).collect()
-}
-
-fn parse_id(id: &str) -> CommandResult<i64> {
-    id.parse()
-        .map_err(|_| CommandError::other(format!("bad article ID {id:?}")))
 }
 
 /// Starts every account's background sync.

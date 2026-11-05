@@ -1,5 +1,5 @@
-//! Google Reader API client. Tested against FreshRSS; the same calls work with Miniflux,
-//! Inoreader, BazQux and The Old Reader.
+//! Google Reader API client. It uses only the calls that FreshRSS, Miniflux and The Old
+//! Reader all have: Miniflux has no `stream/contents`, so articles come by ID.
 
 use std::time::Duration;
 
@@ -15,12 +15,13 @@ pub const READING_LIST: &str = "user/-/state/com.google/reading-list";
 pub const READ: &str = "user/-/state/com.google/read";
 pub const STARRED: &str = "user/-/state/com.google/starred";
 
-/// Full articles per `stream/contents` page.
-const CONTENTS_PAGE: &str = "1000";
-/// IDs per `stream/items/ids` page. IDs are small, so fewer and larger pages. FreshRSS
-/// drops one item at each page boundary when the boundary item changed between requests,
-/// so fewer boundaries also means fewer wrong results.
+/// IDs per `stream/items/ids` page, the most Miniflux and The Old Reader allow. IDs are
+/// small, so fewer and larger pages. FreshRSS drops one item at each page boundary when
+/// the boundary item changed between requests, so fewer boundaries also means fewer
+/// wrong results.
 const IDS_PAGE: &str = "10000";
+/// FreshRSS's API path, tried when the address the user typed is not the API itself.
+const FRESHRSS_PATH: &str = "/api/greader.php";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Time without any data arriving. A large page may take longer than this in total.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -37,14 +38,37 @@ pub struct Client {
 }
 
 impl Client {
-    /// Signs in with `ClientLogin`. `base` is the API URL, such as
-    /// `https://rss.example.com/api/greader.php` for FreshRSS.
+    /// Signs in with `ClientLogin`. `base` is the API URL: the server's address for
+    /// Miniflux and The Old Reader, `https://rss.example.com/api/greader.php` for
+    /// FreshRSS. An address without FreshRSS's path is tried as typed, then with it.
+    /// [`Client::base`] tells which one answered.
     pub async fn login(base: &str, username: &str, password: &str) -> Result<Self> {
+        let base = base.trim_end_matches('/');
+        let mut result = Self::login_at(base, username, password).await;
+        if !base.ends_with(FRESHRSS_PATH) {
+            // Not the API, or a page that is not one: anything but an answer about the
+            // password or the network.
+            if let Err(Error::Protocol(_)) = result {
+                result =
+                    Self::login_at(&format!("{base}{FRESHRSS_PATH}"), username, password).await;
+            }
+        }
+        result
+    }
+
+    async fn login_at(base: &str, username: &str, password: &str) -> Result<Self> {
         let mut client = Self::new(base, "")?;
         let res = client
             .http
             .post(format!("{}/accounts/ClientLogin", client.base))
-            .form(&[("Email", username), ("Passwd", password)])
+            // The Old Reader documents the Google fields; the others ignore them.
+            .form(&[
+                ("client", "Skvaller"),
+                ("accountType", "HOSTED_OR_GOOGLE"),
+                ("service", "reader"),
+                ("Email", username),
+                ("Passwd", password),
+            ])
             .send()
             .await?;
         check(res.status())?;
@@ -86,6 +110,11 @@ impl Client {
         &self.token
     }
 
+    /// The API URL, without a trailing slash.
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
     pub(crate) async fn subscriptions(&self) -> Result<Vec<Subscription>> {
         #[derive(Deserialize)]
         struct List {
@@ -95,24 +124,15 @@ impl Client {
         Ok(list.subscriptions)
     }
 
-    /// One page of full articles from `stream`, crawled at or after `since` (Unix seconds).
-    pub(crate) async fn stream_contents(
+    /// Every item ID in `stream`, minus those in `exclude`, and only those newer than
+    /// `since` (Unix seconds) if given. Servers differ on what newer means: FreshRSS
+    /// compares the crawl time, Miniflux the publish date. Malformed IDs are skipped.
+    pub(crate) async fn item_ids(
         &self,
         stream: &str,
-        since: i64,
-        continuation: Option<&str>,
-    ) -> Result<StreamPage> {
-        let mut req = self
-            .get(&format!("stream/contents/{stream}"))
-            .query(&[("n", CONTENTS_PAGE), ("ot", &since.to_string())]);
-        if let Some(c) = continuation {
-            req = req.query(&[("c", c)]);
-        }
-        self.json(req).await
-    }
-
-    /// Every item ID in `stream`, minus those in `exclude`. Malformed IDs are skipped.
-    pub(crate) async fn item_ids(&self, stream: &str, exclude: Option<&str>) -> Result<Vec<i64>> {
+        exclude: Option<&str>,
+        since: Option<i64>,
+    ) -> Result<Vec<String>> {
         #[derive(Deserialize)]
         struct Page {
             #[serde(rename = "itemRefs", default)]
@@ -133,6 +153,9 @@ impl Client {
             if let Some(x) = exclude {
                 req = req.query(&[("xt", x)]);
             }
+            if let Some(t) = since {
+                req = req.query(&[("ot", t.to_string())]);
+            }
             if let Some(c) = &continuation {
                 req = req.query(&[("c", c)]);
             }
@@ -146,10 +169,15 @@ impl Client {
     }
 
     /// Full articles for the given IDs.
-    pub(crate) async fn items_contents(&self, ids: &[i64]) -> Result<Vec<Item>> {
-        let form: Vec<_> = ids.iter().map(|&id| ("i", long_item_id(id))).collect();
+    pub(crate) async fn items_contents(&self, ids: &[String]) -> Result<Vec<Item>> {
+        #[derive(Deserialize)]
+        struct Page {
+            #[serde(default)]
+            items: Vec<Item>,
+        }
+        let form: Vec<_> = ids.iter().map(|id| ("i", long_item_id(id))).collect();
         let req = self.post("stream/items/contents").form(&form);
-        let page: StreamPage = self.json(req).await?;
+        let page: Page = self.json(req).await?;
         Ok(page.items)
     }
 
@@ -164,11 +192,11 @@ impl Client {
     pub(crate) async fn edit_tag(
         &self,
         write_token: &str,
-        ids: &[i64],
+        ids: &[String],
         tag: &str,
         add: bool,
     ) -> Result<()> {
-        let mut form: Vec<_> = ids.iter().map(|&id| ("i", long_item_id(id))).collect();
+        let mut form: Vec<_> = ids.iter().map(|id| ("i", long_item_id(id))).collect();
         form.push((if add { "a" } else { "r" }, tag.to_owned()));
         form.push(("T", write_token.to_owned()));
         let res = self.post("edit-tag").form(&form).send().await?;
@@ -228,17 +256,49 @@ pub(crate) fn next_page(next: Option<String>, current: &Option<String>) -> Optio
     next.filter(|c| !c.is_empty() && Some(c) != current.as_ref())
 }
 
-/// Item IDs come as decimal (`"1730000000000001"`) or in the long hex form
-/// (`"tag:google.com,2005:reader/item/0006246b5f1e0001"`).
-pub(crate) fn parse_item_id(id: &str) -> Option<i64> {
+/// An item ID as the cache keeps it. Servers send IDs in a short and a long form, and a
+/// sync needs both to name the same item. 64-bit IDs (FreshRSS, Miniflux) come as decimal
+/// (`"1730000000000001"`) or as 16 hex digits in the long form
+/// (`"tag:google.com,2005:reader/item/0006246b5f1e0001"`), and are kept as signed
+/// decimal. Longer ones, such as The Old Reader's 24-digit ObjectIds, are hex in both
+/// forms, and are kept as lowercase hex. None of those is a valid decimal `i64`, so the
+/// two kinds can't be mixed up.
+pub(crate) fn parse_item_id(id: &str) -> Option<String> {
+    let id = id.trim();
     match id.strip_prefix(LONG_ID_PREFIX) {
-        Some(hex) => u64::from_str_radix(hex, 16).map(|v| v as i64).ok(),
-        None => id.parse().ok(),
+        Some(hex) if hex.len() == 16 => u64::from_str_radix(hex, 16)
+            .ok()
+            .map(|v| (v as i64).to_string()),
+        Some(hex) => hex_id(hex),
+        None => decimal_id(id).map(|v| v.to_string()).or_else(|| hex_id(id)),
     }
 }
 
-fn long_item_id(id: i64) -> String {
-    format!("{LONG_ID_PREFIX}{:016x}", id as u64)
+/// Decimal only if it reads back the same, so `"0012"` is hex. Unsigned 64-bit IDs
+/// wrap, as in the long form.
+fn decimal_id(id: &str) -> Option<i64> {
+    if let Ok(v) = id.parse::<i64>()
+        && v.to_string() == id
+    {
+        return Some(v);
+    }
+    id.parse::<u64>()
+        .ok()
+        .filter(|v| v.to_string() == id)
+        .map(|v| v as i64)
+}
+
+fn hex_id(hex: &str) -> Option<String> {
+    (!hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| hex.to_ascii_lowercase())
+}
+
+/// The long form of an ID from [`parse_item_id`].
+fn long_item_id(id: &str) -> String {
+    match id.parse::<i64>() {
+        Ok(v) => format!("{LONG_ID_PREFIX}{:016x}", v as u64),
+        Err(_) => format!("{LONG_ID_PREFIX}{id}"),
+    }
 }
 
 #[derive(Deserialize)]
@@ -267,17 +327,14 @@ pub(crate) struct Category {
 }
 
 #[derive(Deserialize)]
-pub(crate) struct StreamPage {
-    #[serde(default)]
-    pub items: Vec<Item>,
-    pub continuation: Option<String>,
-}
-
-#[derive(Deserialize)]
 pub(crate) struct Item {
     pub id: String,
     #[serde(rename = "crawlTimeMsec")]
     pub crawl_time_msec: Option<String>,
+    /// When the server got the item, in microseconds. For servers that don't send
+    /// `crawlTimeMsec`.
+    #[serde(rename = "timestampUsec")]
+    pub timestamp_usec: Option<String>,
     /// Unix seconds.
     #[serde(default)]
     pub published: i64,
@@ -312,6 +369,15 @@ pub(crate) struct Origin {
 }
 
 impl Item {
+    /// When the server got the item, in Unix milliseconds.
+    pub fn crawl_time(&self) -> Option<i64> {
+        let ms = self.crawl_time_msec.as_deref().and_then(|t| t.parse().ok());
+        ms.or_else(|| {
+            let us: i64 = self.timestamp_usec.as_deref()?.parse().ok()?;
+            Some(us / 1000)
+        })
+    }
+
     /// Servers write states as `user/-/state/...` or `user/<id>/state/...`.
     pub fn has_state(&self, state: &str) -> bool {
         let suffix = state.trim_start_matches("user/-");
@@ -325,18 +391,56 @@ impl Item {
 mod tests {
     use super::*;
 
+    fn parsed(id: &str) -> Option<String> {
+        parse_item_id(id)
+    }
+
     #[test]
-    fn parses_both_item_id_forms() {
-        assert_eq!(parse_item_id("1730000000000001"), Some(1730000000000001));
+    fn parses_both_64_bit_item_id_forms() {
+        assert_eq!(parsed("1730000000000001"), Some("1730000000000001".into()));
         assert_eq!(
-            parse_item_id(&long_item_id(1730000000000001)),
-            Some(1730000000000001)
+            parsed("tag:google.com,2005:reader/item/0006256d03762001"),
+            Some("1730000000000001".into())
         );
         assert_eq!(
-            parse_item_id("tag:google.com,2005:reader/item/ffffffffffffffff"),
-            Some(-1)
+            long_item_id("1730000000000001"),
+            "tag:google.com,2005:reader/item/0006256d03762001"
         );
-        assert_eq!(parse_item_id("nope"), None);
+        assert_eq!(
+            parsed("tag:google.com,2005:reader/item/ffffffffffffffff"),
+            Some("-1".into())
+        );
+        assert_eq!(parsed("18446744073709551615"), Some("-1".into()));
+        assert_eq!(parsed("-1"), Some("-1".into()));
+        assert_eq!(
+            long_item_id("-1"),
+            "tag:google.com,2005:reader/item/ffffffffffffffff"
+        );
+        assert_eq!(parsed("nope"), None);
+        assert_eq!(parsed(""), None);
+    }
+
+    #[test]
+    fn keeps_longer_item_ids_as_hex() {
+        let long = "tag:google.com,2005:reader/item/5D0CFA30D1892A8D3F00002E";
+        assert_eq!(parsed(long), Some("5d0cfa30d1892a8d3f00002e".into()));
+        assert_eq!(
+            parsed("5d0cfa30d1892a8d3f00002e"),
+            Some("5d0cfa30d1892a8d3f00002e".into())
+        );
+        // All digits, but too long for 64 bits: still hex, as in the long form.
+        assert_eq!(
+            parsed("001234567890123456789012"),
+            Some("001234567890123456789012".into())
+        );
+        assert_eq!(
+            long_item_id("001234567890123456789012"),
+            "tag:google.com,2005:reader/item/001234567890123456789012"
+        );
+        assert_eq!(
+            long_item_id("5d0cfa30d1892a8d3f00002e"),
+            "tag:google.com,2005:reader/item/5d0cfa30d1892a8d3f00002e"
+        );
     }
 
     #[test]

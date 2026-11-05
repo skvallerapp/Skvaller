@@ -14,8 +14,7 @@
   import { slideHighlight } from './lib/highlight.svelte'
   import { dragRegion, macWindow } from './lib/platform'
   import ShortcutList from './lib/ShortcutList.svelte'
-  import LocalOption from './lib/LocalOption.svelte'
-  import SignIn from './lib/SignIn.svelte'
+  import AddAccount from './lib/AddAccount.svelte'
   import { styleRoot } from './lib/theme'
   import type { Account, AccountChange, Feed, Font, Session, Settings, SyncSchedule, Theme } from './lib/types'
 
@@ -575,11 +574,11 @@
           />
         {:else if pane === 'add-account'}
           <section>
-            <SignIn embedded submit={addAccount}>
-              {#if !accounts.some((a) => a.kind === 'local')}
-                <LocalOption add={addLocalAccount} label="Add Feeds on This Device" />
-              {/if}
-            </SignIn>
+            <AddAccount
+              embedded
+              submit={addAccount}
+              addLocal={accounts.some((a) => a.kind === 'local') ? null : addLocalAccount}
+            />
           </section>
         {:else if account && subpage === 'reader-view'}
           {@const a = account}
