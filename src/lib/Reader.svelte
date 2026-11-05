@@ -38,6 +38,9 @@
     article h3 { font-size: 1.2em; }
     article :is(h4, h5, h6) { font-size: 1em; }
     a { color: var(--link); text-decoration: none; }
+    /* The headline and feed name link to the article and the site, and look like text. */
+    header a { color: inherit; }
+    header a:hover { text-decoration: underline; }
     blockquote { margin: 1.4em 0; padding-left: 1em; border-left: 3px solid var(--rule); color: var(--text-2); }
     img, video { max-width: 100%; height: auto; }
     pre { overflow-x: auto; }
@@ -70,15 +73,20 @@
     root.style.setProperty('--headline-font', frameRoot.headlineFont)
   }
 
+  /** Escaped text, as a link when there is a URL. `onLinkClick` opens it in the browser. */
+  function linked(text: string, url: string | null | undefined) {
+    return url ? `<a href="${escapeHtml(url)}">${escapeHtml(text)}</a>` : escapeHtml(text)
+  }
+
   const srcdoc = $derived.by(() => {
     if (!article) return ''
-    const feed = store.feed(article.feedId)?.title ?? ''
+    const feed = store.feed(article.feedId)
     const root = untrack(() => frameRoot)
     return `<!doctype html><html data-theme="${root.theme}" data-motion="${root.motion}" style="--article-font: ${root.articleFont}; --headline-font: ${root.headlineFont}"><head><meta charset="utf-8"><style>${frameCss}</style></head><body><article>
       <header>
         <div class="date">${escapeHtml(formatFull(article.published))}</div>
-        <h1>${escapeHtml(article.title)}</h1>
-        <div class="source">${escapeHtml(article.author)}<br>${escapeHtml(feed)}</div>
+        <h1>${linked(article.title, article.url)}</h1>
+        <div class="source">${escapeHtml(article.author)}<br>${linked(feed?.title ?? '', feed?.siteUrl)}</div>
       </header>
       ${readyArticle((showFullText ? store.fullText : store.html) ?? '')}
     </article></body></html>`
