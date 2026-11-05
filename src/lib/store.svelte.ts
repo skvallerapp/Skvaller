@@ -240,7 +240,7 @@ class Store {
     // Stepping on before then, as with j and k, leaves it unread.
     else if (this.settings.markReadOn === 'delay')
       this.#markReadTimer = setTimeout(() => {
-        if (this.articleId === id && !this.read.has(id)) this.toggleRead(id)
+        if (this.articleId === id && !this.read.has(id) && this.settings.markReadOn === 'delay') this.toggleRead(id)
       }, MARK_READ_DELAY)
   }
 
@@ -498,7 +498,11 @@ class Store {
     // After a sync, the Unread view keeps what was read since it opened (FR-7a), and the
     // Starred view what was unstarred.
     else if (this.signedIn && !status.syncing && !status.error)
-      this.#reload((a) => (this.view === 'unread' ? this.read.has(a.id) : !this.starred.has(a.id))).catch((e) =>
+      this.#reload(
+        (a) =>
+          // The open article stays too: unread, it may not be marked yet.
+          a.id === this.articleId || (this.view === 'unread' ? this.read.has(a.id) : !this.starred.has(a.id)),
+      ).catch((e) =>
         console.error('Reloading after a sync failed', e),
       )
   }
@@ -509,8 +513,9 @@ class Store {
 
   async #loadLibrary() {
     const session = this.#session
-    await this.#writes
+    // Before waiting: a change queued during the wait outdates this load too.
     const writes = this.#writeCount
+    await this.#writes
     const lib = await api.library(this.#account())
     // A change made meanwhile isn't in these counts; its own reload brings them.
     if (session !== this.#session || writes !== this.#writeCount) return
