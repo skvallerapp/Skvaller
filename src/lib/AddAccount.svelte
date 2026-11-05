@@ -16,7 +16,9 @@
     /** Adds the local account; none if there is one already. */
     addLocal?: (() => Promise<void>) | null
     /** An account to sign in to again: its form, without the list. */
-    account?: { server: string; username: string } | null
+    account?: { server: string; username: string; description: string } | null
+    /** Why the account is signed out, or why the last attempt failed: over the list, or
+     * in the form of the account to sign in to again. */
     initialError?: string | null
     /** In the Settings window, instead of the whole main window. */
     embedded?: boolean
@@ -51,7 +53,13 @@
 </script>
 
 {#snippet row(service: Service)}
-  <button type="button" class="service" data-service={service.id} onclick={() => (chosen = service)}>
+  <button
+    type="button"
+    class="service"
+    data-service={service.id}
+    disabled={addingLocal}
+    onclick={() => (chosen = service)}
+  >
     <ServiceLogo {service} />
     <span class="text"><strong>{service.name}</strong><small>{service.detail}</small></span>
     <ChevronRight size={16} class="chevron" />
@@ -68,10 +76,10 @@
     {#if account}
       <SignIn service={serviceFor(account.server)} {submit} {account} {initialError} {embedded} />
     {:else if chosen}
-      <SignIn service={chosen} {submit} {initialError} {embedded} {back} />
+      <SignIn service={chosen} {submit} {embedded} {back} />
     {:else}
       {#if !embedded}
-        <h1>Add an Account</h1>
+        <h1>Add Account</h1>
         <p class="intro">
           Skvaller syncs with a service that speaks the Google Reader API, or fetches your feeds itself.
         </p>
@@ -90,7 +98,7 @@
           <section>
             <h2 class="heading">Without an Account</h2>
             <button type="button" class="service" disabled={addingLocal} onclick={local}>
-              <Laptop size={28} strokeWidth={1.75} aria-hidden="true" />
+              <Laptop size={27} aria-hidden="true" />
               <span class="text">
                 <strong>{addingLocal ? 'Adding…' : 'On This Device'}</strong>
                 <small>Skvaller fetches your feeds itself</small>
@@ -168,12 +176,13 @@
     gap: 2px;
   }
 
+  /* As the Settings window's group headings, lined up with the names. */
   .heading {
     margin: 0 0 4px;
     padding-left: 54px;
     font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
+    font-weight: 600;
+    letter-spacing: 0.03em;
     text-transform: uppercase;
     color: var(--text-3);
   }

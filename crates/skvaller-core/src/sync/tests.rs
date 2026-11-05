@@ -239,6 +239,46 @@ async fn login_rejected_at_the_address_as_typed_tries_nothing_else() {
 }
 
 #[tokio::test]
+async fn login_failing_at_the_address_as_typed_says_why() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/accounts/ClientLogin"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("{API}/accounts/ClientLogin")))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let err = Client::login(&server.uri(), "carl", "pw").await;
+    assert!(matches!(err, Err(Error::Protocol(m)) if m.contains("503")));
+}
+
+#[tokio::test]
+async fn login_without_an_api_at_either_address_says_so() {
+    let server = MockServer::start().await;
+    let err = Client::login(&server.uri(), "carl", "pw").await;
+    assert!(matches!(err, Err(Error::Protocol(m)) if m == "no Google Reader API at this address"));
+}
+
+#[tokio::test]
+async fn login_names_where_the_server_redirects() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(301).insert_header("location", "https://rss.example.com/"),
+        )
+        .mount(&server)
+        .await;
+    let err = Client::login(&server.uri(), "carl", "pw").await;
+    assert!(
+        matches!(err, Err(Error::Protocol(m)) if m.ends_with("it redirects to https://rss.example.com/"))
+    );
+}
+
+#[tokio::test]
 async fn revoked_token_is_unauthorized() {
     let fake = Fake::new().await;
     fake.mount(Mock::given(method("GET")).respond_with(ResponseTemplate::new(401)))
@@ -828,12 +868,12 @@ async fn ids_longer_than_64_bits_sync_both_ways() {
         .unwrap();
 
     assert_eq!(report.fetched, 2);
-    assert_eq!(fake.flags(a), Some((false, false)));
-    assert_eq!(fake.flags(b), Some((true, false)));
+    assert_eq!(fake.flags(format!("x{a}")), Some((false, false)));
+    assert_eq!(fake.flags(format!("x{b}")), Some((true, false)));
     // From timestampUsec.
     assert_eq!(fake.db.newest_crawl().unwrap(), Some(crawl * 1000));
 
-    fake.db.set_read(&[a], true).unwrap();
+    fake.db.set_read(&[format!("x{a}")], true).unwrap();
     fake.mount(
         fake.get("stream/items/ids")
             .and(query_param("ot", (crawl - CRAWL_OVERLAP).to_string()))

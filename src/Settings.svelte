@@ -86,6 +86,7 @@
 
   /** A page inside the account's pane: its feeds' Reader View settings. */
   let subpage = $state<'reader-view' | null>(null)
+  let addAccountVisits = $state(0)
   /** The account's subscribed feeds, for the Reader View page. */
   let feeds = $state.raw<Feed[] | null>(null)
   let feedsFor = ''
@@ -149,6 +150,8 @@
   }
 
   function show(p: Pane) {
+    // Add Account again: back to the list from a service's form.
+    if (p === 'add-account') addAccountVisits++
     confirmingRemove = false
     subpage = null
     opmlNote = null
@@ -574,11 +577,13 @@
           />
         {:else if pane === 'add-account'}
           <section>
-            <AddAccount
-              embedded
-              submit={addAccount}
-              addLocal={accounts.some((a) => a.kind === 'local') ? null : addLocalAccount}
-            />
+            {#key addAccountVisits}
+              <AddAccount
+                embedded
+                submit={addAccount}
+                addLocal={accounts.some((a) => a.kind === 'local') ? null : addLocalAccount}
+              />
+            {/key}
           </section>
         {:else if account && subpage === 'reader-view'}
           {@const a = account}

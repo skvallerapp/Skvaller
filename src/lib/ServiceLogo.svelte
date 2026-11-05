@@ -18,7 +18,7 @@
     style:mask-image={mask}
   ></span>
 {:else}
-  <Rss size={size * 0.85} strokeWidth={2.25} aria-hidden="true" />
+  <Rss size={size * 0.85} aria-hidden="true" />
 {/if}
 
 <style>
