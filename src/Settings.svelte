@@ -12,7 +12,7 @@
   import * as api from './lib/api'
   import { sentence } from './lib/format'
   import { slideHighlight } from './lib/highlight.svelte'
-  import { dragRegion, isWindows, macWindow } from './lib/platform'
+  import { dragRegion, macWindow } from './lib/platform'
   import ShortcutList from './lib/ShortcutList.svelte'
   import LocalOption from './lib/LocalOption.svelte'
   import SignIn from './lib/SignIn.svelte'
@@ -457,8 +457,7 @@
               </div>
             </div>
           </section>
-          {#if !isWindows}
-            <section>
+          <section>
               <h2>App Icon</h2>
               <div class="group">
                 <div class="row">
@@ -474,7 +473,6 @@
               </div>
               <p class="note">The unread articles of every account.</p>
             </section>
-          {/if}
           <section>
             <h2>Motion</h2>
             <div class="group">
