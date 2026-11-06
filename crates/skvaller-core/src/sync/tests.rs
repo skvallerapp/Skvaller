@@ -342,8 +342,9 @@ async fn first_sync_fetches_unread_starred_and_the_last_30_days() {
     assert_eq!(fake.flags(11), Some((false, false)));
     let stored = fake.db.with_conn(|c| {
         c.query_row(
-            "SELECT a.title, a.author, a.url, a.published, a.html, f.title, d.title
-             FROM articles a JOIN feeds f ON f.id = a.feed_id JOIN folders d ON d.id = f.folder_id
+            "SELECT a.title, a.author, a.url, a.published, h.html, f.title, d.title
+             FROM articles a JOIN article_html h ON h.article_id = a.id
+             JOIN feeds f ON f.id = a.feed_id JOIN folders d ON d.id = f.folder_id
              WHERE a.id = 10",
             [],
             |r| {

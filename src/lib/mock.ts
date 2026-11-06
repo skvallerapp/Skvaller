@@ -72,6 +72,8 @@ function dataOf(id: string): Data {
 
 // 5,000 articles for the first account, to test scrolling. Deterministic, so reloads
 // look the same.
+const LEAD = 'The opening paragraph of the article, a sentence or two long.'
+
 const makeArticles = (feeds: Feed[], count: number, idBase: number): Article[] =>
   Array.from({ length: count }, (_, i) => {
   const feed = feeds[i % feeds.length]
@@ -82,8 +84,6 @@ const makeArticles = (feeds: Feed[], count: number, idBase: number): Article[] =
     author: i % 3 === 0 ? '' : `Author ${i % 17}`,
     url: `https://example.com/${feed.id}/${i}`,
     published: now - i * 17 * 60_000,
-    summary:
-      'A plain-text preview of the article. It runs for a sentence or two so the list shows how summaries are clipped.',
     read: i % 5 !== 0,
     starred: i % 23 === 0,
   }
@@ -327,7 +327,7 @@ const commands: Record<string, (args: Args) => unknown> = {
   article_html: ({ id }) => {
     const a = active().articles.find((x) => x.id === id)
     return a
-      ? `<p>${a.summary}</p><h2>A subheading</h2><p>Mock article body for <a href="${a.url}">${a.title}</a>.</p>` +
+      ? `<p>${LEAD}</p><h2>A subheading</h2><p>Mock article body for <a href="${a.url}">${a.title}</a>.</p>` +
           '<blockquote>A quoted passage.</blockquote><pre><code>let x = 42;</code></pre>'
       : null
   },
@@ -338,7 +338,7 @@ const commands: Record<string, (args: Args) => unknown> = {
     const a = articles.find((x) => x.id === id)
     if (!a || a.feedId === 'xkcd') throw { kind: 'other', message: 'Nothing to show in Reader View' }
     return (
-      `<p>${a.summary}</p><p>This is the <strong>Reader View</strong> of the article: the full text ` +
+      `<p>${LEAD}</p><p>This is the <strong>Reader View</strong> of the article: the full text ` +
       'extracted from its web page, with more paragraphs than the feed sent.</p>' +
       '<h2>The rest of the story</h2><p>Second paragraph of the full article.</p>' +
       '<p>Third paragraph, with a <a href="https://example.com/more">link</a>.</p>'

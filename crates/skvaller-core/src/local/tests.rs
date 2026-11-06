@@ -70,7 +70,6 @@ async fn subscribing_adds_the_feed_with_its_entries_unread() {
     assert!(articles.iter().all(|a| !a.read && !a.starred));
     assert_eq!(articles[0].title, "Second");
     assert_eq!(articles[1].url, format!("{}/posts/1", server.uri()));
-    assert_eq!(articles[1].summary, "Hello there");
     assert_eq!(articles[1].id, article_id(&id, "a1").to_string());
 
     // Again: the same feed, in the folder it has.
