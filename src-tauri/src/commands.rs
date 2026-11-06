@@ -19,6 +19,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, WebviewWindowBuil
 use tauri_plugin_dialog::{DialogExt, FilePath};
 use tokio::sync::Notify;
 use tokio::time::{Instant, sleep_until};
+use tracing::Level;
 
 use crate::config::{
     Account, AccountKind, Config, DEFAULT_KEEP_UNREAD_DAYS, FIRST_ACCOUNT_ID, Settings,
@@ -48,6 +49,9 @@ pub struct AppState {
     runtimes: Mutex<HashMap<String, Arc<Runtime>>>,
     /// Accounts whose cache didn't open.
     broken: Mutex<HashMap<String, BrokenCache>>,
+    /// What the user is told about a config.json that couldn't be read, once the main
+    /// window is open.
+    config_notice: Option<ConfigNotice>,
     /// The pane the Settings window shows when it opens next.
     settings_pane: Mutex<Option<String>>,
     /// Counts config changes, so a window can tell an older session from a newer one
@@ -179,12 +183,24 @@ fn remove_db_files(dir: &Path, id: &str) -> bool {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
-                eprintln!("Removing {} failed: {e}", file.display());
+                tracing::event!(
+                    name: "cache.remove.failure",
+                    Level::WARN,
+                    file.path = %file.display(),
+                    error.message = %e,
+                    "removing {{file.path}} failed: {{error.message}}",
+                );
                 removed = false;
             }
         }
     }
     removed
+}
+
+/// A dialog's title and message.
+pub struct ConfigNotice {
+    pub title: &'static str,
+    pub message: String,
 }
 
 /// Turns an I/O error into a message that says what failed, and on which path.
@@ -213,23 +229,38 @@ impl AppState {
         std::fs::create_dir_all(&config_dir).map_err(failed("Creating", &config_dir))?;
         let config_path = config_dir.join("config.json");
 
+        let mut notice = None;
         let mut config = match Config::load(&config_path) {
             Ok(config) => config,
-            Err(defaults) => {
+            Err(reason) => {
                 // Kept for the user to recover, before a save overwrites it. The caches
                 // stay as they are.
                 let backup = config_path.with_extension("json.bak");
-                eprintln!(
-                    "config.json can't be read; keeping it as {}",
-                    backup.display()
-                );
                 std::fs::copy(&config_path, &backup).map_err(|e| {
                     format!(
                         "Skvaller can't read {}, and keeping a copy of it failed: {e}",
                         config_path.display()
                     )
                 })?;
-                defaults
+                tracing::event!(
+                    name: "config.read.failure",
+                    Level::WARN,
+                    file.path = %config_path.display(),
+                    backup.path = %backup.display(),
+                    error.message = %reason,
+                    "reading {{file.path}} failed, so it was kept as {{backup.path}} and \
+                     the settings reset: {{error.message}}",
+                );
+                notice = Some(ConfigNotice {
+                    title: "Settings Reset",
+                    message: format!(
+                        "Skvaller couldn't read its settings file, so your accounts and \
+                         settings were reset, and you'll need to add your accounts again. \
+                         The old file is kept at {}.",
+                        backup.display()
+                    ),
+                });
+                Config::default()
             }
         };
         for account in &mut config.accounts {
@@ -283,18 +314,32 @@ impl AppState {
             .as_ref()
             .and_then(|r| r.get("accounts")?.as_array().map(Vec::len))
             .unwrap_or(0);
-        if listed > config.accounts.len() {
+        // Not after a reset: then every account was left out, and the file is kept.
+        if notice.is_none() && listed > config.accounts.len() {
             let backup = config_path.with_extension("json.bak");
-            eprintln!(
-                "Some accounts in config.json can't be read; keeping it as {}",
-                backup.display()
-            );
+            notice = Some(ConfigNotice {
+                title: "Accounts Left Out",
+                message: format!(
+                    "Skvaller couldn't read some accounts in its settings file, perhaps \
+                     because a newer version saved them, so it left them out. The old file \
+                     is kept at {}.",
+                    backup.display()
+                ),
+            });
             std::fs::copy(&config_path, &backup).map_err(|e| {
                 format!(
                     "Skvaller can't read some accounts in {}, and keeping a copy of it failed: {e}",
                     config_path.display()
                 )
             })?;
+            tracing::event!(
+                name: "config.accounts.read.failure",
+                Level::WARN,
+                file.path = %config_path.display(),
+                backup.path = %backup.display(),
+                "some accounts in {{file.path}} can't be read, so they were left out and \
+                 the file kept as {{backup.path}}",
+            );
         }
         if serde_json::to_value(&config).ok() != raw {
             config
@@ -311,7 +356,13 @@ impl AppState {
                     runtimes.insert(account.id.clone(), Arc::new(runtime));
                 }
                 Err(e) => {
-                    eprintln!("Opening the cache of account {} failed: {e}", account.id);
+                    tracing::event!(
+                        name: "cache.open.failure",
+                        Level::ERROR,
+                        account.id = %account.id,
+                        error.message = %e,
+                        "opening the cache of account {{account.id}} failed: {{error.message}}",
+                    );
                     broken.insert(account.id.clone(), BrokenCache::new(&e));
                 }
             }
@@ -322,9 +373,15 @@ impl AppState {
             config_path,
             runtimes: Mutex::new(runtimes),
             broken: Mutex::new(broken),
+            config_notice: notice,
             settings_pane: Mutex::new(None),
             revision: AtomicU64::new(0),
         })
+    }
+
+    /// Set when config.json, or some accounts in it, couldn't be read at startup.
+    pub fn config_notice(&self) -> Option<&ConfigNotice> {
+        self.config_notice.as_ref()
     }
 
     fn config(&self) -> Config {
@@ -411,7 +468,12 @@ pub fn update_badge(app: &AppHandle) {
         )
     }));
     if let Err(e) = shown {
-        eprintln!("Setting the unread badge failed: {e}");
+        tracing::event!(
+            name: "badge.set.failure",
+            Level::WARN,
+            error.message = %e,
+            "setting the unread badge failed: {{error.message}}",
+        );
     }
 }
 
@@ -603,7 +665,12 @@ async fn emit_session(app: &AppHandle) {
         Ok(session) => {
             let _ = app.emit(ACCOUNTS_EVENT, session);
         }
-        Err(e) => eprintln!("Reading the accounts failed: {}", e.message),
+        Err(e) => tracing::event!(
+            name: "session.read.failure",
+            Level::ERROR,
+            error.message = %e.message,
+            "reading the accounts failed: {{error.message}}",
+        ),
     }
 }
 
@@ -894,14 +961,24 @@ pub async fn remove_account(
     if let Some(key) = account.and_then(|a| a.kind.keychain_key())
         && let Err(e) = blocking(move || delete_token(&key)).await
     {
-        eprintln!(
-            "Removing an account: removing the token failed: {}",
-            e.message
+        tracing::event!(
+            name: "account.token.remove.failure",
+            Level::WARN,
+            error.message = %e.message,
+            "removing an account's token failed: {{error.message}}",
         );
     }
     update_badge(&app);
-    if !remove_db_files(&state.accounts_dir, &id) {
-        let _ = state.update_config(|config| config.removed.push(id.clone()));
+    if !remove_db_files(&state.accounts_dir, &id)
+        && let Err(e) = state.update_config(|config| config.removed.push(id.clone()))
+    {
+        tracing::event!(
+            name: "account.cache.remove.failure",
+            Level::WARN,
+            account.id = %id,
+            error.message = %e.message,
+            "the cache of removed account {{account.id}} stays on disk: {{error.message}}",
+        );
     }
 
     emit_session(&app).await;
@@ -1161,7 +1238,13 @@ fn back_up_feeds(state: &AppState, rt: &Runtime) {
                 .map_err(|e| e.to_string())
         });
     if let Err(e) = written {
-        eprintln!("Backing up the feeds of account {} failed: {e}", rt.id);
+        tracing::event!(
+            name: "feeds.backup.failure",
+            Level::WARN,
+            account.id = %rt.id,
+            error.message = %e,
+            "backing up the feeds of account {{account.id}} failed: {{error.message}}",
+        );
     }
 }
 
@@ -1228,7 +1311,13 @@ pub async fn rebuild_cache(
         && let Ok(xml) = std::fs::read_to_string(feeds_backup_path(dir, &account_id))
         && let Err(e) = read_opml(&rt.db, &xml)
     {
-        eprintln!("Restoring the feeds of account {account_id} failed: {e}");
+        tracing::event!(
+            name: "feeds.restore.failure",
+            Level::ERROR,
+            account.id = %account_id,
+            error.message = %e,
+            "restoring the feeds of account {{account.id}} failed: {{error.message}}",
+        );
     }
     lock(&state.broken).remove(&account_id);
     lock(&state.runtimes).insert(account_id, rt.clone());
@@ -1631,6 +1720,28 @@ async fn run_sync(app: &AppHandle, rt: &Arc<Runtime>) -> Ran {
     // its fresh status is the last a window gets.
     let work = async {
         let status = sync_once.await?;
+        // Once per error, not on every try while offline.
+        if let Some(error) = &status.error
+            && lock(&rt.last_error).as_ref() != Some(error)
+        {
+            if status.cache_broken {
+                tracing::event!(
+                    name: "sync.run.failure",
+                    Level::ERROR,
+                    account.id = %rt.id,
+                    error.message = %error,
+                    "syncing account {{account.id}} failed, its cache is damaged: {{error.message}}",
+                );
+            } else {
+                tracing::event!(
+                    name: "sync.run.failure",
+                    Level::WARN,
+                    account.id = %rt.id,
+                    error.message = %error,
+                    "syncing account {{account.id}} failed: {{error.message}}",
+                );
+            }
+        }
         *lock(&rt.last_error) = status.error.clone();
         let ran = match status.error {
             None => Ran::Synced,
@@ -1665,7 +1776,13 @@ async fn prefetch(rt: &Runtime) {
         return;
     }
     if let Outcome::Done(Err(e)) = rt.prefetch_gate.run(prefetch_full_text(&rt.db)).await {
-        eprintln!("Prefetching Reader View failed: {e}");
+        tracing::event!(
+            name: "full_text.prefetch.failure",
+            Level::WARN,
+            account.id = %rt.id,
+            error.message = %e,
+            "prefetching Reader View for account {{account.id}} failed: {{error.message}}",
+        );
     }
 }
 

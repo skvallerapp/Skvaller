@@ -6,8 +6,9 @@ pub enum Error {
     /// Not an `http` or `https` URL, or one with a username or password in it.
     #[error("the server address is not a valid http or https URL")]
     BadUrl,
+    /// Without the request's URL, which can hold a feed's token and is shown and logged.
     #[error("network error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
     /// The address has no feed, and no link to one.
     #[error("no feed found at this address")]
     NoFeed,
@@ -23,6 +24,12 @@ pub enum Error {
     Db(#[from] rusqlite::Error),
     #[error("keychain error: {0}")]
     Keychain(#[from] keyring::Error),
+}
+
+impl From<reqwest::Error> for Error {
+    fn from(e: reqwest::Error) -> Self {
+        Error::Http(e.without_url())
+    }
 }
 
 impl Error {
@@ -42,3 +49,19 @@ impl Error {
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[tokio::test]
+    async fn a_network_error_leaves_out_the_url() {
+        // Nothing listens on port 1, so the request fails before an answer.
+        let e = reqwest::get("http://127.0.0.1:1/feed?token=secret")
+            .await
+            .expect_err("nothing listens on port 1");
+        let message = Error::from(e).to_string();
+        assert!(message.starts_with("network error: "), "{message}");
+        assert!(!message.contains("secret"), "{message}");
+    }
+}

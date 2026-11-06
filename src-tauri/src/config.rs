@@ -352,32 +352,23 @@ fn migrate(value: &mut serde_json::Value) {
     object.insert("active".into(), serde_json::json!(FIRST_ACCOUNT_ID));
 }
 
-trait OkOrDefault {
-    fn ok_or_default(self) -> Result<Config, Config>;
-}
-
-impl OkOrDefault for Option<Config> {
-    fn ok_or_default(self) -> Result<Config, Config> {
-        self.ok_or_else(Config::default)
-    }
-}
-
 impl Config {
     /// A missing file gives the defaults. A file from before several accounts is
-    /// migrated. `Err` with the defaults: the file is there but can't be read, and must
+    /// migrated. `Err` with the reason: the file is there but can't be read, and must
     /// not be overwritten before it is kept somewhere.
-    pub fn load(path: &Path) -> Result<Self, Self> {
+    pub fn load(path: &Path) -> Result<Self, String> {
         match std::fs::read(path) {
-            Ok(bytes) => Self::parse(&bytes).ok_or_default(),
+            Ok(bytes) => Self::parse(&bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(_) => Err(Self::default()),
+            Err(e) => Err(e.to_string()),
         }
     }
 
-    fn parse(bytes: &[u8]) -> Option<Self> {
-        let mut value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    fn parse(bytes: &[u8]) -> Result<Self, String> {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
         migrate(&mut value);
-        let mut config: Self = serde_json::from_value(value).ok()?;
+        let mut config: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
         if !config
             .accounts
             .iter()
@@ -390,7 +381,7 @@ impl Config {
             .iter()
             .filter_map(|a| a.id.parse::<u64>().ok());
         config.next_id = config.next_id.max(past_ids.max().unwrap_or(0) + 1);
-        Some(config)
+        Ok(config)
     }
 
     pub fn account(&self, id: &str) -> Option<&Account> {
