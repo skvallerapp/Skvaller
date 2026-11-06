@@ -14,6 +14,7 @@ mod sync_gate;
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
 use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Manager, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
 
 const SETTINGS_MENU_ITEM: &str = "settings";
@@ -43,7 +44,8 @@ fn main() {
         )
         .plugin(tauri_plugin_dialog::init())
         .on_menu_event(|app, event| {
-            if event.id() == SETTINGS_MENU_ITEM {
+            // Not while the startup error shows: Settings' commands need the state.
+            if event.id() == SETTINGS_MENU_ITEM && app.try_state::<commands::AppState>().is_some() {
                 let _ = commands::show_settings_window(app);
             }
         })
@@ -57,13 +59,9 @@ fn main() {
             }
         })
         .setup(|app| {
-            let state = commands::AppState::load(app.handle())?;
-            app.set_theme(state.theme().native());
-            app.manage(state);
-            commands::start_background_sync(app.handle().clone());
-            create_main_window(app.handle())?;
-            // Needs the main window, so the badge shows before the first sync ends.
-            commands::update_badge(app.handle());
+            if let Err(e) = start(app.handle()) {
+                show_startup_error(app.handle(), &e.to_string());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -98,6 +96,34 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Skvaller");
+}
+
+/// Loads the state, starts the background sync and opens the main window.
+fn start(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let state = commands::AppState::load(app)?;
+    app.set_theme(state.theme().native());
+    app.manage(state);
+    // Before the sync, so a run that ends in the startup error doesn't sync first.
+    create_main_window(app).map_err(|e| format!("Opening the main window failed: {e}"))?;
+    commands::start_background_sync(app.clone());
+    // Needs the main window, so the badge shows before the first sync ends.
+    commands::update_badge(app);
+    Ok(())
+}
+
+/// Tells the user why Skvaller can't start, then quits when they close the dialog.
+///
+/// A setup error would only panic, and release builds on Windows have no console to
+/// show it in. The dialog can't block here: setup runs on the main thread, which has
+/// to be free to show it.
+fn show_startup_error(app: &AppHandle, error: &str) {
+    eprintln!("Starting failed: {error}");
+    let handle = app.clone();
+    app.dialog()
+        .message(error)
+        .title("Skvaller can't start")
+        .kind(MessageDialogKind::Error)
+        .show(move |_| handle.exit(1));
 }
 
 /// The main window, from tauri.conf.json. Article links ask for a new window (see

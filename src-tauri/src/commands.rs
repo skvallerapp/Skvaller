@@ -187,15 +187,30 @@ fn remove_db_files(dir: &Path, id: &str) -> bool {
     removed
 }
 
+/// Turns an I/O error into a message that says what failed, and on which path.
+fn failed<'a>(action: &'a str, path: &'a Path) -> impl FnOnce(std::io::Error) -> String + 'a {
+    move |e| format!("{action} {} failed: {e}", path.display())
+}
+
 impl AppState {
+    /// Reads config.json and opens each account's cache. Fails, with a message naming
+    /// the file, when a folder can't be found, made or read, config.json can't be
+    /// backed up or saved, or the old cache can't be moved. An unreadable config.json
+    /// falls back to defaults, but only once a copy of it is kept.
     pub fn load(app: &AppHandle) -> Result<Self, Box<dyn std::error::Error>> {
         // Local, not roaming, on Windows: a cache has no business following the user
         // between machines.
-        let data_dir = app.path().app_local_data_dir()?;
-        let config_dir = app.path().app_config_dir()?;
+        let data_dir = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|e| format!("Finding Skvaller's data folder failed: {e}"))?;
+        let config_dir = app
+            .path()
+            .app_config_dir()
+            .map_err(|e| format!("Finding Skvaller's settings folder failed: {e}"))?;
         let accounts_dir = data_dir.join("accounts");
-        std::fs::create_dir_all(&accounts_dir)?;
-        std::fs::create_dir_all(&config_dir)?;
+        std::fs::create_dir_all(&accounts_dir).map_err(failed("Creating", &accounts_dir))?;
+        std::fs::create_dir_all(&config_dir).map_err(failed("Creating", &config_dir))?;
         let config_path = config_dir.join("config.json");
 
         let mut config = match Config::load(&config_path) {
@@ -208,7 +223,12 @@ impl AppState {
                     "config.json can't be read; keeping it as {}",
                     backup.display()
                 );
-                std::fs::copy(&config_path, &backup)?;
+                std::fs::copy(&config_path, &backup).map_err(|e| {
+                    format!(
+                        "Skvaller can't read {}, and keeping a copy of it failed: {e}",
+                        config_path.display()
+                    )
+                })?;
                 defaults
             }
         };
@@ -226,7 +246,9 @@ impl AppState {
             let new = db_files(&db_path(&accounts_dir, FIRST_ACCOUNT_ID));
             for (from, to) in db_files(&old_cache).iter().zip(&new) {
                 if from.exists() {
-                    std::fs::rename(from, to)?;
+                    std::fs::rename(from, to).map_err(|e| {
+                        format!("Moving {} to {} failed: {e}", from.display(), to.display())
+                    })?;
                 }
             }
         }
@@ -238,14 +260,17 @@ impl AppState {
             .collect();
         // No new account takes the ID of a cache on disk, even one a lost config.json
         // knew of.
-        let on_disk_ids = std::fs::read_dir(&accounts_dir)?.flatten().filter_map(|e| {
-            e.file_name()
-                .to_str()?
-                .split('.')
-                .next()?
-                .parse::<u64>()
-                .ok()
-        });
+        let on_disk_ids = std::fs::read_dir(&accounts_dir)
+            .map_err(failed("Reading", &accounts_dir))?
+            .flatten()
+            .filter_map(|e| {
+                e.file_name()
+                    .to_str()?
+                    .split('.')
+                    .next()?
+                    .parse::<u64>()
+                    .ok()
+            });
         config.next_id = config.next_id.max(on_disk_ids.max().map_or(0, |n| n + 1));
         // Saved only when something changed, so a file that reads back the same is left
         // as it is.
@@ -264,10 +289,17 @@ impl AppState {
                 "Some accounts in config.json can't be read; keeping it as {}",
                 backup.display()
             );
-            std::fs::copy(&config_path, &backup)?;
+            std::fs::copy(&config_path, &backup).map_err(|e| {
+                format!(
+                    "Skvaller can't read some accounts in {}, and keeping a copy of it failed: {e}",
+                    config_path.display()
+                )
+            })?;
         }
         if serde_json::to_value(&config).ok() != raw {
-            config.save(&config_path)?;
+            config
+                .save(&config_path)
+                .map_err(failed("Saving", &config_path))?;
         }
 
         // A cache that doesn't open, such as one from a newer version, takes only its
