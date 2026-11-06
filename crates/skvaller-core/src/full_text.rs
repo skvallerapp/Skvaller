@@ -365,7 +365,6 @@ mod tests {
             published: id,
             read: false,
             starred: false,
-            summary: String::new(),
             html: String::new(),
         }
     }

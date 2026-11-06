@@ -14,7 +14,7 @@ use tokio::task::JoinSet;
 use crate::db::{ArticleRow, LocalFeed, NewFeed};
 use crate::full_text::{USER_AGENT, decode};
 use crate::html;
-use crate::sync::{DAY, SUMMARY_CHARS, fetch_icons};
+use crate::sync::{DAY, fetch_icons};
 use crate::text::plain_text;
 use crate::{Db, Error, Result, SyncReport};
 
@@ -341,7 +341,6 @@ fn store(db: &Db, feed_id: &str, feed: &model::Feed, page: &Page, now: i64) -> R
                 published: date.map_or(now * 1000, |d| d.timestamp_millis()),
                 read: false,
                 starred: false,
-                summary: plain_text(&html, SUMMARY_CHARS),
                 html,
             };
             (row, date.is_some())

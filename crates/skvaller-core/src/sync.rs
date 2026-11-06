@@ -11,7 +11,6 @@ use tokio::task::JoinSet;
 
 use crate::api::{Item, READ, READING_LIST, STARRED, Subscription, parse_item_id};
 use crate::db::{ArticleRow, FeedRow, Flag};
-use crate::text::plain_text;
 use crate::{Client, Db, Error, Result};
 
 pub(crate) const DAY: i64 = 24 * 60 * 60;
@@ -21,8 +20,6 @@ const CRAWL_OVERLAP: i64 = 60 * 60;
 /// How long read, unstarred articles stay cached unless the user changes the setting.
 /// The first sync fetches read articles from the same period (FR-5b, FR-5c).
 pub const DEFAULT_KEEP_READ_DAYS: u32 = 30;
-/// Length of the plain-text preview in the article list.
-pub(crate) const SUMMARY_CHARS: usize = 300;
 /// Item IDs per `edit-tag` or `stream/items/contents` request.
 const BATCH: usize = 250;
 /// Larger icons are skipped. Favicons are a few kilobytes.
@@ -262,7 +259,6 @@ fn store(db: &Db, items: Vec<Item>) -> Result<(usize, Option<i64>)> {
                     .next()
                     .map(|l| l.href)
                     .unwrap_or_default(),
-                summary: plain_text(&html, SUMMARY_CHARS),
                 html,
                 feed_title: item
                     .origin

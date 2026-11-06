@@ -5,74 +5,79 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use rusqlite::config::DbConfig;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::full_text::MAX_ATTEMPTS;
 use crate::{Error, Result, api};
 
-const SCHEMA_VERSION: i32 = 6;
+const SCHEMA_VERSION: i32 = 7;
 
-/// Schema version 2. A new cache gets it plus the migrations after it, so each table
-/// is written down once.
+/// The schema. A change to it bumps [`SCHEMA_VERSION`] and adds a migration to
+/// [`Db::init`].
 const SCHEMA: &str = "
 CREATE TABLE folders (
     id    TEXT PRIMARY KEY,
     title TEXT NOT NULL
 );
 CREATE TABLE feeds (
-    id         TEXT PRIMARY KEY,
-    title      TEXT NOT NULL,
-    folder_id  TEXT REFERENCES folders (id),
+    id            TEXT PRIMARY KEY,
+    title         TEXT NOT NULL,
+    folder_id     TEXT REFERENCES folders (id),
     -- 0: no longer subscribed, or never listed. Kept only for its starred articles.
-    subscribed INTEGER NOT NULL,
-    icon_url   TEXT, -- the favicon URL the server lists
-    icon_from  TEXT, -- the URL `icon` was fetched from; NULL until a fetch finishes
-    icon       TEXT  -- a data: URL; NULL if there is none or the fetch failed
+    subscribed    INTEGER NOT NULL,
+    icon_url      TEXT, -- the favicon URL the server lists
+    icon_from     TEXT, -- the URL `icon` was fetched from; NULL until a fetch finishes
+    icon          TEXT, -- a data: URL; NULL if there is none or the fetch failed
+    -- 1: open the feed's articles in Reader View. Local, not synced.
+    reader_view   INTEGER NOT NULL DEFAULT 0,
+    -- The feed's address and its web site's, as the server lists them or, in the local
+    -- account, where it is fetched from.
+    url           TEXT,
+    site_url      TEXT,
+    -- The local account's: how fetching went last time.
+    etag          TEXT,
+    last_modified TEXT,
+    fetch_error   TEXT  -- why the last fetch failed
 );
+CREATE INDEX feeds_by_url ON feeds (url);
+-- IDs are text, for servers whose IDs don't fit in 64 bits.
 CREATE TABLE articles (
-    id        INTEGER PRIMARY KEY,
+    id        TEXT PRIMARY KEY,
     feed_id   TEXT NOT NULL REFERENCES feeds (id) ON DELETE CASCADE,
     title     TEXT NOT NULL,
     author    TEXT NOT NULL,
     url       TEXT NOT NULL,
     published INTEGER NOT NULL, -- Unix milliseconds
     read      INTEGER NOT NULL,
-    starred   INTEGER NOT NULL,
-    summary   TEXT NOT NULL,    -- plain text, for the article list
-    html      TEXT NOT NULL     -- untrusted; last, so scans of the other columns skip it
+    starred   INTEGER NOT NULL
 );
-CREATE INDEX articles_by_published ON articles (published DESC);
-CREATE INDEX articles_by_feed ON articles (feed_id, published DESC);
-CREATE INDEX articles_unread ON articles (published DESC) WHERE NOT read;
-CREATE INDEX articles_starred ON articles (published DESC) WHERE starred;
+-- `id` breaks ties in every list's ORDER BY, so the indexes carry it and lists need no
+-- sort of their own.
+CREATE INDEX articles_by_published ON articles (published DESC, id DESC);
+CREATE INDEX articles_by_feed ON articles (feed_id, published DESC, id DESC);
+CREATE INDEX articles_unread ON articles (published DESC, id DESC) WHERE NOT read;
+CREATE INDEX articles_starred ON articles (published DESC, id DESC) WHERE starred;
+-- The sidebar's counts per feed, without reading the articles.
+CREATE INDEX articles_unread_by_feed ON articles (feed_id) WHERE NOT read;
+CREATE INDEX articles_starred_by_feed ON articles (feed_id) WHERE starred;
+-- Apart from `articles`: SQLite keeps up to about 4 KB of a row in the table's own
+-- pages, so HTML there would make every scan of the list read it.
+CREATE TABLE article_html (
+    article_id TEXT PRIMARY KEY REFERENCES articles (id) ON DELETE CASCADE,
+    html       TEXT NOT NULL -- untrusted
+);
 -- Local changes not yet sent. One row per article and flag, holding the latest value.
 CREATE TABLE pending (
-    article_id INTEGER NOT NULL REFERENCES articles (id) ON DELETE CASCADE,
+    article_id TEXT NOT NULL REFERENCES articles (id) ON DELETE CASCADE,
     flag       TEXT NOT NULL CHECK (flag IN ('read', 'starred')),
     value      INTEGER NOT NULL,
     PRIMARY KEY (article_id, flag)
 );
-CREATE TABLE meta (
-    key   TEXT PRIMARY KEY,
-    value NOT NULL
-);
-";
-
-/// Schema version 1 to 2: feed icons.
-const MIGRATE_1: &str = "
-ALTER TABLE feeds ADD COLUMN icon_url TEXT;
-ALTER TABLE feeds ADD COLUMN icon_from TEXT;
-ALTER TABLE feeds ADD COLUMN icon TEXT;
-";
-
-/// Schema version 2 to 3: Reader View.
-const MIGRATE_2: &str = "
--- 1: open the feed's articles in Reader View. Local, not synced.
-ALTER TABLE feeds ADD COLUMN reader_view INTEGER NOT NULL DEFAULT 0;
 -- Reader View: the article's full text, extracted from its web page.
 CREATE TABLE full_text (
-    article_id INTEGER PRIMARY KEY REFERENCES articles (id) ON DELETE CASCADE,
+    article_id TEXT PRIMARY KEY REFERENCES articles (id) ON DELETE CASCADE,
     html       TEXT,             -- untrusted; NULL until extracted
     attempts   INTEGER NOT NULL  -- failed fetches; at full_text::MAX_ATTEMPTS, given up
 );
@@ -82,95 +87,33 @@ WHEN old.url IS NOT new.url
 BEGIN
     DELETE FROM full_text WHERE article_id = new.id;
 END;
-";
-
-/// Schema version 3 to 4: the local account, whose feeds Skvaller fetches itself.
-const MIGRATE_3: &str = "
--- The feed's address and its web site's, as the server lists them or, in the local
--- account, where it is fetched from.
-ALTER TABLE feeds ADD COLUMN url TEXT;
-ALTER TABLE feeds ADD COLUMN site_url TEXT;
--- The local account's: how fetching went last time.
-ALTER TABLE feeds ADD COLUMN etag TEXT;
-ALTER TABLE feeds ADD COLUMN last_modified TEXT;
-ALTER TABLE feeds ADD COLUMN fetch_error TEXT; -- why the last fetch failed
-CREATE INDEX feeds_by_url ON feeds (url);
 -- The local account's entries the feed still lists. One pruned from `articles` stays
 -- here, so the next fetch doesn't bring it back as new.
 CREATE TABLE seen (
-    article_id INTEGER PRIMARY KEY,
-    feed_id    TEXT NOT NULL REFERENCES feeds (id) ON DELETE CASCADE
-);
-";
-
-/// Schema version 4 to 5: article IDs become text, for servers whose IDs don't fit in 64
-/// bits. 64-bit IDs keep their decimal form, so the rows carry over as they are. SQLite
-/// can't change a column's type, so the tables are copied; foreign keys are off
-/// meanwhile, or dropping `articles` would empty the tables that refer to it.
-const MIGRATE_4: &str = "
-CREATE TABLE articles_v5 (
-    id        TEXT PRIMARY KEY,
-    feed_id   TEXT NOT NULL REFERENCES feeds (id) ON DELETE CASCADE,
-    title     TEXT NOT NULL,
-    author    TEXT NOT NULL,
-    url       TEXT NOT NULL,
-    published INTEGER NOT NULL, -- Unix milliseconds
-    read      INTEGER NOT NULL,
-    starred   INTEGER NOT NULL,
-    summary   TEXT NOT NULL,    -- plain text, for the article list
-    html      TEXT NOT NULL     -- untrusted; last, so scans of the other columns skip it
-);
-INSERT INTO articles_v5
-    SELECT CAST(id AS TEXT), feed_id, title, author, url, published, read, starred, summary,
-           html
-    FROM articles;
-CREATE TABLE pending_v5 (
-    article_id TEXT NOT NULL REFERENCES articles (id) ON DELETE CASCADE,
-    flag       TEXT NOT NULL CHECK (flag IN ('read', 'starred')),
-    value      INTEGER NOT NULL,
-    PRIMARY KEY (article_id, flag)
-);
-INSERT INTO pending_v5 SELECT CAST(article_id AS TEXT), flag, value FROM pending;
-CREATE TABLE full_text_v5 (
-    article_id TEXT PRIMARY KEY REFERENCES articles (id) ON DELETE CASCADE,
-    html       TEXT,             -- untrusted; NULL until extracted
-    attempts   INTEGER NOT NULL  -- failed fetches; at full_text::MAX_ATTEMPTS, given up
-);
-INSERT INTO full_text_v5 SELECT CAST(article_id AS TEXT), html, attempts FROM full_text;
-CREATE TABLE seen_v5 (
     article_id TEXT PRIMARY KEY,
     feed_id    TEXT NOT NULL REFERENCES feeds (id) ON DELETE CASCADE
 );
-INSERT INTO seen_v5 SELECT CAST(article_id AS TEXT), feed_id FROM seen;
-DROP TABLE pending;
-DROP TABLE full_text;
-DROP TABLE seen;
-DROP TABLE articles;
-ALTER TABLE articles_v5 RENAME TO articles;
-ALTER TABLE pending_v5 RENAME TO pending;
-ALTER TABLE full_text_v5 RENAME TO full_text;
-ALTER TABLE seen_v5 RENAME TO seen;
-CREATE INDEX articles_by_published ON articles (published DESC);
-CREATE INDEX articles_by_feed ON articles (feed_id, published DESC);
-CREATE INDEX articles_unread ON articles (published DESC) WHERE NOT read;
-CREATE INDEX articles_starred ON articles (published DESC) WHERE starred;
-CREATE TRIGGER full_text_follows_url AFTER UPDATE OF url ON articles
-WHEN old.url IS NOT new.url
-BEGIN
-    DELETE FROM full_text WHERE article_id = new.id;
-END;
+CREATE INDEX seen_by_feed ON seen (feed_id);
+CREATE TABLE meta (
+    key   TEXT PRIMARY KEY,
+    value NOT NULL
+);
 ";
 
-/// Schema version 5 to 6: an index for the local account's per-feed `seen` cleanup and
-/// for the cascade when a feed is deleted, which otherwise scan the whole table.
-const MIGRATE_5: &str = "
-CREATE INDEX seen_by_feed ON seen (feed_id);
+/// Stores an article's HTML (`?1` ID, `?2` HTML) if the article is cached in feed `?3`.
+/// Its WHERE skips the write when nothing changed.
+const HTML_UPSERT: &str = "
+INSERT INTO article_html (article_id, html)
+SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM articles WHERE id = ?1 AND feed_id = ?3)
+ON CONFLICT DO UPDATE SET html = excluded.html WHERE html != excluded.html
 ";
 
 /// Newest crawl time seen from the server, in Unix milliseconds.
 const NEWEST_CRAWL: &str = "newest_crawl";
 /// When the last sync finished, in Unix milliseconds.
 const LAST_SYNC: &str = "last_sync";
+/// The `<n>` of the next `folder/<n>` ID.
+const NEXT_FOLDER: &str = "next_folder";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Flag {
@@ -225,7 +168,6 @@ pub(crate) struct ArticleRow {
     pub published: i64,
     pub read: bool,
     pub starred: bool,
-    pub summary: String,
     pub html: String,
 }
 
@@ -286,7 +228,6 @@ pub struct ArticleSummary {
     pub url: String,
     /// Unix milliseconds.
     pub published: i64,
-    pub summary: String,
     pub read: bool,
     pub starred: bool,
 }
@@ -334,10 +275,12 @@ pub struct Db {
 impl Db {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let conn = Connection::open(path)?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
-        let mut db = Self::init(conn)?;
+        let mut db = Self::init(Connection::open(path)?)?;
+        {
+            let conn = db.lock();
+            conn.pragma_update(None, "journal_mode", "WAL")?;
+            conn.pragma_update(None, "synchronous", "NORMAL")?;
+        }
         let reader = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -352,22 +295,24 @@ impl Db {
 
     fn init(conn: Connection) -> Result<Self> {
         let version: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        let steps = match version {
-            0 => format!("{SCHEMA} {MIGRATE_2} {MIGRATE_3} {MIGRATE_4} {MIGRATE_5}"),
-            1 => format!("{MIGRATE_1} {MIGRATE_2} {MIGRATE_3} {MIGRATE_4} {MIGRATE_5}"),
-            2 => format!("{MIGRATE_2} {MIGRATE_3} {MIGRATE_4} {MIGRATE_5}"),
-            3 => format!("{MIGRATE_3} {MIGRATE_4} {MIGRATE_5}"),
-            4 => format!("{MIGRATE_4} {MIGRATE_5}"),
-            5 => MIGRATE_5.to_owned(),
-            SCHEMA_VERSION => String::new(),
-            _ => return Err(Error::CacheTooNew),
-        };
-        if !steps.is_empty() {
-            // See MIGRATE_4. Bundled SQLite starts with them on.
-            conn.pragma_update(None, "foreign_keys", false)?;
-            conn.execute_batch(&format!(
-                "BEGIN; {steps} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
-            ))?;
+        match version {
+            SCHEMA_VERSION => {}
+            v if v > SCHEMA_VERSION => return Err(Error::CacheTooNew),
+            v => {
+                // Lets prune give freed pages back to the file system. Takes effect
+                // only before the first table exists, or at a VACUUM.
+                conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
+                if v > 0 {
+                    // A cache from before release, when the schema changed without
+                    // migrations: start over. Sync accounts fill it again from the server.
+                    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_RESET_DATABASE, true)?;
+                    conn.execute_batch("VACUUM")?;
+                    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_RESET_DATABASE, false)?;
+                }
+                conn.execute_batch(&format!(
+                    "BEGIN; {SCHEMA} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+                ))?;
+            }
         }
         conn.pragma_update(None, "foreign_keys", true)?;
         Ok(Self {
@@ -428,7 +373,7 @@ impl Db {
         };
         let conn = self.read();
         let mut stmt = conn.prepare(&format!(
-            "SELECT id, feed_id, title, author, url, published, summary, read, starred
+            "SELECT id, feed_id, title, author, url, published, read, starred
              FROM articles WHERE {view} AND {scope} ORDER BY published DESC, id DESC"
         ))?;
         let params: Vec<&String> = param.into_iter().collect();
@@ -440,9 +385,8 @@ impl Db {
                 author: r.get(3)?,
                 url: r.get(4)?,
                 published: r.get(5)?,
-                summary: r.get(6)?,
-                read: r.get(7)?,
-                starred: r.get(8)?,
+                read: r.get(6)?,
+                starred: r.get(7)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -452,9 +396,11 @@ impl Db {
     pub fn article_html(&self, id: &str) -> Result<Option<String>> {
         Ok(self
             .read()
-            .query_row("SELECT html FROM articles WHERE id = ?1", [id], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT html FROM article_html WHERE article_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
             .optional()?)
     }
 
@@ -729,19 +675,16 @@ impl Db {
                 "INSERT INTO feeds (id, title, subscribed) VALUES (?1, ?2, 0)
                  ON CONFLICT DO NOTHING",
             )?;
-            // The WHERE skips the write, and the WAL growth, when nothing changed.
+            // The WHEREs skip the write, and the WAL growth, when nothing changed.
             let mut article = tx.prepare(
-                "INSERT INTO articles
-                     (id, feed_id, title, author, url, published, read, starred, summary, html)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                "INSERT INTO articles (id, feed_id, title, author, url, published, read, starred)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT (id) DO UPDATE SET
                      feed_id = excluded.feed_id,
                      title = excluded.title,
                      author = excluded.author,
                      url = excluded.url,
                      published = excluded.published,
-                     summary = excluded.summary,
-                     html = excluded.html,
                      read = IIF(EXISTS (SELECT 1 FROM pending
                                         WHERE article_id = ?1 AND flag = 'read'),
                                 read, excluded.read),
@@ -753,7 +696,6 @@ impl Db {
                     OR author != excluded.author
                     OR url != excluded.url
                     OR published != excluded.published
-                    OR html != excluded.html
                     OR (read != excluded.read AND NOT EXISTS (SELECT 1 FROM pending
                                                               WHERE article_id = ?1
                                                               AND flag = 'read'))
@@ -761,9 +703,10 @@ impl Db {
                                                                     WHERE article_id = ?1
                                                                     AND flag = 'starred'))",
             )?;
+            let mut html = tx.prepare(HTML_UPSERT)?;
             for a in articles {
                 feed.execute(params![a.feed_id, a.feed_title])?;
-                stored += article.execute(params![
+                let changed = article.execute(params![
                     a.id,
                     a.feed_id,
                     a.title,
@@ -772,9 +715,8 @@ impl Db {
                     a.published,
                     a.read,
                     a.starred,
-                    a.summary,
-                    a.html,
-                ])?;
+                ])? + html.execute(params![a.id, a.html, a.feed_id])?;
+                stored += usize::from(changed > 0);
             }
         }
         tx.commit()?;
@@ -816,12 +758,17 @@ impl Db {
     /// Removes read, unstarred articles published before `cutoff` (Unix milliseconds),
     /// unless a change to them is still queued.
     pub(crate) fn prune(&self, cutoff: i64) -> Result<usize> {
-        Ok(self.lock().execute(
+        let conn = self.lock();
+        let pruned = conn.execute(
             "DELETE FROM articles
              WHERE read AND NOT starred AND published < ?1
              AND id NOT IN (SELECT article_id FROM pending)",
             [cutoff],
-        )?)
+        )?;
+        if pruned > 0 {
+            conn.execute_batch("PRAGMA incremental_vacuum")?;
+        }
+        Ok(pruned)
     }
 
     /// Feeds with an address: in the local account, every one. Only the local account
@@ -896,37 +843,33 @@ impl Db {
         {
             // Not one pruned or deleted already: it is in `seen` but not in `articles`.
             let mut article = tx.prepare(
-                "INSERT INTO articles
-                     (id, feed_id, title, author, url, published, read, starred, summary, html)
-                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, 0, 0, ?7, ?8
+                "INSERT INTO articles (id, feed_id, title, author, url, published, read, starred)
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, 0, 0
                  WHERE NOT EXISTS (SELECT 1 FROM seen WHERE article_id = ?1)
                     OR EXISTS (SELECT 1 FROM articles WHERE id = ?1)
                  ON CONFLICT (id) DO UPDATE SET
                      title = excluded.title,
                      author = excluded.author,
                      url = excluded.url,
-                     published = IIF(?9, excluded.published, published),
-                     summary = excluded.summary,
-                     html = excluded.html
+                     published = IIF(?7, excluded.published, published)
                  WHERE feed_id = excluded.feed_id AND (
                        title != excluded.title
                     OR author != excluded.author
                     OR url != excluded.url
-                    OR (?9 AND published != excluded.published)
-                    OR html != excluded.html)",
+                    OR (?7 AND published != excluded.published))",
             )?;
+            let mut html = tx.prepare(HTML_UPSERT)?;
             for (a, dated) in entries {
-                stored += article.execute(params![
+                let changed = article.execute(params![
                     a.id,
                     feed_id,
                     a.title,
                     a.author,
                     a.url,
                     a.published,
-                    a.summary,
-                    a.html,
                     dated,
-                ])?;
+                ])? + html.execute(params![a.id, a.html, feed_id])?;
+                stored += usize::from(changed > 0);
             }
         }
         let ids: Vec<&str> = entries.iter().map(|(a, _)| a.id.as_str()).collect();
@@ -991,7 +934,8 @@ impl Db {
     }
 
     /// The folder with this title, ignoring case, or else a new one. Returns its ID.
-    /// IDs are `folder/<n>` and never change, so a rename keeps what refers to them.
+    /// IDs are `folder/<n>`, never change and are never reused, so a rename keeps what
+    /// refers to them and a deleted folder's don't pass to a new one.
     pub fn create_folder(&self, title: &str) -> Result<String> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
@@ -1006,11 +950,11 @@ impl Db {
             Some(id) => id,
             None => {
                 let n: i64 = tx.query_row(
-                    "SELECT coalesce(max(CAST(substr(id, 8) AS INTEGER)), 0) + 1 FROM folders
-                     WHERE id LIKE 'folder/%'",
-                    [],
+                    "SELECT coalesce((SELECT value FROM meta WHERE key = ?1), 1)",
+                    [NEXT_FOLDER],
                     |r| r.get(0),
                 )?;
+                set_meta(&tx, NEXT_FOLDER, n + 1)?;
                 let id = format!("folder/{n}");
                 tx.execute(
                     "INSERT INTO folders (id, title) VALUES (?1, ?2)",
@@ -1049,12 +993,7 @@ impl Db {
     }
 
     pub(crate) fn set_last_sync(&self, ms: i64) -> Result<()> {
-        self.lock().execute(
-            "INSERT INTO meta (key, value) VALUES (?1, ?2)
-             ON CONFLICT DO UPDATE SET value = excluded.value",
-            params![LAST_SYNC, ms],
-        )?;
-        Ok(())
+        set_meta(&self.lock(), LAST_SYNC, ms)
     }
 
     fn meta(&self, key: &str) -> Result<Option<i64>> {
@@ -1092,6 +1031,15 @@ impl Db {
     }
 }
 
+fn set_meta(conn: &Connection, key: &str, value: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
 fn json(values: &[impl AsRef<str>]) -> String {
     let values: Vec<&str> = values.iter().map(AsRef::as_ref).collect();
     serde_json::to_string(&values).expect("a slice of IDs serializes")
@@ -1112,29 +1060,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn version_1_cache_gets_icon_columns() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(&format!(
-            "{SCHEMA}
-             ALTER TABLE feeds DROP COLUMN icon_url;
-             ALTER TABLE feeds DROP COLUMN icon_from;
-             ALTER TABLE feeds DROP COLUMN icon;
-             INSERT INTO feeds (id, title, subscribed) VALUES ('feed/1', 'A', 1);
-             PRAGMA user_version = 1;"
-        ))
-        .unwrap();
-
-        let db = Db::init(conn).unwrap();
-
-        assert_eq!(db.feeds().unwrap()[0].icon, None);
-        let version: i32 = db.with_conn(|c| {
-            c.pragma_query_value(None, "user_version", |r| r.get(0))
-                .unwrap()
-        });
-        assert_eq!(version, SCHEMA_VERSION);
-    }
-
     fn article(id: i64, feed_id: &str, read: bool, starred: bool) -> ArticleRow {
         ArticleRow {
             id: id.to_string(),
@@ -1144,7 +1069,6 @@ mod tests {
             author: String::new(),
             url: String::new(),
             published: id * 1000,
-            summary: String::new(),
             html: String::new(),
             read,
             starred,
@@ -1168,6 +1092,47 @@ mod tests {
         db.upsert_articles(&[article(1, "feed/1", false, false)])
             .unwrap();
         db
+    }
+
+    #[test]
+    fn old_cache_starts_over() {
+        let path = std::env::temp_dir().join(format!("skvaller-old-{}.db", std::process::id()));
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE articles (id INTEGER PRIMARY KEY, html TEXT);
+                 INSERT INTO articles VALUES (1, '');
+                 PRAGMA user_version = 6;",
+            )
+            .unwrap();
+
+        let db = Db::open(&path).unwrap();
+
+        let (version, articles, auto_vacuum): (i32, i64, i64) = db.with_conn(|c| {
+            c.query_row(
+                "SELECT (SELECT user_version FROM pragma_user_version),
+                        (SELECT count(*) FROM articles),
+                        (SELECT auto_vacuum FROM pragma_auto_vacuum)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+        });
+        assert_eq!((version, articles, auto_vacuum), (SCHEMA_VERSION, 0, 2));
+        drop(db);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    #[test]
+    fn deleted_folder_id_is_not_reused() {
+        let db = Db::open_in_memory().unwrap();
+        let first = db.create_folder("A").unwrap();
+        db.delete_folder(&first).unwrap();
+        let second = db.create_folder("B").unwrap();
+        assert_eq!((first.as_str(), second.as_str()), ("folder/1", "folder/2"));
+        assert_eq!(db.create_folder("b").unwrap(), second);
     }
 
     #[test]
@@ -1378,28 +1343,6 @@ mod tests {
     }
 
     #[test]
-    fn version_2_cache_gets_reader_view() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(&format!(
-            "{SCHEMA}
-             INSERT INTO feeds (id, title, subscribed) VALUES ('feed/1', 'A', 1);
-             PRAGMA user_version = 2;"
-        ))
-        .unwrap();
-
-        let db = Db::init(conn).unwrap();
-
-        assert!(!db.feeds().unwrap()[0].reader_view);
-        db.upsert_articles(&[article(1, "feed/1", false, false)])
-            .unwrap();
-        db.set_full_text("1", "", "<p>x</p>").unwrap();
-        assert_eq!(
-            db.full_text("1").unwrap(),
-            Some(FullText::Html("<p>x</p>".into()))
-        );
-    }
-
-    #[test]
     fn full_text_goes_with_its_article_and_its_url() {
         let db = db_with_article(); // 1: unread, published at 1 s
         let at = |url: &str| ArticleRow {
@@ -1581,60 +1524,6 @@ mod tests {
     }
 
     #[test]
-    fn version_4_cache_keeps_its_articles_with_text_ids() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(&format!(
-            "{SCHEMA} {MIGRATE_2} {MIGRATE_3}
-             INSERT INTO feeds (id, title, subscribed) VALUES ('feed/1', 'A', 1);
-             INSERT INTO articles VALUES
-                 (1730000000000001, 'feed/1', 'T', '', 'https://example.com/a', 5, 1, 0, '', ''),
-                 (-7, 'feed/1', 'U', '', '', 4, 0, 1, '', '');
-             INSERT INTO pending VALUES (1730000000000001, 'read', 1);
-             INSERT INTO full_text VALUES (1730000000000001, '<p>x</p>', 0);
-             INSERT INTO seen VALUES (-7, 'feed/1');
-             PRAGMA user_version = 4;"
-        ))
-        .unwrap();
-
-        let db = Db::init(conn).unwrap();
-
-        let all = Selection {
-            view: View::All,
-            scope: Scope::All,
-        };
-        assert_eq!(ids(&db, all), ["1730000000000001", "-7"]);
-        assert_eq!(
-            db.pending().unwrap(),
-            [("1730000000000001".to_owned(), Flag::Read, true)]
-        );
-        let (types, seen, broken, fks): (String, String, i64, bool) = db.with_conn(|c| {
-            c.query_row(
-                "SELECT (SELECT group_concat(DISTINCT typeof(id)) FROM articles),
-                        (SELECT article_id FROM seen),
-                        (SELECT count(*) FROM pragma_foreign_key_check),
-                        (SELECT foreign_keys FROM pragma_foreign_keys)",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .unwrap()
-        });
-        assert_eq!(
-            (types.as_str(), seen.as_str(), broken, fks),
-            ("text", "-7", 0, true)
-        );
-        assert!(db.full_text("1730000000000001").unwrap().is_some());
-        // The trigger and the cascades came along.
-        db.upsert_articles(&[ArticleRow {
-            url: "https://example.com/b".into(),
-            ..article(1730000000000001, "feed/1", true, false)
-        }])
-        .unwrap();
-        assert_eq!(db.full_text("1730000000000001").unwrap(), None);
-        db.unsubscribe("feed/1").unwrap();
-        assert_eq!(counts(&db), (0, 0, 0, 0));
-    }
-
-    #[test]
     fn ids_longer_than_64_bits_are_kept() {
         let db = db_with_article();
         let hex = "x5d0cfa30d1892a8d3f00002e";
@@ -1646,30 +1535,5 @@ mod tests {
         db.set_read(&[hex], true).unwrap();
         assert_eq!(db.pending().unwrap(), [(hex.to_owned(), Flag::Read, true)]);
         assert_eq!(db.missing_ids(&["1", hex, "abc"]).unwrap(), ["abc"]);
-    }
-
-    #[test]
-    fn version_3_cache_gets_local_feed_columns() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(&format!(
-            "{SCHEMA} {MIGRATE_2}
-             INSERT INTO feeds (id, title, subscribed) VALUES ('feed/1', 'A', 1);
-             PRAGMA user_version = 3;"
-        ))
-        .unwrap();
-
-        let db = Db::init(conn).unwrap();
-
-        let feed = &db.feeds().unwrap()[0];
-        assert_eq!(
-            (feed.url.as_deref(), feed.fetch_error.as_deref()),
-            (None, None)
-        );
-        assert!(db.local_feeds().unwrap().is_empty());
-        let version: i32 = db.with_conn(|c| {
-            c.pragma_query_value(None, "user_version", |r| r.get(0))
-                .unwrap()
-        });
-        assert_eq!(version, SCHEMA_VERSION);
     }
 }

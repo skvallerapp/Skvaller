@@ -30,8 +30,6 @@ export interface Article {
   url: string
   /** Unix time in milliseconds. */
   published: number
-  /** Plain-text preview. */
-  summary: string
   read: boolean
   starred: boolean
 }
