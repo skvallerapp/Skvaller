@@ -74,6 +74,7 @@ fn main() {
             commands::set_active_account,
             commands::update_account,
             commands::remove_account,
+            commands::rebuild_cache,
             commands::sync_now,
             commands::library,
             commands::articles,

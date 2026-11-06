@@ -92,7 +92,7 @@ const makeArticles = (feeds: Feed[], count: number, idBase: number): Article[] =
 const statuses = new Map<string, SyncStatus>()
 function statusOf(id: string): SyncStatus {
   let s = statuses.get(id)
-  if (!s) statuses.set(id, (s = { accountId: id, syncing: false, lastSync: now - 5 * 60_000, error: null, unauthorized: false, changed: false }))
+  if (!s) statuses.set(id, (s = { accountId: id, syncing: false, lastSync: now - 5 * 60_000, error: null, unauthorized: false, changed: false, cacheBroken: false }))
   return s
 }
 
@@ -134,6 +134,7 @@ const demoAccount: SavedAccount = {
   username: 'demo',
   sync: 15,
   keepReadDays: 30,
+  keepUnreadDays: 180,
   syncOnWake: false,
 }
 
@@ -170,7 +171,7 @@ function session(): Session {
     accounts: accounts(),
     activeId: active,
     signedIn: active !== null,
-    status: active ? { ...statusOf(active) } : { accountId: '', syncing: false, lastSync: null, error: null, unauthorized: false, changed: false },
+    status: active ? { ...statusOf(active) } : { accountId: '', syncing: false, lastSync: null, error: null, unauthorized: false, changed: false, cacheBroken: false },
     settings: settings(),
   }
 }
@@ -248,7 +249,7 @@ const commands: Record<string, (args: Args) => unknown> = {
   add_local_account: () => {
     const value = saved()
     const id = String(Math.max(0, ...value.accounts.map((a) => Number(a.id))) + 1)
-    value.accounts.push({ id, description: 'Local', kind: 'local', sync: 15, keepReadDays: 30, syncOnWake: false })
+    value.accounts.push({ id, description: 'Local', kind: 'local', sync: 15, keepReadDays: 30, keepUnreadDays: 180, syncOnWake: false })
     value.active = id
     save(value)
     return session()
@@ -302,14 +303,13 @@ const commands: Record<string, (args: Args) => unknown> = {
     save({ ...saved(), active: id as string })
     return session()
   },
-  update_account: ({ id, description, sync, keepReadDays, syncOnWake }) => {
+  update_account: ({ id, change }) => {
     const value = saved()
-    const change = Object.fromEntries(
-      Object.entries({ description, sync, keepReadDays, syncOnWake }).filter(([, v]) => v !== undefined),
-    )
-    value.accounts = value.accounts.map((a) => (a.id === id ? { ...a, ...change } : a))
+    const defined = Object.fromEntries(Object.entries(change as object).filter(([, v]) => v !== undefined))
+    value.accounts = value.accounts.map((a) => (a.id === id ? { ...a, ...defined } : a))
     save(value)
   },
+  rebuild_cache: () => sync(),
   remove_account: ({ id }) => {
     const value = saved()
     value.accounts = value.accounts.filter((a) => a.id !== id)

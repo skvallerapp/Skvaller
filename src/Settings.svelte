@@ -43,6 +43,15 @@
     { days: 90, label: '3 Months' },
   ]
 
+  // 0 keeps them.
+  const unreadRetention = [
+    { value: 30, label: '1 Month' },
+    { value: 90, label: '3 Months' },
+    { value: 180, label: '6 Months' },
+    { value: 365, label: '1 Year' },
+    { value: 0, label: 'Forever' },
+  ]
+
   const sortOrders: { value: Settings['sortSubscriptions']; label: string }[] = [
     { value: 'foldersFirst', label: 'Folders First' },
     { value: 'alphabetical', label: 'Alphabetical' },
@@ -685,6 +694,18 @@
                   (days) => `${days} Days`,
                 )}
               </div>
+              {#if a.kind === 'local'}
+                <div class="row">
+                  <label for="keep-unread">Keep unread items</label>
+                  {@render select(
+                    'keep-unread',
+                    a.keepUnreadDays,
+                    unreadRetention,
+                    (keepUnreadDays) => changeAccount(a.id, { keepUnreadDays }),
+                    (days) => `${days} Days`,
+                  )}
+                </div>
+              {/if}
             </div>
             <p class="note">Starred articles are always kept.</p>
           </section>

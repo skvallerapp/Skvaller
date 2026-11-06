@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use skvaller_core::{
     ArticleSummary, Client, Counts, Db, Error, Feed, Folder, ImportReport, Selection, delete_token,
     export_opml as write_opml, import_opml as read_opml, load_full_text, load_token,
@@ -21,7 +21,8 @@ use tokio::sync::Notify;
 use tokio::time::{Instant, sleep_until};
 
 use crate::config::{
-    Account, AccountKind, Config, FIRST_ACCOUNT_ID, Settings, SyncSchedule, Theme,
+    Account, AccountKind, Config, DEFAULT_KEEP_UNREAD_DAYS, FIRST_ACCOUNT_ID, Settings,
+    SyncSchedule, Theme,
 };
 use crate::sync_gate::{Outcome, SyncGate};
 
@@ -45,13 +46,30 @@ pub struct AppState {
     config: Mutex<Config>,
     /// One per account in the config, except those in `broken`.
     runtimes: Mutex<HashMap<String, Arc<Runtime>>>,
-    /// Why an account's cache didn't open at start.
-    broken: Mutex<HashMap<String, String>>,
+    /// Accounts whose cache didn't open.
+    broken: Mutex<HashMap<String, BrokenCache>>,
     /// The pane the Settings window shows when it opens next.
     settings_pane: Mutex<Option<String>>,
     /// Counts config changes, so a window can tell an older session from a newer one
     /// that arrived first.
     revision: AtomicU64,
+}
+
+/// Why an account's cache didn't open.
+struct BrokenCache {
+    message: String,
+    /// It is damaged: starting it over is the way out. Not so for one from a newer
+    /// version, which that version still reads.
+    corrupt: bool,
+}
+
+impl BrokenCache {
+    fn new(e: &Error) -> Self {
+        Self {
+            message: e.to_string(),
+            corrupt: e.is_corrupt(),
+        }
+    }
 }
 
 /// What an account needs while the app runs: its cache, its client and its syncs.
@@ -67,6 +85,8 @@ pub struct Runtime {
     token_rejected: AtomicBool,
     /// Why the last sync failed, for a window that shows the account later.
     last_error: Mutex<Option<String>>,
+    /// A sync found the cache damaged.
+    corrupt: AtomicBool,
     sync_gate: SyncGate,
     /// Reader View prefetch, after a sync. Separate, so syncing is not held up by it.
     prefetch_gate: SyncGate,
@@ -86,6 +106,7 @@ impl Runtime {
             client: Mutex::new(None),
             token_rejected: AtomicBool::new(false),
             last_error: Mutex::new(None),
+            corrupt: AtomicBool::new(false),
             sync_gate: SyncGate::default(),
             prefetch_gate: SyncGate::default(),
             wake: Notify::new(),
@@ -110,6 +131,7 @@ impl Runtime {
             error: lock(&self.last_error).clone(),
             unauthorized: self.token_rejected.load(Ordering::Relaxed),
             changed: false,
+            cache_broken: self.corrupt.load(Ordering::Relaxed),
         }
     }
 }
@@ -129,10 +151,30 @@ fn db_files(path: &Path) -> [PathBuf; 3] {
     [with("-wal"), with("-shm"), path.to_owned()]
 }
 
-/// False if a file stays, such as one still open on Windows.
+/// Where a damaged cache's files go when it starts over: next to it, for the user or a
+/// later version to recover from. A later rebuild replaces them.
+fn corrupt_path(file: &Path) -> PathBuf {
+    let mut name = file.as_os_str().to_owned();
+    name.push(".corrupt");
+    PathBuf::from(name)
+}
+
+/// The local account's subscriptions as OPML, kept next to its cache: they are nowhere
+/// else, and a damaged cache starts over from them.
+fn feeds_backup_path(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.opml"))
+}
+
+/// The account's cache, any damaged copy of it and its feeds' backup. False if a file
+/// stays, such as one still open on Windows.
 fn remove_db_files(dir: &Path, id: &str) -> bool {
     let mut removed = true;
-    for file in db_files(&db_path(dir, id)) {
+    let cache = db_files(&db_path(dir, id));
+    let corrupt = cache.iter().map(|f| corrupt_path(f));
+    for file in corrupt
+        .chain(cache.clone())
+        .chain([feeds_backup_path(dir, id)])
+    {
         match std::fs::remove_file(&file) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -238,7 +280,7 @@ impl AppState {
                 }
                 Err(e) => {
                     eprintln!("Opening the cache of account {} failed: {e}", account.id);
-                    broken.insert(account.id.clone(), e.to_string());
+                    broken.insert(account.id.clone(), BrokenCache::new(&e));
                 }
             }
         }
@@ -279,7 +321,7 @@ impl AppState {
             return Ok(rt.clone());
         }
         Err(CommandError::other(match lock(&self.broken).get(id) {
-            Some(e) => format!("this account's cache can't be opened: {e}"),
+            Some(broken) => format!("this account's cache can't be opened: {}", broken.message),
             None => "the account was removed".to_owned(),
         }))
     }
@@ -368,6 +410,7 @@ impl From<Error> for CommandError {
             Error::BadUrl => "badUrl",
             Error::Http(_) => "network",
             Error::NoFeed => "noFeed",
+            _ if e.is_corrupt() => "corrupt",
             _ => "other",
         };
         Self {
@@ -497,14 +540,19 @@ async fn current_session(state: &AppState) -> CommandResult<Session> {
             ),
         },
         // Its cache didn't open: the main window says why.
-        Some(Err(e)) => (
-            true,
-            SyncStatus {
-                account_id: config.active.clone().unwrap_or_default(),
-                error: Some(e.message),
-                ..SyncStatus::default()
-            },
-        ),
+        Some(Err(e)) => {
+            let id = config.active.clone().unwrap_or_default();
+            let cache_broken = lock(&state.broken).get(&id).is_some_and(|b| b.corrupt);
+            (
+                true,
+                SyncStatus {
+                    account_id: id,
+                    error: Some(e.message),
+                    cache_broken,
+                    ..SyncStatus::default()
+                },
+            )
+        }
         None => (false, SyncStatus::default()),
     };
     Ok(Session {
@@ -542,6 +590,8 @@ pub struct SyncStatus {
     /// The sync that just finished changed the cached articles or the feeds they are in,
     /// so the article list needs loading again.
     changed: bool,
+    /// The cache is damaged. `rebuild_cache` starts it over.
+    cache_broken: bool,
 }
 
 #[tauri::command]
@@ -646,6 +696,7 @@ fn add_account(
             kind: kind.clone(),
             sync: SyncSchedule::default(),
             keep_read_days: skvaller_core::DEFAULT_KEEP_READ_DAYS,
+            keep_unread_days: DEFAULT_KEEP_UNREAD_DAYS,
             sync_on_wake: false,
         });
         config.active = Some(id.clone());
@@ -706,17 +757,31 @@ pub async fn set_active_account(
     Ok(session)
 }
 
-/// Changes an account's name or sync settings. Fields left out stay.
+/// Changes to an account's name or sync settings. Fields left out stay.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountChange {
+    description: Option<String>,
+    sync: Option<SyncSchedule>,
+    keep_read_days: Option<u32>,
+    keep_unread_days: Option<u32>,
+    sync_on_wake: Option<bool>,
+}
+
 #[tauri::command]
 pub async fn update_account(
     app: AppHandle,
     state: State<'_, AppState>,
     id: String,
-    description: Option<String>,
-    sync: Option<SyncSchedule>,
-    keep_read_days: Option<u32>,
-    sync_on_wake: Option<bool>,
+    change: AccountChange,
 ) -> CommandResult<()> {
+    let AccountChange {
+        description,
+        sync,
+        keep_read_days,
+        keep_unread_days,
+        sync_on_wake,
+    } = change;
     let rt = state.runtime(&id)?;
     let mut schedule_changed = false;
     state.update_config(|config| {
@@ -732,6 +797,9 @@ pub async fn update_account(
             }
             if let Some(days) = keep_read_days {
                 account.keep_read_days = days.max(1);
+            }
+            if let Some(days) = keep_unread_days {
+                account.keep_unread_days = days;
             }
             if let Some(on) = sync_on_wake {
                 // So a sync after waking it asked for stops at once.
@@ -951,6 +1019,7 @@ pub async fn subscribe(
 ) -> CommandResult<String> {
     let rt = local(&state, &account_id)?;
     let id = subscribe_feed(&rt.db, &url, folder_id.as_deref(), now_secs()).await?;
+    back_up_feeds(&state, &rt);
     update_badge(&app);
     Ok(id)
 }
@@ -963,7 +1032,9 @@ pub async fn unsubscribe(
     account_id: String,
     feed_id: String,
 ) -> CommandResult<()> {
-    local(&state, &account_id)?.db.unsubscribe(&feed_id)?;
+    let rt = local(&state, &account_id)?;
+    rt.db.unsubscribe(&feed_id)?;
+    back_up_feeds(&state, &rt);
     update_badge(&app);
     Ok(())
 }
@@ -976,9 +1047,10 @@ pub async fn rename_feed(
     title: String,
 ) -> CommandResult<()> {
     let title = non_empty(&title)?;
-    Ok(local(&state, &account_id)?
-        .db
-        .rename_feed(&feed_id, title)?)
+    let rt = local(&state, &account_id)?;
+    rt.db.rename_feed(&feed_id, title)?;
+    back_up_feeds(&state, &rt);
+    Ok(())
 }
 
 /// Moves a feed of the local account into a folder, or out of any with `None`.
@@ -989,9 +1061,10 @@ pub async fn move_feed(
     feed_id: String,
     folder_id: Option<String>,
 ) -> CommandResult<()> {
-    Ok(local(&state, &account_id)?
-        .db
-        .move_feed(&feed_id, folder_id.as_deref())?)
+    let rt = local(&state, &account_id)?;
+    rt.db.move_feed(&feed_id, folder_id.as_deref())?;
+    back_up_feeds(&state, &rt);
+    Ok(())
 }
 
 /// The local account's folder with this title, or else a new one. Returns its ID.
@@ -1013,9 +1086,10 @@ pub async fn rename_folder(
     title: String,
 ) -> CommandResult<()> {
     let title = non_empty(&title)?;
-    Ok(local(&state, &account_id)?
-        .db
-        .rename_folder(&folder_id, title)?)
+    let rt = local(&state, &account_id)?;
+    rt.db.rename_folder(&folder_id, title)?;
+    back_up_feeds(&state, &rt);
+    Ok(())
 }
 
 /// Removes a folder of the local account. Its feeds stay, in no folder.
@@ -1025,7 +1099,113 @@ pub async fn delete_folder(
     account_id: String,
     folder_id: String,
 ) -> CommandResult<()> {
-    Ok(local(&state, &account_id)?.db.delete_folder(&folder_id)?)
+    let rt = local(&state, &account_id)?;
+    rt.db.delete_folder(&folder_id)?;
+    back_up_feeds(&state, &rt);
+    Ok(())
+}
+
+/// Writes the local account's subscriptions to their backup next to its cache, unless
+/// they are there as they are. Does nothing for a sync account, whose server has them.
+/// Best effort: a failure is logged.
+fn back_up_feeds(state: &AppState, rt: &Runtime) {
+    let Some(account) = state.config().account(&rt.id).cloned() else {
+        return;
+    };
+    if account.kind != AccountKind::Local {
+        return;
+    }
+    let path = feeds_backup_path(&state.accounts_dir, &rt.id);
+    let written = write_opml(&rt.db, &account.description)
+        .map_err(|e| e.to_string())
+        .and_then(|xml| {
+            if std::fs::read_to_string(&path).is_ok_and(|old| old == xml) {
+                return Ok(());
+            }
+            // Renamed into place, so a crash midway leaves the old backup whole.
+            let partial = path.with_extension("opml.partial");
+            std::fs::write(&partial, xml)
+                .and_then(|()| std::fs::rename(&partial, &path))
+                .map_err(|e| e.to_string())
+        });
+    if let Err(e) = written {
+        eprintln!("Backing up the feeds of account {} failed: {e}", rt.id);
+    }
+}
+
+/// Starts a damaged cache over: its files move aside, an empty cache takes their place,
+/// and the account syncs. A sync account gets its articles from the server again;
+/// the local account gets its feeds from their backup. Changes queued in the damaged
+/// cache are lost.
+#[tauri::command]
+pub async fn rebuild_cache(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account_id: String,
+) -> CommandResult<()> {
+    let account = state
+        .config()
+        .account(&account_id)
+        .cloned()
+        .ok_or_else(|| CommandError::other("the account was removed"))?;
+    if lock(&state.broken)
+        .get(&account_id)
+        .is_some_and(|b| !b.corrupt)
+    {
+        return Err(CommandError::other("this account's cache isn't damaged"));
+    }
+    let old = lock(&state.runtimes).get(&account_id).cloned();
+    {
+        // No sync may write while the files move.
+        let _no_sync = match &old {
+            Some(rt) => Some((rt.sync_gate.stop().await, rt.prefetch_gate.stop().await)),
+            None => None,
+        };
+        lock(&state.runtimes).remove(&account_id);
+        if let Some(rt) = &old {
+            rt.removed.store(true, Ordering::Relaxed);
+            rt.wake.notify_one();
+        }
+    }
+    drop(old);
+
+    let dir = &state.accounts_dir;
+    let rebuilt = db_files(&db_path(dir, &account_id))
+        .iter()
+        .filter(|file| file.exists())
+        .try_for_each(|file| std::fs::rename(file, corrupt_path(file)))
+        .map_err(|e| Error::Local(e.to_string()))
+        .and_then(|()| Runtime::open(dir, &account_id));
+    let rt = match rebuilt {
+        Ok(rt) => Arc::new(rt),
+        Err(e) => {
+            // Such as a file still open on Windows. The next start tries it again.
+            let message = format!("starting the cache over failed: {e}");
+            lock(&state.broken).insert(
+                account_id,
+                BrokenCache {
+                    message: message.clone(),
+                    corrupt: true,
+                },
+            );
+            emit_session(&app).await;
+            return Err(CommandError::other(message));
+        }
+    };
+    if account.kind == AccountKind::Local
+        && let Ok(xml) = std::fs::read_to_string(feeds_backup_path(dir, &account_id))
+        && let Err(e) = read_opml(&rt.db, &xml)
+    {
+        eprintln!("Restoring the feeds of account {account_id} failed: {e}");
+    }
+    lock(&state.broken).remove(&account_id);
+    lock(&state.runtimes).insert(account_id, rt.clone());
+    start_sync_loop(app.clone(), rt.clone());
+    update_badge(&app);
+    emit_session(&app).await;
+    // With a manual schedule, the loop doesn't sync on its own.
+    tauri::async_runtime::spawn(async move { run_sync(&app, &rt).await });
+    Ok(())
 }
 
 /// Larger OPML files are not read. A thousand feeds take a few hundred kilobytes.
@@ -1069,6 +1249,7 @@ pub async fn import_opml(
     })
     .await
     .map_err(CommandError::other)??;
+    back_up_feeds(&state, &rt);
     if report.added > 0 {
         tauri::async_runtime::spawn(async move {
             // After any refresh that is running, which started before the import.
@@ -1374,13 +1555,29 @@ async fn run_sync(app: &AppHandle, rt: &Arc<Runtime>) -> Ran {
         let (now, keep_read_days) = (now_secs(), account.keep_read_days.max(1));
         let synced = match &client {
             Some(client) => sync(client, &rt.db, now, keep_read_days).await,
-            None => refresh_local(&rt.db, now, keep_read_days).await,
+            None => {
+                let keep_unread_days = Some(account.keep_unread_days).filter(|&d| d > 0);
+                refresh_local(&rt.db, now, keep_read_days, keep_unread_days).await
+            }
         };
         Some(match synced {
-            Ok(report) => status(SyncStatus {
-                changed: report.changed_articles(),
-                ..SyncStatus::default()
-            }),
+            Ok(report) => {
+                if client.is_none() {
+                    back_up_feeds(&state, rt);
+                }
+                status(SyncStatus {
+                    changed: report.changed_articles(),
+                    ..SyncStatus::default()
+                })
+            }
+            Err(e) if e.is_corrupt() => {
+                rt.corrupt.store(true, Ordering::Relaxed);
+                status(SyncStatus {
+                    error: Some(e.to_string()),
+                    cache_broken: true,
+                    ..SyncStatus::default()
+                })
+            }
             Err(e) => {
                 let unauthorized = matches!(e, Error::Unauthorized);
                 if unauthorized {

@@ -27,7 +27,10 @@ export const accounts = () => call<Session['accounts']>('accounts')
 export const setActiveAccount = (id: string) => call<Session>('set_active_account', { id })
 
 export const updateAccount = (id: string, change: AccountChange) =>
-  call<void>('update_account', { id, ...change })
+  call<void>('update_account', { id, change })
+
+/** Starts the account's damaged cache over, and syncs it. */
+export const rebuildCache = (accountId: string) => call<void>('rebuild_cache', { accountId })
 
 /** Removes the account and its articles. Closes the Settings window when it was the last. */
 export const removeAccount = (id: string) => call<void>('remove_account', { id })

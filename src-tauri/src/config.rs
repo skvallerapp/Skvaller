@@ -195,6 +195,14 @@ pub struct Account {
         deserialize_with = "keep_read_days_or_default"
     )]
     pub keep_read_days: u32,
+    /// How long unread, unstarred articles stay, in days; 0 keeps them. Only the local
+    /// account's: a sync account's server lists its unread articles, and its retention
+    /// limits them.
+    #[serde(
+        default = "default_keep_unread_days",
+        deserialize_with = "keep_unread_days_or_default"
+    )]
+    pub keep_unread_days: u32,
     /// Sync when the computer wakes from sleep.
     #[serde(default, deserialize_with = "or_default")]
     pub sync_on_wake: bool,
@@ -273,6 +281,19 @@ fn default_keep_read_days() -> u32 {
 fn keep_read_days_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
     Ok(u32::deserialize(value).unwrap_or(DEFAULT_KEEP_READ_DAYS))
+}
+
+/// Half a year: long enough that nothing the user may still read goes, short enough that
+/// busy feeds don't grow the cache without end.
+pub const DEFAULT_KEEP_UNREAD_DAYS: u32 = 180;
+
+fn default_keep_unread_days() -> u32 {
+    DEFAULT_KEEP_UNREAD_DAYS
+}
+
+fn keep_unread_days_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(u32::deserialize(value).unwrap_or(DEFAULT_KEEP_UNREAD_DAYS))
 }
 
 /// A broken account is left out, instead of losing the others.
@@ -462,7 +483,7 @@ mod tests {
         let config = Config::parse(
             br#"{ "accounts": [{ "id": "1", "description": "", "kind": "greader",
                                  "server": "https://rss.example.com", "username": "carl",
-                                 "sync": "often", "keepReadDays": -1 },
+                                 "sync": "often", "keepReadDays": -1, "keepUnreadDays": "x" },
                                { "id": "2", "kind": "nonsense" }],
                  "confirmMarkAllRead": null, "animations": "yes",
                  "shortcuts": { "next": 5 }, "articleFont": "serif" }"#,
@@ -472,6 +493,10 @@ mod tests {
         assert_eq!(config.accounts.len(), 1);
         assert_eq!(config.accounts[0].sync, SyncSchedule::Every(15));
         assert_eq!(config.accounts[0].keep_read_days, DEFAULT_KEEP_READ_DAYS);
+        assert_eq!(
+            config.accounts[0].keep_unread_days,
+            DEFAULT_KEEP_UNREAD_DAYS
+        );
         assert_eq!(config.active.as_deref(), Some("1"));
         assert!(config.settings.confirm_mark_all_read);
         assert!(config.settings.animations);
@@ -498,6 +523,7 @@ mod tests {
                 },
                 sync: SyncSchedule::Every(30),
                 keep_read_days: 7,
+                keep_unread_days: DEFAULT_KEEP_UNREAD_DAYS,
                 sync_on_wake: false,
             }]
         );
@@ -528,6 +554,7 @@ mod tests {
             kind: AccountKind::Local,
             sync: SyncSchedule::OnStart,
             keep_read_days: 14,
+            keep_unread_days: 0,
             sync_on_wake: true,
         });
         config.active = Some("3".into());

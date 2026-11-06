@@ -60,6 +60,18 @@
   )
   const looseFeeds = $derived(feedsByFolder.get(null) ?? [])
   const title = $derived(store.account?.description ?? '')
+  let rebuilding = $state(false)
+  async function rebuild() {
+    rebuilding = true
+    try {
+      await store.rebuildCache()
+    } catch (e) {
+      console.error('Rebuilding the cache failed', e)
+    } finally {
+      rebuilding = false
+    }
+  }
+
   const status = $derived.by(() => {
     const s = store.status
     if (s.syncing) return 'Syncing…'
@@ -467,7 +479,21 @@
   </div>
   <header class="account" data-tauri-drag-region={dragRegion}>
     <h1>{title}</h1>
-    <p class:failed={store.status.error} title={store.status.error ?? undefined}>{status}</p>
+    {#if store.status.cacheBroken}
+      <p class="failed" title={store.status.error ?? undefined}>
+        Cache damaged ·
+        <button
+          class="rebuild"
+          disabled={rebuilding}
+          title={store.isLocal
+            ? 'Starts the cache over with your feeds from their backup. Read and starred marks are lost.'
+            : 'Starts the cache over and downloads the articles again. Changes not synced yet are lost.'}
+          onclick={rebuild}>{rebuilding ? 'Rebuilding…' : 'Rebuild'}</button
+        >
+      </p>
+    {:else}
+      <p class:failed={store.status.error} title={store.status.error ?? undefined}>{status}</p>
+    {/if}
   </header>
   <div class="scroll">
     <section>
@@ -592,6 +618,21 @@
 
   .account p.failed {
     color: var(--error);
+  }
+
+  .rebuild {
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .rebuild:disabled {
+    text-decoration: none;
+    cursor: default;
   }
 
   .scroll {

@@ -62,6 +62,9 @@ export type Account = AccountKind & {
   sync: SyncSchedule
   /** How long read, unstarred articles stay in the cache. */
   keepReadDays: number
+  /** How long unread, unstarred articles stay in the cache; 0 keeps them. The local
+   * account's only: a sync account's server limits them. */
+  keepUnreadDays: number
   /** Sync when the computer wakes from sleep. */
   syncOnWake: boolean
   /** Unread articles in its cache. */
@@ -81,6 +84,8 @@ export interface SyncStatus {
   /** The sync that just finished changed the cached articles or the feeds they are in,
    * so the article list needs loading again. */
   changed: boolean
+  /** The cache is damaged. `rebuildCache` starts it over. */
+  cacheBroken: boolean
 }
 
 export interface Session {
@@ -99,7 +104,7 @@ export interface Session {
 }
 
 /** What `updateAccount` changes. */
-export type AccountChange = Partial<Pick<Account, 'description' | 'sync' | 'keepReadDays' | 'syncOnWake'>>
+export type AccountChange = Partial<Pick<Account, 'description' | 'sync' | 'keepReadDays' | 'keepUnreadDays' | 'syncOnWake'>>
 
 /** Settings for every account, from config.json, changed in the Settings window. */
 export interface Settings {

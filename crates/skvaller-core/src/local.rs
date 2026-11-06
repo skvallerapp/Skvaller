@@ -43,10 +43,16 @@ fn http() -> Result<reqwest::Client> {
     Ok(CLIENT.get_or_init(|| client).clone())
 }
 
-/// Fetches every feed, stores what is new or changed, then removes read, unstarred
-/// articles published more than `keep_read_days` ago. `now` is Unix seconds. A feed
-/// that fails keeps its articles and records why, for the sidebar; the others go on.
-pub async fn refresh(db: &Db, now: i64, keep_read_days: u32) -> Result<SyncReport> {
+/// Fetches every feed, stores what is new or changed, then removes unstarred articles
+/// published more than `keep_read_days` ago if read, or `keep_unread_days` ago if
+/// unread; `None` keeps unread ones. `now` is Unix seconds. A feed that fails keeps its
+/// articles and records why, for the sidebar; the others go on.
+pub async fn refresh(
+    db: &Db,
+    now: i64,
+    keep_read_days: u32,
+    keep_unread_days: Option<u32>,
+) -> Result<SyncReport> {
     db.clear_all_pending()?;
     let http = http()?;
     let limit = Arc::new(Semaphore::new(PARALLEL));
@@ -81,7 +87,12 @@ pub async fn refresh(db: &Db, now: i64, keep_read_days: u32) -> Result<SyncRepor
         }
     }
     // Pruning needs no network, so the retention period holds offline too.
-    let pruned = db.prune((now - i64::from(keep_read_days) * DAY) * 1000)?;
+    let before = |days: u32| (now - i64::from(days) * DAY) * 1000;
+    // `seen` keeps their IDs, so the feed doesn't bring them back as new.
+    let pruned = db.prune(
+        before(keep_read_days),
+        keep_unread_days.map_or(i64::MIN, before),
+    )?;
     // Every feed out of reach is more likely the network than every site down: a
     // failure, so it is tried again, as a sync account's would be.
     if tried > 0 && reached == 0 {

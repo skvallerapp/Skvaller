@@ -781,15 +781,18 @@ impl Db {
         Ok(changed)
     }
 
-    /// Removes read, unstarred articles published before `cutoff` (Unix milliseconds),
-    /// unless a change to them is still queued.
-    pub(crate) fn prune(&self, cutoff: i64) -> Result<usize> {
+    /// Removes unstarred articles published before a cutoff in Unix milliseconds:
+    /// `read_before` for read ones, `unread_before` for unread ones. Articles with a
+    /// queued change stay.
+    pub(crate) fn prune(&self, read_before: i64, unread_before: i64) -> Result<usize> {
         let conn = self.lock();
         let pruned = conn.execute(
             "DELETE FROM articles
-             WHERE read AND NOT starred AND published < ?1
+             WHERE NOT starred
+             -- The max() alone lets the index find the range; IIF() alone would scan.
+             AND published < max(?1, ?2) AND published < IIF(read, ?1, ?2)
              AND id NOT IN (SELECT article_id FROM pending)",
-            [cutoff],
+            [read_before, unread_before],
         )?;
         if pruned > 0 {
             conn.execute_batch("PRAGMA incremental_vacuum")?;
@@ -1152,6 +1155,38 @@ mod tests {
     }
 
     #[test]
+    fn damaged_pages_read_as_corrupt() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let path = std::env::temp_dir().join(format!("skvaller-corrupt-{}.db", std::process::id()));
+        {
+            let db = Db::open(&path).unwrap();
+            db.replace_subscriptions(&[feed("feed/1", None)]).unwrap();
+            let many: Vec<ArticleRow> = (1..2000)
+                .map(|id| ArticleRow {
+                    html: "x".repeat(500),
+                    ..article(id, "feed/1", false, false)
+                })
+                .collect();
+            db.upsert_articles(&many).unwrap();
+            db.with_conn(|c| c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)"))
+                .unwrap();
+        }
+        // The header stays, so it opens; the pages after it are garbage.
+        let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::Start(4096)).unwrap();
+        file.write_all(&vec![0xA5; 64 * 4096]).unwrap();
+        drop(file);
+
+        let error = Db::open(&path).and_then(|db| db.counts().map(drop));
+
+        assert!(error.is_err_and(|e| e.is_corrupt()));
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    #[test]
     fn deleted_folder_id_is_not_reused() {
         let db = Db::open_in_memory().unwrap();
         let first = db.create_folder("A").unwrap();
@@ -1375,7 +1410,7 @@ mod tests {
         .unwrap();
         db.set_read(&["4"], false).unwrap();
         db.set_read(&["4"], true).unwrap();
-        assert_eq!(db.prune(10_000).unwrap(), 1);
+        assert_eq!(db.prune(10_000, i64::MIN).unwrap(), 1);
         assert_eq!(db.missing_ids(&["1", "2", "3", "4", "50"]).unwrap(), ["3"]);
     }
 
@@ -1426,7 +1461,7 @@ mod tests {
             db.full_text("3").unwrap(),
             Some(FullText::Html("<p>full</p>".into()))
         );
-        db.prune(10_000).unwrap();
+        db.prune(10_000, i64::MIN).unwrap();
         assert_eq!(db.full_text("3").unwrap(), None);
         // An article that left the cache gets no row.
         db.set_full_text("3", "https://example.com/b", "<p>full</p>")

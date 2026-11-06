@@ -107,7 +107,9 @@ pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Re
     if let Some(ms) = newest_crawl {
         db.bump_newest_crawl(ms)?;
     }
-    let pruned = db.prune(prune_before)?;
+    // Never unread articles: the server lists them, so the next sync would fetch them
+    // again. The server's own retention limits them.
+    let pruned = db.prune(prune_before, i64::MIN)?;
     fetch_icons(db, |url| client.resolve(url), None).await?;
     let pushed = pushed?;
     db.set_last_sync(now * 1000)?;
