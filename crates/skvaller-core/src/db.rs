@@ -12,9 +12,9 @@ use rusqlite::{
 use serde::{Deserialize, Serialize};
 
 use crate::full_text::MAX_ATTEMPTS;
-use crate::{Error, Result, api};
+use crate::{Error, Result, api, thumbnail};
 
-const SCHEMA_VERSION: i32 = 7;
+const SCHEMA_VERSION: i32 = 8;
 
 /// The schema. A change to it bumps [`SCHEMA_VERSION`] and adds a migration to
 /// [`Db::init`].
@@ -70,6 +70,19 @@ CREATE TABLE article_html (
     article_id TEXT PRIMARY KEY REFERENCES articles (id) ON DELETE CASCADE,
     html       TEXT NOT NULL -- untrusted
 );
+-- Articles that want a thumbnail: only those new to the cache. `url` is the image the
+-- feed names for the article; NULL: look for one in its HTML.
+CREATE TABLE thumbnail_sources (
+    article_id TEXT PRIMARY KEY REFERENCES articles (id) ON DELETE CASCADE,
+    url        TEXT,
+    attempts   INTEGER NOT NULL DEFAULT 0 -- runs that failed; at thumbnail::MAX_ATTEMPTS, given up
+);
+-- Apart from the sources, so the article list sees which articles have one through the
+-- primary key's index, without reading the images.
+CREATE TABLE thumbnails (
+    article_id TEXT PRIMARY KEY REFERENCES articles (id) ON DELETE CASCADE,
+    jpeg       BLOB NOT NULL
+);
 -- Local changes not yet sent. One row per article and flag, holding the latest value.
 CREATE TABLE pending (
     article_id TEXT NOT NULL REFERENCES articles (id) ON DELETE CASCADE,
@@ -109,6 +122,13 @@ INSERT INTO article_html (article_id, html)
 SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM articles WHERE id = ?1 AND feed_id = ?3)
 ON CONFLICT DO UPDATE SET html = excluded.html WHERE html != excluded.html
 ";
+
+/// Marks article `?1` as wanting a thumbnail, from image `?2` or else its HTML. Only
+/// for an article just inserted.
+const THUMBNAIL_SOURCE_INSERT: &str =
+    "INSERT INTO thumbnail_sources (article_id, url) VALUES (?1, ?2) ON CONFLICT DO NOTHING";
+/// Whether article `?1` is cached.
+const ARTICLE_EXISTS: &str = "SELECT EXISTS (SELECT 1 FROM articles WHERE id = ?1)";
 
 /// Newest crawl time seen from the server, in Unix milliseconds.
 const NEWEST_CRAWL: &str = "newest_crawl";
@@ -171,6 +191,18 @@ pub(crate) struct ArticleRow {
     pub read: bool,
     pub starred: bool,
     pub html: String,
+    /// The image the feed names for the article, absolute. `None`: look in the HTML.
+    pub thumbnail: Option<String>,
+}
+
+/// An article that wants a thumbnail.
+#[derive(Debug)]
+pub(crate) struct ThumbnailWanted {
+    pub id: String,
+    /// The image the feed names. `None`: look in the HTML.
+    pub source: Option<String>,
+    /// The article's web page, which relative image URLs in its HTML resolve against.
+    pub url: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -232,6 +264,8 @@ pub struct ArticleSummary {
     pub published: i64,
     pub read: bool,
     pub starred: bool,
+    /// A thumbnail is cached: the `thumb` protocol serves it.
+    pub thumbnail: bool,
 }
 
 /// Which articles to list: those in `view` from `scope`. Serialized like the UI's
@@ -383,7 +417,8 @@ impl Db {
         };
         let conn = self.read();
         let mut stmt = conn.prepare(&format!(
-            "SELECT id, feed_id, title, author, url, published, read, starred
+            "SELECT id, feed_id, title, author, url, published, read, starred,
+                 EXISTS (SELECT 1 FROM thumbnails WHERE article_id = id)
              FROM articles WHERE {view} AND {scope} ORDER BY published DESC, id DESC"
         ))?;
         let params: Vec<&String> = param.into_iter().collect();
@@ -397,9 +432,78 @@ impl Db {
                 published: r.get(5)?,
                 read: r.get(6)?,
                 starred: r.get(7)?,
+                thumbnail: r.get(8)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The article's thumbnail JPEG, if one is cached.
+    pub fn thumbnail(&self, id: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .read()
+            .query_row(
+                "SELECT jpeg FROM thumbnails WHERE article_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Articles that want a thumbnail and aren't given up on, newest first.
+    pub(crate) fn thumbnails_wanted(&self, limit: usize) -> Result<Vec<ThumbnailWanted>> {
+        let conn = self.read();
+        let mut stmt = conn.prepare(
+            "SELECT a.id, s.url, a.url FROM thumbnail_sources s JOIN articles a ON a.id = s.article_id
+             ORDER BY a.published DESC, a.id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |r| {
+            Ok(ThumbnailWanted {
+                id: r.get(0)?,
+                source: r.get(1)?,
+                url: r.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Stores the article's thumbnail. `false` if the article is gone meanwhile.
+    pub(crate) fn set_thumbnail(&self, id: &str, jpeg: &[u8]) -> Result<bool> {
+        let mut conn = self.lock();
+        let tx = write(&mut conn)?;
+        let stored = tx.execute(
+            "INSERT INTO thumbnails (article_id, jpeg) SELECT ?1, ?2
+             WHERE EXISTS (SELECT 1 FROM articles WHERE id = ?1)
+             ON CONFLICT DO UPDATE SET jpeg = excluded.jpeg",
+            params![id, jpeg],
+        )? > 0;
+        tx.execute("DELETE FROM thumbnail_sources WHERE article_id = ?1", [id])?;
+        tx.commit()?;
+        Ok(stored)
+    }
+
+    /// The article has no usable image: it stays without a thumbnail.
+    pub(crate) fn give_up_thumbnail(&self, id: &str) -> Result<()> {
+        self.lock()
+            .execute("DELETE FROM thumbnail_sources WHERE article_id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// The article's image couldn't be fetched this run. After
+    /// [`thumbnail::MAX_ATTEMPTS`] runs, it is given up on.
+    pub(crate) fn thumbnail_failed(&self, id: &str) -> Result<()> {
+        let mut conn = self.lock();
+        let tx = write(&mut conn)?;
+        tx.execute(
+            "UPDATE thumbnail_sources SET attempts = attempts + 1 WHERE article_id = ?1",
+            [id],
+        )?;
+        tx.execute(
+            "DELETE FROM thumbnail_sources WHERE article_id = ?1 AND attempts >= ?2",
+            params![id, thumbnail::MAX_ATTEMPTS],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// The article's untrusted HTML, if it is cached.
@@ -725,8 +829,11 @@ impl Db {
                                                                     AND flag = 'starred'))",
             )?;
             let mut html = tx.prepare(HTML_UPSERT)?;
+            let mut exists = tx.prepare(ARTICLE_EXISTS)?;
+            let mut thumbnail = tx.prepare(THUMBNAIL_SOURCE_INSERT)?;
             for a in articles {
                 feed.execute(params![a.feed_id, a.feed_title])?;
+                let new = !exists.query_row([&a.id], |r| r.get::<_, bool>(0))?;
                 let changed = article.execute(params![
                     a.id,
                     a.feed_id,
@@ -736,7 +843,11 @@ impl Db {
                     a.published,
                     a.read,
                     a.starred,
-                ])? + html.execute(params![a.id, a.html, a.feed_id])?;
+                ])?;
+                if new && changed > 0 {
+                    thumbnail.execute(params![a.id, a.thumbnail])?;
+                }
+                let changed = changed + html.execute(params![a.id, a.html, a.feed_id])?;
                 stored += usize::from(changed > 0);
             }
         }
@@ -905,7 +1016,10 @@ impl Db {
                     OR (?7 AND published != excluded.published))",
             )?;
             let mut html = tx.prepare(HTML_UPSERT)?;
+            let mut exists = tx.prepare(ARTICLE_EXISTS)?;
+            let mut thumbnail = tx.prepare(THUMBNAIL_SOURCE_INSERT)?;
             for (a, dated) in entries {
+                let new = !exists.query_row([&a.id], |r| r.get::<_, bool>(0))?;
                 let changed = article.execute(params![
                     a.id,
                     feed_id,
@@ -914,7 +1028,11 @@ impl Db {
                     a.url,
                     a.published,
                     dated,
-                ])? + html.execute(params![a.id, a.html, feed_id])?;
+                ])?;
+                if new && changed > 0 {
+                    thumbnail.execute(params![a.id, a.thumbnail])?;
+                }
+                let changed = changed + html.execute(params![a.id, a.html, feed_id])?;
                 stored += usize::from(changed > 0);
             }
         }
@@ -1125,6 +1243,7 @@ mod tests {
             html: String::new(),
             read,
             starred,
+            thumbnail: None,
         }
     }
 

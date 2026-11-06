@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use skvaller_core::{
     ArticleSummary, Client, Counts, Db, Error, Feed, Folder, ImportReport, Selection, delete_token,
     export_opml as write_opml, import_opml as read_opml, load_full_text, load_token,
-    prefetch_full_text, refresh_local, save_token, subscribe as subscribe_feed, sync,
+    prefetch_full_text, prefetch_thumbnails, refresh_local, save_token,
+    subscribe as subscribe_feed, sync,
 };
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, FilePath};
@@ -35,6 +36,8 @@ const SETTINGS_EVENT: &str = "settings-changed";
 const ACCOUNTS_EVENT: &str = "accounts-changed";
 /// Sent to every window with the account's ID when a feed's settings change.
 const FEEDS_EVENT: &str = "feeds-changed";
+/// Sent to every window with the account's ID when articles got thumbnails.
+const THUMBNAILS_EVENT: &str = "thumbnails-changed";
 /// Sent to the Settings window with the pane to show, when it is asked to open one.
 const SETTINGS_PANE_EVENT: &str = "settings-pane";
 /// The label of the Settings window, in tauri.conf.json.
@@ -94,6 +97,9 @@ pub struct Runtime {
     sync_gate: SyncGate,
     /// Reader View prefetch, after a sync. Separate, so syncing is not held up by it.
     prefetch_gate: SyncGate,
+    /// Fetching thumbnails, after a sync. Apart from Reader View's, which can take
+    /// minutes.
+    thumbnail_gate: SyncGate,
     /// Wakes the background sync: the schedule changed, or the account was removed.
     wake: Notify,
     /// The account is gone. Work that still holds the runtime stops at its next check.
@@ -113,6 +119,7 @@ impl Runtime {
             corrupt: AtomicBool::new(false),
             sync_gate: SyncGate::default(),
             prefetch_gate: SyncGate::default(),
+            thumbnail_gate: SyncGate::default(),
             wake: Notify::new(),
             removed: AtomicBool::new(false),
             woke: AtomicBool::new(false),
@@ -937,7 +944,11 @@ pub async fn remove_account(
     {
         // No sync may write while the cache goes.
         let _no_sync = match &rt {
-            Some(rt) => Some((rt.sync_gate.stop().await, rt.prefetch_gate.stop().await)),
+            Some(rt) => Some((
+                rt.sync_gate.stop().await,
+                rt.prefetch_gate.stop().await,
+                rt.thumbnail_gate.stop().await,
+            )),
             None => None,
         };
         state.update_config(|config| {
@@ -1273,7 +1284,11 @@ pub async fn rebuild_cache(
     {
         // No sync may write while the files move.
         let _no_sync = match &old {
-            Some(rt) => Some((rt.sync_gate.stop().await, rt.prefetch_gate.stop().await)),
+            Some(rt) => Some((
+                rt.sync_gate.stop().await,
+                rt.prefetch_gate.stop().await,
+                rt.thumbnail_gate.stop().await,
+            )),
             None => None,
         };
         lock(&state.runtimes).remove(&account_id);
@@ -1757,8 +1772,12 @@ async fn run_sync(app: &AppHandle, rt: &Arc<Runtime>) -> Ran {
     match rt.sync_gate.run(work).await {
         Outcome::Done(Some(ran)) => {
             if ran == Ran::Synced {
-                let rt = rt.clone();
-                tauri::async_runtime::spawn(async move { prefetch(&rt).await });
+                let (full_text, thumbnails) = (rt.clone(), rt.clone());
+                tauri::async_runtime::spawn(async move { prefetch(&full_text).await });
+                let app = app.clone();
+                tauri::async_runtime::spawn(
+                    async move { fetch_thumbnails(&app, &thumbnails).await },
+                );
             }
             ran
         }
@@ -1784,6 +1803,71 @@ async fn prefetch(rt: &Runtime) {
             "prefetching Reader View for account {{account.id}} failed: {{error.message}}",
         );
     }
+}
+
+/// Fetches thumbnails for new articles, telling the windows as they arrive. Skipped
+/// while the last sync's run still goes; removing the account stops it.
+async fn fetch_thumbnails(app: &AppHandle, rt: &Runtime) {
+    if rt.is_removed() {
+        return;
+    }
+    let stored = || {
+        let _ = app.emit(THUMBNAILS_EVENT, &rt.id);
+    };
+    if let Outcome::Done(Err(e)) = rt
+        .thumbnail_gate
+        .run(prefetch_thumbnails(&rt.db, stored))
+        .await
+    {
+        tracing::event!(
+            name: "thumbnail.prefetch.failure",
+            Level::WARN,
+            account.id = %rt.id,
+            error.message = %e,
+            "fetching thumbnails for account {{account.id}} failed: {{error.message}}",
+        );
+    }
+}
+
+/// Serves the `thumb` protocol: `thumb://localhost/<account ID>%2F<article ID>` (on
+/// Windows, `http://thumb.localhost/...`) is the article's cached thumbnail JPEG, as
+/// `convertFileSrc` makes the URL. The UI's only way to show a thumbnail: none is ever
+/// loaded from its image host.
+pub fn serve_thumbnail(
+    app: &AppHandle,
+    request: &tauri::http::Request<Vec<u8>>,
+    responder: tauri::UriSchemeResponder,
+) {
+    // Both IDs are digits and letters, so a slash is the only thing encoded.
+    let path = request
+        .uri()
+        .path()
+        .trim_start_matches('/')
+        .replace("%2F", "/");
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let jpeg = path.split_once('/').and_then(|(account, article)| {
+            let rt = app.try_state::<AppState>()?.runtime(account).ok()?;
+            rt.db.thumbnail(article).ok().flatten()
+        });
+        let response = match jpeg {
+            // An article's thumbnail never changes once stored.
+            Some(jpeg) => tauri::http::Response::builder()
+                .header(tauri::http::header::CONTENT_TYPE, "image/jpeg")
+                .header(
+                    tauri::http::header::CACHE_CONTROL,
+                    "max-age=31536000, immutable",
+                )
+                .body(jpeg),
+            None => tauri::http::Response::builder()
+                .status(tauri::http::StatusCode::NOT_FOUND)
+                .body(Vec::new()),
+        };
+        // The builder fails only on invalid headers, and these are constant.
+        if let Ok(response) = response {
+            responder.respond(response);
+        }
+    });
 }
 
 #[cfg(test)]

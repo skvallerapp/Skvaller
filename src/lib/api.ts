@@ -1,5 +1,5 @@
 // Typed wrappers for the Tauri commands in src-tauri/src/commands.rs.
-import { invoke } from '@tauri-apps/api/core'
+import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -144,6 +144,22 @@ export const onAccountsChanged = (handler: (session: Session) => void) => on('ac
 
 /** A feed's settings changed, such as Reader View, in the account with this ID. */
 export const onFeedsChanged = (handler: (accountId: string) => void) => on('feeds-changed', handler)
+
+/** Articles in the account with this ID got thumbnails. */
+export const onThumbnailsChanged = (handler: (accountId: string) => void) =>
+  on('thumbnails-changed', handler)
+
+/** The article's cached thumbnail, for an article whose `thumbnail` is true. Served from
+ * the local cache by the `thumb` protocol (commands.rs), never from the image's host. */
+export const thumbnailUrl = (accountId: string, articleId: string) =>
+  mock ? mockThumbnail(articleId) : convertFileSrc(`${accountId}/${articleId}`, 'thumb')
+
+/** A gradient that differs from article to article, as the mock has no images. */
+function mockThumbnail(articleId: string) {
+  const hue = (Number(articleId) * 47) % 360
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 9"><defs><linearGradient id="g"><stop stop-color="hsl(${hue} 60% 55%)"/><stop offset="1" stop-color="hsl(${(hue + 60) % 360} 60% 35%)"/></linearGradient></defs><rect width="16" height="9" fill="url(#g)"/></svg>`
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`
+}
 
 /** The Settings window, open already, is asked to show a pane. */
 export const onSettingsPane = (handler: (pane: string) => void) => on('settings-pane', handler)

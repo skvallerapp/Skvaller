@@ -972,3 +972,55 @@ async fn recent_item_with_an_old_date_read_already_is_not_stored() {
     // Its crawl time still counts, so the next sync asks only for what came after it.
     assert_eq!(fake.db.newest_crawl().unwrap(), Some(crawl * 1000));
 }
+
+/// Each cached article's `(id, image the feed named)`, for those that want a thumbnail.
+fn thumbnail_sources(db: &Db) -> Vec<(String, Option<String>)> {
+    db.with_conn(|c| {
+        let mut stmt = c
+            .prepare("SELECT article_id, url FROM thumbnail_sources ORDER BY article_id")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    })
+}
+
+#[tokio::test]
+async fn new_items_want_a_thumbnail_from_their_image_enclosure_or_html() {
+    let fake = Fake::new().await;
+    let recent = NOW - DAY;
+    let mut with_image = item(3, "feed/1", recent, false, false);
+    with_image["enclosure"] = json!([
+        { "href": "https://cdn.example/episode.mp3", "type": "audio/mpeg" },
+        { "href": "https://cdn.example/lead.jpg", "type": "image/jpeg" },
+    ]);
+    // A shape no server sends: it costs the item nothing but its image.
+    let mut odd = item(2, "feed/1", recent, false, false);
+    odd["enclosure"] = json!({ "href": 7 });
+    let plain = item(1, "feed/1", recent, false, false);
+    fake.serve(
+        NOW - 30 * DAY,
+        vec![with_image, odd, plain],
+        &[1, 2, 3],
+        &[],
+    )
+    .await;
+
+    let report = sync(&fake.client, &fake.db, NOW, DEFAULT_KEEP_READ_DAYS)
+        .await
+        .unwrap();
+
+    assert_eq!(report.fetched, 3);
+    assert_eq!(
+        thumbnail_sources(&fake.db),
+        [
+            ("1".to_owned(), None),
+            ("2".to_owned(), None),
+            (
+                "3".to_owned(),
+                Some("https://cdn.example/lead.jpg".to_owned())
+            ),
+        ]
+    );
+}
