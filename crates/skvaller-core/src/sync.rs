@@ -67,6 +67,7 @@ pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Re
         pushed => pushed,
     };
     let keep_read_since = now - i64::from(keep_read_days) * DAY;
+    let prune_before = keep_read_since * 1000;
 
     let subs = client.subscriptions().await?;
     // FreshRSS leaves feeds set to "show in its feed only" out of the reading list, so
@@ -96,7 +97,7 @@ pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Re
     let mut fetched = 0;
     let mut newest_crawl = None;
     for chunk in db.missing_ids(&wanted)?.chunks(BATCH) {
-        let (stored, newest) = store(db, client.items_contents(chunk).await?)?;
+        let (stored, newest) = store(db, client.items_contents(chunk).await?, prune_before)?;
         fetched += stored;
         newest_crawl = newest_crawl.max(newest);
     }
@@ -106,7 +107,7 @@ pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Re
     if let Some(ms) = newest_crawl {
         db.bump_newest_crawl(ms)?;
     }
-    let pruned = db.prune(keep_read_since * 1000)?;
+    let pruned = db.prune(prune_before)?;
     fetch_icons(db, |url| client.resolve(url), None).await?;
     let pushed = pushed?;
     db.set_last_sync(now * 1000)?;
@@ -244,10 +245,16 @@ fn feed_row(sub: Subscription) -> FeedRow {
     }
 }
 
-/// Stores articles from the server, skipping any with a malformed ID. Returns how many
-/// rows changed, and the newest server crawl time among the items in Unix milliseconds.
-/// Only the crawl time counts: a feed's publish dates can be in the future.
-fn store(db: &Db, items: Vec<Item>) -> Result<(usize, Option<i64>)> {
+/// Stores articles from the server, skipping any with a malformed ID and any the prune
+/// would remove: read, unstarred and published before `prune_before` (Unix
+/// milliseconds). Returns how many rows changed, and the newest server crawl time among
+/// the items in Unix milliseconds. Only the crawl time counts: a feed's publish dates can
+/// be in the future.
+///
+/// A recent item with an old publish date, read already, would otherwise be stored and
+/// pruned again, and flash in the list, on every sync until its crawl time leaves
+/// the overlap.
+fn store(db: &Db, items: Vec<Item>, prune_before: i64) -> Result<(usize, Option<i64>)> {
     let newest = items.iter().filter_map(Item::crawl_time).max();
     let rows: Vec<ArticleRow> = items
         .into_iter()
@@ -289,6 +296,7 @@ fn store(db: &Db, items: Vec<Item>) -> Result<(usize, Option<i64>)> {
                     .unwrap_or_default(),
             })
         })
+        .filter(|row| !(row.read && !row.starred && row.published < prune_before))
         .collect();
     Ok((db.upsert_articles(&rows)?, newest))
 }

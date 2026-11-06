@@ -949,3 +949,26 @@ async fn ids_longer_than_64_bits_sync_both_ways() {
         .unwrap();
     assert_eq!(report.pushed, 1);
 }
+
+#[tokio::test]
+async fn recent_item_with_an_old_date_read_already_is_not_stored() {
+    let fake = Fake::new().await;
+    let crawl = NOW - DAY;
+    let mut old = item(5, "feed/1", crawl, true, false);
+    old["published"] = json!(NOW - 100 * DAY);
+    fake.serve(NOW - 30 * DAY, vec![old.clone()], &[], &[])
+        .await;
+    let first = sync(&fake.client, &fake.db, NOW, DEFAULT_KEEP_READ_DAYS)
+        .await
+        .unwrap();
+    assert_eq!((first.fetched, first.pruned), (0, 0));
+
+    fake.server.reset().await;
+    fake.serve(crawl - CRAWL_OVERLAP, vec![old], &[], &[]).await;
+    let second = sync(&fake.client, &fake.db, NOW + 900, DEFAULT_KEEP_READ_DAYS)
+        .await
+        .unwrap();
+    assert_eq!((second.fetched, second.pruned), (0, 0));
+    // Its crawl time still counts, so the next sync asks only for what came after it.
+    assert_eq!(fake.db.newest_crawl().unwrap(), Some(crawl * 1000));
+}
