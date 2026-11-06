@@ -92,7 +92,7 @@ const makeArticles = (feeds: Feed[], count: number, idBase: number): Article[] =
 const statuses = new Map<string, SyncStatus>()
 function statusOf(id: string): SyncStatus {
   let s = statuses.get(id)
-  if (!s) statuses.set(id, (s = { accountId: id, syncing: false, lastSync: now - 5 * 60_000, error: null, unauthorized: false }))
+  if (!s) statuses.set(id, (s = { accountId: id, syncing: false, lastSync: now - 5 * 60_000, error: null, unauthorized: false, changed: false }))
   return s
 }
 
@@ -170,7 +170,7 @@ function session(): Session {
     accounts: accounts(),
     activeId: active,
     signedIn: active !== null,
-    status: active ? { ...statusOf(active) } : { accountId: '', syncing: false, lastSync: null, error: null, unauthorized: false },
+    status: active ? { ...statusOf(active) } : { accountId: '', syncing: false, lastSync: null, error: null, unauthorized: false, changed: false },
     settings: settings(),
   }
 }

@@ -559,8 +559,9 @@ impl Db {
     }
 
     /// Makes the cached feeds and folders match the server. Articles of removed feeds go
-    /// too, except starred ones and ones with a queued change.
-    pub(crate) fn replace_subscriptions(&self, feeds: &[FeedRow]) -> Result<()> {
+    /// too, except starred ones and ones with a queued change. Returns how many rows
+    /// changed.
+    pub(crate) fn replace_subscriptions(&self, feeds: &[FeedRow]) -> Result<usize> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         let has_feeds: bool = tx.query_row(
@@ -573,10 +574,14 @@ impl Db {
             // everything. Refuse rather than wipe the cache.
             return Err(Error::Protocol("the server listed no subscriptions".into()));
         }
+        let mut changed = 0;
         {
+            // The WHEREs skip the write when nothing changed, so the count says whether
+            // anything did.
             let mut folder = tx.prepare(
                 "INSERT INTO folders (id, title) VALUES (?1, ?2)
-                 ON CONFLICT DO UPDATE SET title = excluded.title",
+                 ON CONFLICT DO UPDATE SET title = excluded.title
+                 WHERE title != excluded.title",
             )?;
             let mut feed = tx.prepare(
                 "INSERT INTO feeds (id, title, folder_id, subscribed, icon_url, url, site_url)
@@ -584,13 +589,19 @@ impl Db {
                  ON CONFLICT DO UPDATE SET
                      title = excluded.title, folder_id = excluded.folder_id, subscribed = 1,
                      icon_url = excluded.icon_url, url = excluded.url,
-                     site_url = excluded.site_url",
+                     site_url = excluded.site_url
+                 WHERE NOT subscribed
+                    OR title != excluded.title
+                    OR folder_id IS NOT excluded.folder_id
+                    OR icon_url IS NOT excluded.icon_url
+                    OR url IS NOT excluded.url
+                    OR site_url IS NOT excluded.site_url",
             )?;
             for f in feeds {
                 if let Some((id, title)) = &f.folder {
-                    folder.execute(params![id, title])?;
+                    changed += folder.execute(params![id, title])?;
                 }
-                feed.execute(params![
+                changed += feed.execute(params![
                     f.id,
                     f.title,
                     f.folder.as_ref().map(|(id, _)| id),
@@ -601,29 +612,29 @@ impl Db {
             }
         }
         let ids: Vec<&str> = feeds.iter().map(|f| f.id.as_str()).collect();
-        tx.execute(
+        changed += tx.execute(
             "UPDATE feeds SET subscribed = 0, folder_id = NULL
              WHERE subscribed AND id NOT IN (SELECT value FROM json_each(?1))",
             [json(&ids)],
         )?;
-        tx.execute(
+        changed += tx.execute(
             "DELETE FROM articles
              WHERE NOT starred
              AND feed_id IN (SELECT id FROM feeds WHERE NOT subscribed)
              AND id NOT IN (SELECT article_id FROM pending)",
             [],
         )?;
-        tx.execute(
+        changed += tx.execute(
             "DELETE FROM feeds WHERE NOT subscribed AND id NOT IN (SELECT feed_id FROM articles)",
             [],
         )?;
-        tx.execute(
+        changed += tx.execute(
             "DELETE FROM folders WHERE id NOT IN
              (SELECT folder_id FROM feeds WHERE folder_id IS NOT NULL)",
             [],
         )?;
         tx.commit()?;
-        Ok(())
+        Ok(changed)
     }
 
     /// Feeds whose icon was not fetched from their current icon URL, as `(id, URL)`.
@@ -739,19 +750,34 @@ impl Db {
     /// ones. Articles with a queued change for `flag` are left alone.
     pub(crate) fn reconcile(&self, flag: Flag, ids: &[impl AsRef<str>]) -> Result<usize> {
         let col = flag.column();
-        let target = match flag {
-            Flag::Read => "id NOT IN (SELECT value FROM json_each(?1))",
-            Flag::Starred => "id IN (SELECT value FROM json_each(?1))",
+        // The value the server's list implies for the articles in it, and the filter, in
+        // a partial index's terms, for those with that value now.
+        let (listed, has_listed) = match flag {
+            Flag::Read => (false, "NOT read"),
+            Flag::Starred => (true, "starred"),
         };
-        let changed = self.lock().execute(
+        let unqueued = format!(
+            "NOT EXISTS (SELECT 1 FROM pending WHERE article_id = articles.id AND flag = '{col}')"
+        );
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        // Two updates, so neither scans every article: the listed ones by ID, and the
+        // unlisted ones among those the index has with the listed value.
+        let changed = tx.execute(
             &format!(
-                "UPDATE articles SET {col} = ({target})
-                 WHERE {col} != ({target})
-                 AND NOT EXISTS (SELECT 1 FROM pending
-                                 WHERE article_id = articles.id AND flag = '{col}')"
+                "UPDATE articles SET {col} = ?2
+                 WHERE id IN (SELECT value FROM json_each(?1)) AND {col} != ?2 AND {unqueued}"
             ),
-            [json(ids)],
+            params![json(ids), listed],
+        )? + tx.execute(
+            &format!(
+                "UPDATE articles SET {col} = NOT ?2
+                 WHERE {has_listed} AND id NOT IN (SELECT value FROM json_each(?1))
+                 AND {unqueued}"
+            ),
+            params![json(ids), listed],
         )?;
+        tx.commit()?;
         Ok(changed)
     }
 
@@ -1312,6 +1338,17 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn replacing_subscriptions_counts_only_changes() {
+        let db = Db::open_in_memory().unwrap();
+        let subs = [feed("feed/1", Some("tech")), feed("feed/2", None)];
+        assert_eq!(db.replace_subscriptions(&subs).unwrap(), 3);
+        assert_eq!(db.replace_subscriptions(&subs).unwrap(), 0);
+        // feed/1 leaves its folder, which goes too.
+        let moved = [feed("feed/1", None), feed("feed/2", None)];
+        assert_eq!(db.replace_subscriptions(&moved).unwrap(), 2);
     }
 
     #[test]

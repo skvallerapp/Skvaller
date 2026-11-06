@@ -38,6 +38,16 @@ pub struct SyncReport {
     pub changed: usize,
     /// Old read articles removed from the cache.
     pub pruned: usize,
+    /// Feeds and folders added, changed or removed, and articles removed with their feed.
+    pub subscriptions: usize,
+}
+
+impl SyncReport {
+    /// Whether the cached articles, or the feeds they are in, changed.
+    #[must_use]
+    pub fn changed_articles(&self) -> bool {
+        self.fetched + self.changed + self.pruned + self.subscriptions > 0
+    }
 }
 
 /// Sends queued local changes, then pulls feeds, folders, articles and read and starred
@@ -68,7 +78,8 @@ pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Re
                 .map(|s| s.id.clone()),
         )
         .collect();
-    db.replace_subscriptions(&subs.into_iter().map(feed_row).collect::<Vec<_>>())?;
+    let subscriptions =
+        db.replace_subscriptions(&subs.into_iter().map(feed_row).collect::<Vec<_>>())?;
 
     let since = match db.newest_crawl()? {
         Some(ms) => ms / 1000 - CRAWL_OVERLAP,
@@ -104,6 +115,7 @@ pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Re
         fetched,
         changed,
         pruned,
+        subscriptions,
     })
 }
 
