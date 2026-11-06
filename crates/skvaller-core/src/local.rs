@@ -2,6 +2,7 @@
 //! Subscriptions, folders and read and starred state live only in the cache, so there
 //! is nothing to send anywhere, and a fetch never changes what the user did.
 
+use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -313,12 +314,15 @@ fn discover(body: &[u8], content_type: &str, base: &Url) -> Option<Url> {
         .find_map(|link| web_url(base.join(link.attr("href")?.trim()).ok()?))
 }
 
-/// Stores the feed's entries, and returns how many rows changed.
+/// Stores the feed's entries, and returns how many rows changed. Of entries that share
+/// an ID, as in some broken feeds, the first counts: storing each would rewrite the
+/// article on every refresh, and a new URL drops its Reader View text.
 fn store(db: &Db, feed_id: &str, feed: &model::Feed, page: &Page, now: i64) -> Result<usize> {
+    let mut ids = HashSet::new();
     let entries: Vec<(ArticleRow, bool)> = feed
         .entries
         .iter()
-        .filter(|entry| !entry.id.is_empty())
+        .filter(|entry| !entry.id.is_empty() && ids.insert(entry.id.as_str()))
         .map(|entry| {
             let html = entry
                 .content

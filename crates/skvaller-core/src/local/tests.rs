@@ -431,3 +431,29 @@ async fn a_refresh_that_reaches_no_feed_fails_and_one_without_feeds_works() {
     .unwrap();
     refresh(&db, NOW + 120, 30).await.unwrap();
 }
+
+#[tokio::test]
+async fn repeated_entry_id_keeps_the_first_and_its_reader_view_text() {
+    let server = MockServer::start().await;
+    let items = r#"
+        <item><guid>dup</guid><title>One</title><link>https://kernel.example/1</link>
+              <pubDate>Mon, 02 Nov 2026 10:00:00 GMT</pubDate></item>
+        <item><guid>dup</guid><title>Two</title><link>https://kernel.example/2</link>
+              <pubDate>Mon, 02 Nov 2026 11:00:00 GMT</pubDate></item>"#;
+    serve(&server, "/feed.xml", xml(rss(items))).await;
+    let db = Db::open_in_memory().unwrap();
+    subscribe(&db, &format!("{}/feed.xml", server.uri()), None, NOW)
+        .await
+        .unwrap();
+    let articles = all(&db);
+    assert_eq!(articles.len(), 1);
+    assert_eq!(articles[0].title, "One");
+    let id = articles[0].id.clone();
+    db.set_full_text(&id, &articles[0].url, "<p>full</p>")
+        .unwrap();
+
+    let report = refresh(&db, NOW, 3000).await.unwrap();
+
+    assert_eq!(report.fetched, 0);
+    assert!(db.full_text(&id).unwrap().is_some());
+}
