@@ -288,7 +288,6 @@
               }}
             >
               <span class="meta">
-                <span class="dot"></span>
                 <span class="feed">{store.feed(article.feedId)?.title}</span>
                 {#if store.starred.has(article.id)}
                   <Star size={11} class="star" fill="currentColor" strokeWidth={0} />
@@ -421,7 +420,7 @@
     top: 0;
     display: flex;
     flex-direction: column;
-    padding: 11px 20px 0 22px;
+    padding: 11px 20px 0;
     text-align: left;
     transition: color 120ms ease-out;
   }
@@ -465,7 +464,6 @@
   }
 
   .meta {
-    position: relative;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -473,19 +471,6 @@
     font-weight: 400;
     text-transform: uppercase;
     color: var(--text-3);
-  }
-
-  .dot {
-    position: absolute;
-    left: -13px;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    transition: background-color 120ms ease-out;
-  }
-
-  .row.unread .dot {
-    background: var(--unread-dot);
   }
 
   .feed {
@@ -517,13 +502,8 @@
   }
 
   .active .row.selected .meta,
-  .active .row.selected .title,
-  .active .row.selected .dot {
+  .active .row.selected .title {
     color: inherit;
-  }
-
-  .active .row.selected.unread .dot {
-    background: var(--accent-text);
   }
 
   .active .row.selected :global(.star) {

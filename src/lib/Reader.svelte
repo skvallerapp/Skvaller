@@ -243,9 +243,8 @@
     text-overflow: ellipsis;
   }
 
-  /* The same color as the unread dots in the list. */
   .unread {
-    color: var(--unread-dot);
+    color: var(--unread);
   }
 
   .starred {
