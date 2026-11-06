@@ -751,7 +751,7 @@
               </div>
             {:else}
               <button
-                class="button wide"
+                class="button wide remove"
                 bind:this={removeButton}
                 onclick={() => (confirmingRemove = true)}
               >
@@ -1082,6 +1082,11 @@
 
   .button.wide:hover {
     background: var(--active);
+  }
+
+  /* Leads to a destructive action, so red text; the confirmation's button is filled red. */
+  .button.remove {
+    color: var(--error);
   }
 
   .error {
