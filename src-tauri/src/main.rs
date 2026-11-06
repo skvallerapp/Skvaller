@@ -170,3 +170,124 @@ fn menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     }
     Ok(menu)
 }
+
+#[cfg(test)]
+mod tests {
+    use tauri::ipc::{CallbackFn, InvokeBody};
+    use tauri::test::{INVOKE_KEY, MockRuntime, get_ipc_response, mock_builder};
+    use tauri::webview::InvokeRequest;
+    use tauri::{WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+
+    /// The app's two windows, under the capabilities in `capabilities/`. App commands
+    /// that pass them succeed, without running.
+    fn windows() -> (WebviewWindow<MockRuntime>, WebviewWindow<MockRuntime>) {
+        let app = mock_builder()
+            .invoke_handler(|invoke| {
+                invoke.resolver.resolve(());
+                true
+            })
+            .build(tauri::generate_context!(test = true))
+            .expect("the mock app builds");
+        let window = |label| {
+            WebviewWindowBuilder::new(&app, label, WebviewUrl::default())
+                .build()
+                .expect("the window opens")
+        };
+        (window("main"), window("settings"))
+    }
+
+    /// The app's own URL, which the capabilities apply to.
+    const APP_URL: &str = if cfg!(windows) {
+        "http://tauri.localhost"
+    } else {
+        "tauri://localhost"
+    };
+
+    /// Calls `cmd` from `window` showing `url`, with no arguments.
+    fn call(window: &WebviewWindow<MockRuntime>, url: &str, cmd: &str) -> Result<(), String> {
+        let request = InvokeRequest {
+            cmd: cmd.into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: url.parse().expect("the URL parses"),
+            body: InvokeBody::default(),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_owned(),
+        };
+        get_ipc_response(window, request)
+            .map(drop)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Whether the capabilities let `window` call `cmd`. Any error but a refusal, such
+    /// as missing arguments, means the call got past them. Panics on a command that
+    /// doesn't exist, so a typo can't pass as a refusal.
+    fn allowed(window: &WebviewWindow<MockRuntime>, cmd: &str) -> bool {
+        match call(window, APP_URL, cmd) {
+            Err(e) if e.contains("Plugin not found") || e.contains("Command not found") => {
+                panic!("{cmd} isn't a command: {e}")
+            }
+            Err(e) => !e.contains(" not allowed"),
+            Ok(()) => true,
+        }
+    }
+
+    #[test]
+    fn main_window_cannot_call_what_only_settings_uses() {
+        let (main, settings) = windows();
+        for cmd in [
+            "update_account",
+            "remove_account",
+            "set_settings",
+            "import_opml",
+            "export_opml",
+            "take_settings_pane",
+        ] {
+            assert!(!allowed(&main, cmd), "main may call {cmd}");
+            assert!(allowed(&settings, cmd), "settings may not call {cmd}");
+        }
+    }
+
+    #[test]
+    fn settings_window_cannot_call_what_only_main_uses() {
+        let (main, settings) = windows();
+        for cmd in [
+            "articles",
+            "article_html",
+            "set_read",
+            "sync_now",
+            "open_settings",
+        ] {
+            assert!(allowed(&main, cmd), "main may not call {cmd}");
+            assert!(!allowed(&settings, cmd), "settings may call {cmd}");
+        }
+    }
+
+    #[test]
+    fn main_window_gets_only_the_core_permissions_it_uses() {
+        let (main, _) = windows();
+        for cmd in [
+            "plugin:event|listen",
+            "plugin:resources|close",
+            "plugin:window|start_dragging",
+        ] {
+            assert!(allowed(&main, cmd), "main may not call {cmd}");
+        }
+        for cmd in [
+            "plugin:event|emit",
+            "plugin:window|close",
+            "plugin:webview|create_webview_window",
+            "plugin:app|app_hide",
+        ] {
+            assert!(!allowed(&main, cmd), "main may call {cmd}");
+        }
+    }
+
+    #[test]
+    fn a_remote_page_in_the_main_window_can_call_nothing() {
+        let (main, _) = windows();
+        let refused = call(&main, "https://evil.example/", "articles")
+            .expect_err("a remote page may call articles");
+        assert!(refused.contains("articles not allowed"), "{refused}");
+    }
+}

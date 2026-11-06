@@ -1,12 +1,25 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "settings",
-  "description": "The Settings window: settings events, closing with Escape, and dragging the window (and double-clicking it) on macOS",
+  "description": "The Settings window: its commands, settings events, closing with Escape, and dragging the window (and double-clicking it) on macOS",
   "windows": [
     "settings"
   ],
   "permissions": [
-    "core:event:default",
+    "allow-session",
+    "allow-accounts",
+    "allow-sign-in",
+    "allow-add-local-account",
+    "allow-update-account",
+    "allow-remove-account",
+    "allow-library",
+    "allow-set-feed-reader-view",
+    "allow-set-settings",
+    "allow-import-opml",
+    "allow-export-opml",
+    "allow-take-settings-pane",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
     "core:window:allow-close",
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize"
