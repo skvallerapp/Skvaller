@@ -36,9 +36,19 @@ pub(crate) fn plain_text(html: &str, max: usize) -> String {
     };
 
     while let Some(c) = rest.chars().next() {
-        if c == '<' {
+        // As in HTML, `<` starts a tag only before a letter, `/` or `!`; otherwise it's text.
+        let starts_tag = c == '<'
+            && rest[1..]
+                .bytes()
+                .next()
+                .is_some_and(|b| b.is_ascii_alphabetic() || b == b'/' || b == b'!');
+        if starts_tag && rest.starts_with("<!--") {
+            rest = rest[4..].find("-->").map_or("", |i| &rest[4 + i + 3..]);
+            continue;
+        }
+        if starts_tag {
             let name = tag_name(&rest[1..]);
-            let end = rest.find('>').map_or(rest.len(), |i| i + 1);
+            let end = tag_end(rest);
             // Only `<svg>` hides what follows, not `</svg>` or `<svg/>`.
             let opens = !rest[1..].starts_with('/') && !rest[..end].ends_with("/>");
             rest = &rest[end..];
@@ -73,6 +83,21 @@ fn tag_name(s: &str) -> String {
         .collect()
 }
 
+/// Where the tag at the start of `s` ends, past its `>`. A `>` inside a quoted
+/// attribute value doesn't end it.
+fn tag_end(s: &str) -> usize {
+    let mut quote = None;
+    for (i, b) in s.bytes().enumerate() {
+        match (quote, b) {
+            (None, b'"' | b'\'') => quote = Some(b),
+            (Some(q), _) if b == q => quote = None,
+            (None, b'>') => return i + 1,
+            _ => {}
+        }
+    }
+    s.len()
+}
+
 /// The rest of `s` after the closing tag `</name>`, or nothing if it never closes.
 /// Compares in place: lowercasing a copy per skipped tag made pages of many `<svg>`s
 /// quadratic.
@@ -81,9 +106,13 @@ fn skip_past_close<'a>(s: &'a str, name: &str) -> &'a str {
     while let Some(i) = s[from..].find("</") {
         let start = from + i;
         let tag = start + 2..start + 2 + name.len();
-        if s.as_bytes()
+        let bytes = s.as_bytes();
+        let after = bytes.get(tag.end).copied();
+        // `</scriptx>` doesn't close `<script>`.
+        if bytes
             .get(tag)
             .is_some_and(|b| b.eq_ignore_ascii_case(name.as_bytes()))
+            && after.is_none_or(|b| b == b'>' || b == b'/' || b.is_ascii_whitespace())
         {
             return s[start..].find('>').map_or("", |j| &s[start + j + 1..]);
         }
@@ -114,9 +143,13 @@ fn entity(s: &str) -> (char, usize) {
         "ldquo" => Some('“'),
         "rdquo" => Some('”'),
         _ => name.strip_prefix('#').and_then(|num| {
+            // `from_str_radix` takes a leading `+`, which HTML doesn't.
             let code = match num.strip_prefix(['x', 'X']) {
-                Some(hex) => u32::from_str_radix(hex, 16).ok(),
-                None => num.parse().ok(),
+                Some(hex) if hex.bytes().all(|b| b.is_ascii_hexdigit()) => {
+                    u32::from_str_radix(hex, 16).ok()
+                }
+                None if num.bytes().all(|b| b.is_ascii_digit()) => num.parse().ok(),
+                _ => None,
             };
             code.and_then(char::from_u32)
         }),
@@ -158,6 +191,24 @@ mod tests {
         // The space before a word counts, so a word that starts one short of the limit
         // is cut too.
         assert_eq!(plain_text("aaa bbbb", 4), "aaa…");
+    }
+
+    #[test]
+    fn markup_that_only_looks_like_a_tag_is_handled_as_html_does() {
+        assert_eq!(
+            plain_text("Prices < 5 dollars rose.", 100),
+            "Prices < 5 dollars rose."
+        );
+        assert_eq!(plain_text(r#"<img alt="a > b">Text"#, 100), "Text");
+        assert_eq!(
+            plain_text("<!--[if mso]><p>Outlook only</p><![endif]-->Real", 100),
+            "Real"
+        );
+        assert_eq!(
+            plain_text("<script>a</scriptx>hidden</script>Real", 100),
+            "Real"
+        );
+        assert_eq!(plain_text("&#+65; &#x+41;", 100), "&#+65; &#x+41;");
     }
 
     #[test]

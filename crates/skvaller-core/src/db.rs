@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::full_text::MAX_ATTEMPTS;
 use crate::{Error, Result, api};
 
-const SCHEMA_VERSION: i32 = 5;
+const SCHEMA_VERSION: i32 = 6;
 
 /// Schema version 2. A new cache gets it plus the migrations after it, so each table
 /// is written down once.
@@ -159,6 +159,12 @@ WHEN old.url IS NOT new.url
 BEGIN
     DELETE FROM full_text WHERE article_id = new.id;
 END;
+";
+
+/// Schema version 5 to 6: an index for the local account's per-feed `seen` cleanup and
+/// for the cascade when a feed is deleted, which otherwise scan the whole table.
+const MIGRATE_5: &str = "
+CREATE INDEX seen_by_feed ON seen (feed_id);
 ";
 
 /// Newest crawl time seen from the server, in Unix milliseconds.
@@ -347,11 +353,12 @@ impl Db {
     fn init(conn: Connection) -> Result<Self> {
         let version: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         let steps = match version {
-            0 => format!("{SCHEMA} {MIGRATE_2} {MIGRATE_3} {MIGRATE_4}"),
-            1 => format!("{MIGRATE_1} {MIGRATE_2} {MIGRATE_3} {MIGRATE_4}"),
-            2 => format!("{MIGRATE_2} {MIGRATE_3} {MIGRATE_4}"),
-            3 => format!("{MIGRATE_3} {MIGRATE_4}"),
-            4 => MIGRATE_4.to_owned(),
+            0 => format!("{SCHEMA} {MIGRATE_2} {MIGRATE_3} {MIGRATE_4} {MIGRATE_5}"),
+            1 => format!("{MIGRATE_1} {MIGRATE_2} {MIGRATE_3} {MIGRATE_4} {MIGRATE_5}"),
+            2 => format!("{MIGRATE_2} {MIGRATE_3} {MIGRATE_4} {MIGRATE_5}"),
+            3 => format!("{MIGRATE_3} {MIGRATE_4} {MIGRATE_5}"),
+            4 => format!("{MIGRATE_4} {MIGRATE_5}"),
+            5 => MIGRATE_5.to_owned(),
             SCHEMA_VERSION => String::new(),
             _ => return Err(Error::CacheTooNew),
         };
@@ -477,26 +484,28 @@ impl Db {
             .optional()?)
     }
 
-    /// Does nothing if the article left the cache meanwhile.
-    pub(crate) fn set_full_text(&self, id: &str, html: &str) -> Result<()> {
+    /// Stores the text extracted from the page at `url`. Does nothing if the article left
+    /// the cache or moved to another URL meanwhile, so an old page's text isn't kept.
+    pub(crate) fn set_full_text(&self, id: &str, url: &str, html: &str) -> Result<()> {
         self.lock().execute(
             "INSERT INTO full_text (article_id, html, attempts)
-             SELECT id, ?2, 0 FROM articles WHERE id = ?1
+             SELECT id, ?2, 0 FROM articles WHERE id = ?1 AND url = ?3
              ON CONFLICT DO UPDATE SET html = excluded.html, attempts = 0",
-            params![id, html],
+            params![id, html, url],
         )?;
         Ok(())
     }
 
     /// Counts a failed fetch. A `permanent` failure, such as a page with nothing
-    /// readable, gives up at once.
+    /// readable, gives up at once. Text a concurrent fetch already stored is kept.
     pub(crate) fn full_text_failed(&self, id: &str, permanent: bool) -> Result<()> {
         let attempts = if permanent { MAX_ATTEMPTS } else { 1 };
         self.lock().execute(
             "INSERT INTO full_text (article_id, html, attempts)
              SELECT id, NULL, ?2 FROM articles WHERE id = ?1
              ON CONFLICT DO UPDATE SET
-                 html = NULL, attempts = min(?3, attempts + excluded.attempts)",
+                 attempts = min(?3, attempts + excluded.attempts)
+             WHERE full_text.html IS NULL",
             params![id, attempts, MAX_ATTEMPTS],
         )?;
         Ok(())
@@ -1383,7 +1392,7 @@ mod tests {
         assert!(!db.feeds().unwrap()[0].reader_view);
         db.upsert_articles(&[article(1, "feed/1", false, false)])
             .unwrap();
-        db.set_full_text("1", "<p>x</p>").unwrap();
+        db.set_full_text("1", "", "<p>x</p>").unwrap();
         assert_eq!(
             db.full_text("1").unwrap(),
             Some(FullText::Html("<p>x</p>".into()))
@@ -1408,7 +1417,8 @@ mod tests {
             db.full_text("3").unwrap(),
             Some(FullText::Failed(MAX_ATTEMPTS))
         );
-        db.set_full_text("3", "<p>full</p>").unwrap();
+        db.set_full_text("3", "https://example.com/a", "<p>full</p>")
+            .unwrap();
         assert_eq!(
             db.full_text("3").unwrap(),
             Some(FullText::Html("<p>full</p>".into()))
@@ -1423,12 +1433,24 @@ mod tests {
         assert!(db.full_text("3").unwrap().is_some());
         db.upsert_articles(&[at("https://example.com/b")]).unwrap();
         assert_eq!(db.full_text("3").unwrap(), None);
+        // Text fetched from the old URL isn't stored.
+        db.set_full_text("3", "https://example.com/a", "<p>old</p>")
+            .unwrap();
+        assert_eq!(db.full_text("3").unwrap(), None);
 
-        db.set_full_text("3", "<p>full</p>").unwrap();
+        // A failed fetch racing a successful one keeps the text.
+        db.set_full_text("3", "https://example.com/b", "<p>full</p>")
+            .unwrap();
+        db.full_text_failed("3", false).unwrap();
+        assert_eq!(
+            db.full_text("3").unwrap(),
+            Some(FullText::Html("<p>full</p>".into()))
+        );
         db.prune(10_000).unwrap();
         assert_eq!(db.full_text("3").unwrap(), None);
         // An article that left the cache gets no row.
-        db.set_full_text("3", "<p>full</p>").unwrap();
+        db.set_full_text("3", "https://example.com/b", "<p>full</p>")
+            .unwrap();
         db.full_text_failed("3", true).unwrap();
         assert_eq!(db.full_text("3").unwrap(), None);
     }
@@ -1452,7 +1474,8 @@ mod tests {
             with_url(7, "feed/1", false),       // given up on
         ])
         .unwrap();
-        db.set_full_text("2", "<p>x</p>").unwrap();
+        db.set_full_text("2", "https://example.com/2", "<p>x</p>")
+            .unwrap();
         db.full_text_failed("6", false).unwrap();
         db.full_text_failed("7", true).unwrap();
         assert!(db.full_text_wanted(10).unwrap().is_empty());

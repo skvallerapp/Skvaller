@@ -48,10 +48,19 @@ impl SyncGate {
     /// Stops a running sync and keeps others from starting while the guard lives.
     pub async fn stop(&self) -> MutexGuard<'_, ()> {
         self.stopping.store(true, Ordering::SeqCst);
+        // Clears the flag even if this future is dropped while waiting, or no sync would
+        // ever start again.
+        let _clear = ClearOnDrop(&self.stopping);
         self.stop.notify_waiters();
-        let guard = self.running.lock().await;
-        self.stopping.store(false, Ordering::SeqCst);
-        guard
+        self.running.lock().await
+    }
+}
+
+struct ClearOnDrop<'a>(&'a AtomicBool);
+
+impl Drop for ClearOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
@@ -86,6 +95,21 @@ mod tests {
     async fn a_stop_while_idle_does_not_stop_the_next_sync() {
         let gate = SyncGate::default();
         drop(gate.stop().await);
+
+        assert_eq!(gate.run(async { 1 }).await, Outcome::Done(1));
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_stop_does_not_stop_later_syncs() {
+        let gate = SyncGate::default();
+        let guard = gate.stop().await;
+        // A second stop waits behind the first, and is given up on.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), gate.stop())
+                .await
+                .is_err()
+        );
+        drop(guard);
 
         assert_eq!(gate.run(async { 1 }).await, Outcome::Done(1));
     }

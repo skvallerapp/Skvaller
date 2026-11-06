@@ -177,7 +177,7 @@ async fn fetch(
             req = req.header(IF_MODIFIED_SINCE, modified);
         }
     }
-    let mut res = req.send().await.map_err(|e| network_error(&e))?;
+    let mut res = req.send().await.map_err(network_error)?;
     let status = res.status();
     if status == StatusCode::NOT_MODIFIED && known.is_some() {
         return Ok(None);
@@ -207,7 +207,7 @@ async fn fetch(
     );
     let url = res.url().clone();
     let mut body = Vec::new();
-    while let Some(chunk) = res.chunk().await.map_err(|e| network_error(&e))? {
+    while let Some(chunk) = res.chunk().await.map_err(network_error)? {
         body.extend_from_slice(&chunk);
         if body.len() > MAX_FEED_BYTES {
             return Err(FetchError::Refused("the feed is too large".into()));
@@ -239,14 +239,15 @@ impl FetchError {
 }
 
 /// Only no answer at all counts as unreachable; a broken one, such as a redirect loop, is
-/// an answer.
-fn network_error(e: &reqwest::Error) -> FetchError {
+/// an answer. The message leaves out the URL, which can hold a username and password and
+/// is stored and shown as the feed's error.
+fn network_error(e: reqwest::Error) -> FetchError {
     if e.is_timeout() {
         FetchError::Unreachable("the server took too long to answer".into())
     } else if e.is_connect() {
         FetchError::Unreachable("could not reach the server".into())
     } else {
-        FetchError::Refused(e.to_string())
+        FetchError::Refused(e.without_url().to_string())
     }
 }
 

@@ -483,7 +483,18 @@ async fn current_session(state: &AppState) -> CommandResult<Session> {
     };
     let active = config.active.as_deref().map(|id| state.runtime(id));
     let (signed_in, status) = match active {
-        Some(Ok(rt)) => (is_signed_in(state, &rt).await?, rt.status()),
+        // A keychain that can't be read shows the sign-in screen with the reason, rather
+        // than failing the session and, with it, every window's account list.
+        Some(Ok(rt)) => match is_signed_in(state, &rt).await {
+            Ok(signed_in) => (signed_in, rt.status()),
+            Err(e) => (
+                false,
+                SyncStatus {
+                    error: Some(e.message),
+                    ..rt.status()
+                },
+            ),
+        },
         // Its cache didn't open: the main window says why.
         Some(Err(e)) => (
             true,
@@ -562,7 +573,14 @@ pub async fn sign_in(
     );
     blocking(move || save_token(&key, &token)).await?;
 
-    let rt = add_account(&app, &state, kind)?;
+    let (rt, added) = add_account(&app, &state, kind)?;
+    if added {
+        // Its sync loop has started its first sync with the saved token: no need to
+        // stop it.
+        *lock(&rt.client) = Some(client);
+        emit_session(&app).await;
+        return current_session(&state).await;
+    }
     {
         // A sync still running with the old token would reject the new one when it fails.
         let _no_sync = rt.sync_gate.stop().await;
@@ -580,12 +598,12 @@ pub async fn sign_in(
 }
 
 /// Makes the account of `kind` active, adding it first if there is none: then it gets
-/// a new ID and its background sync starts.
+/// a new ID and its background sync starts. Says whether it was added.
 fn add_account(
     app: &AppHandle,
     state: &AppState,
     kind: AccountKind,
-) -> CommandResult<Arc<Runtime>> {
+) -> CommandResult<(Arc<Runtime>, bool)> {
     let existing = |config: &Config| {
         config
             .accounts
@@ -603,7 +621,7 @@ fn add_account(
     })?;
     let id = match id {
         Ok(id) => id,
-        Err(existing) => return state.runtime(&existing),
+        Err(existing) => return Ok((state.runtime(&existing)?, false)),
     };
     let rt = Arc::new(Runtime::open(&state.accounts_dir, &id)?);
     let added = state.update_config(|config| {
@@ -633,12 +651,12 @@ fn add_account(
         Ok(Ok(())) => {
             lock(&state.runtimes).insert(id, rt.clone());
             start_sync_loop(app.clone(), rt.clone());
-            Ok(rt)
+            Ok((rt, true))
         }
         Ok(Err(other)) => {
             drop(rt);
             remove_db_files(&state.accounts_dir, &id);
-            state.runtime(&other)
+            Ok((state.runtime(&other)?, false))
         }
         Err(e) => {
             drop(rt);
@@ -668,7 +686,17 @@ pub async fn set_active_account(
     id: String,
 ) -> CommandResult<Session> {
     state.runtime(&id)?;
-    state.update_config(|config| config.active = Some(id))?;
+    // Checked again under the lock, in case the account was removed meanwhile.
+    let exists = state.update_config(|config| {
+        let exists = config.account(&id).is_some();
+        if exists {
+            config.active = Some(id);
+        }
+        exists
+    })?;
+    if !exists {
+        return Err(CommandError::other("the account was removed"));
+    }
     let session = current_session(&state).await?;
     let _ = app.emit(ACCOUNTS_EVENT, session.clone());
     Ok(session)

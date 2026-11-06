@@ -12,7 +12,7 @@ use tokio::task::JoinSet;
 use crate::api::{Item, READ, READING_LIST, STARRED, Subscription, parse_item_id};
 use crate::db::{ArticleRow, FeedRow, Flag};
 use crate::text::plain_text;
-use crate::{Client, Db, Result};
+use crate::{Client, Db, Error, Result};
 
 pub(crate) const DAY: i64 = 24 * 60 * 60;
 /// Later syncs list articles from this much before the newest crawl time already seen,
@@ -53,7 +53,12 @@ pub struct SyncReport {
 /// cached yet: Miniflux has no `stream/contents`. A flag with a queued local change is
 /// never overwritten.
 pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Result<SyncReport> {
-    let pushed = push(client, db).await?;
+    // A push the server refuses doesn't hold back the pull, since queued changes are kept
+    // and win anyway. Its error is returned once the pull is done.
+    let pushed = match push(client, db).await {
+        Err(Error::Unauthorized) => return Err(Error::Unauthorized),
+        pushed => pushed,
+    };
     let keep_read_since = now - i64::from(keep_read_days) * DAY;
 
     let subs = client.subscriptions().await?;
@@ -95,6 +100,7 @@ pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Re
     }
     let pruned = db.prune(keep_read_since * 1000)?;
     fetch_icons(db, |url| client.resolve(url), None).await?;
+    let pushed = pushed?;
     db.set_last_sync(now * 1000)?;
     Ok(SyncReport {
         pushed,
@@ -104,12 +110,15 @@ pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Re
     })
 }
 
+/// Sends queued changes, a chunk at a time. A chunk the server refuses stays queued and
+/// the rest still go; the first such error is returned at the end.
 async fn push(client: &Client, db: &Db) -> Result<usize> {
     let pending = db.pending()?;
     if pending.is_empty() {
         return Ok(0);
     }
     let token = client.write_token().await?;
+    let mut failed = None;
     for flag in [Flag::Read, Flag::Starred] {
         for value in [true, false] {
             let ids: Vec<String> = pending
@@ -118,12 +127,17 @@ async fn push(client: &Client, db: &Db) -> Result<usize> {
                 .map(|(id, ..)| id.clone())
                 .collect();
             for chunk in ids.chunks(BATCH) {
-                client.edit_tag(&token, chunk, flag.tag(), value).await?;
-                db.clear_pending(flag, value, chunk)?;
+                match client.edit_tag(&token, chunk, flag.tag(), value).await {
+                    Ok(()) => db.clear_pending(flag, value, chunk)?,
+                    Err(Error::Unauthorized) => return Err(Error::Unauthorized),
+                    Err(e) => {
+                        failed.get_or_insert(e);
+                    }
+                }
             }
         }
     }
-    Ok(pending.len())
+    failed.map_or(Ok(pending.len()), Err)
 }
 
 /// Fetches the icons of feeds that are new or whose icon URL changed, `resolve` making
@@ -231,6 +245,7 @@ fn store(db: &Db, items: Vec<Item>) -> Result<(usize, Option<i64>)> {
         .filter_map(|item| {
             let id = parse_item_id(&item.id)?;
             let (read, starred) = (item.has_state(READ), item.has_state(STARRED));
+            let crawl_time = item.crawl_time();
             let html = item
                 .content
                 .or(item.summary)
@@ -256,7 +271,14 @@ fn store(db: &Db, items: Vec<Item>) -> Result<(usize, Option<i64>)> {
                 feed_id: item.origin.stream_id,
                 title: item.title.unwrap_or_default(),
                 author: item.author.unwrap_or_default(),
-                published: item.published.saturating_mul(1000),
+                // Without a publish date, when the server got it beats 1970, which
+                // would sort it last and get it pruned and fetched again.
+                published: item
+                    .published
+                    .filter(|&s| s > 0)
+                    .map(|s| s.saturating_mul(1000))
+                    .or(crawl_time)
+                    .unwrap_or_default(),
             })
         })
         .collect();

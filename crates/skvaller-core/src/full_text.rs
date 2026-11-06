@@ -56,7 +56,7 @@ pub async fn load(db: &Db, id: &str, retry: bool) -> Result<Option<String>> {
         None => None,
     };
     match &html {
-        Some(html) => db.set_full_text(id, html)?,
+        Some(html) => db.set_full_text(id, &url, html)?,
         None => db.full_text_failed(id, true)?,
     }
     Ok(html)
@@ -176,7 +176,12 @@ fn label(name: &str) -> Option<&'static Encoding> {
 
 /// The main content of `html`, the page at `url`, as HTML with absolute links. `None`
 /// if nothing readable was found, or the page nests too deeply to read in good time.
-/// Takes milliseconds to tens of milliseconds: keep it off the async runtime.
+/// Takes milliseconds to tens of milliseconds on real pages, and seconds on hostile
+/// ones: keep it off the async runtime.
+///
+/// The output is not sanitized: Readability drops scripts but keeps event handlers and
+/// `javascript:` URLs. It is safe only because the reader frame runs no scripts and
+/// article links open only http(s) URLs.
 fn extract(html: &str, url: &str) -> Option<String> {
     let document = html::parse(html)?;
     // Errors are a bad URL or no content: nothing readable either way.
