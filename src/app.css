@@ -24,7 +24,7 @@
   --accent-muted: color-mix(in srgb, var(--accent) 22%, transparent);
   --unread-dot: #9a5136;
   --star: #e0a21b;
-  --error: #c4352b;
+  --error: #b52f28;
   /* Behind white text, so the same in both themes. */
   --destructive: #c4352b;
   --thumb-bg: #ffffff;
@@ -71,7 +71,7 @@
   --accent: #9a6342;
   --unread-dot: #cfa080;
   --star: #f0b63a;
-  --error: #f0776c;
+  --error: #f4847a;
   --thumb-bg: #5a4640;
   --thumb-edge: rgb(255 236 224 / 0.2);
   --switch-knob: #dcd2cc;
