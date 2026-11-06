@@ -25,6 +25,15 @@ fn main() {
     #[cfg(target_os = "macos")]
     let builder = builder.menu(menu);
     builder
+        // First, so a second launch exits before it sets anything up. Two instances would
+        // save over each other's config.json and sync the same caches.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.unminimize();
+                let _ = main.show();
+                let _ = main.set_focus();
+            }
+        }))
         // Only article links open in the browser, through the reader. The app's own
         // window has no external links, so the plugin's click handler is off.
         .plugin(
