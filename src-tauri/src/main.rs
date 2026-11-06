@@ -1,8 +1,11 @@
 // Prevents an extra console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-// Drawn for Windows only; tested everywhere.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+// Drawn for Windows only; tested everywhere. Not `expect`: test builds use all of it.
+#[cfg_attr(
+    not(target_os = "windows"),
+    allow(dead_code, reason = "the badge is drawn on Windows only")
+)]
 mod badge;
 mod commands;
 mod config;
@@ -48,9 +51,10 @@ fn main() {
             let state = commands::AppState::load(app.handle())?;
             app.set_theme(state.theme().native());
             app.manage(state);
-            commands::update_badge(app.handle());
             commands::start_background_sync(app.handle().clone());
             create_main_window(app.handle())?;
+            // Needs the main window, so the badge shows before the first sync ends.
+            commands::update_badge(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -112,7 +116,10 @@ fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
 }
 
 /// The default menu, with Settings… after About in the app menu.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(dead_code, reason = "only macOS has an app menu")
+)]
 fn menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let menu = Menu::default(app)?;
     if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.first() {

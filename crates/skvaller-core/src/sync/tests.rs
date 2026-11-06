@@ -174,13 +174,15 @@ async fn login_reads_the_auth_token() {
 
 #[tokio::test]
 async fn login_with_a_wrong_password_is_unauthorized() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized!"))
-        .mount(&server)
-        .await;
-    let err = Client::login(&format!("{}{API}", server.uri()), "carl", "nope").await;
-    assert!(matches!(err, Err(Error::Unauthorized)));
+    for status in [401, 403] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(status).set_body_string("Unauthorized!"))
+            .mount(&server)
+            .await;
+        let err = Client::login(&format!("{}{API}", server.uri()), "carl", "nope").await;
+        assert!(matches!(err, Err(Error::Unauthorized)), "HTTP {status}");
+    }
 }
 
 #[tokio::test]
@@ -518,8 +520,11 @@ async fn failed_push_keeps_the_queue_and_the_local_state() {
     fake.server.reset().await;
     fake.serve(
         crawl - CRAWL_OVERLAP,
-        vec![item(1, "feed/1", crawl, false, false)],
-        &[1],
+        vec![
+            item(1, "feed/1", crawl, false, false),
+            item(2, "feed/1", crawl, false, false),
+        ],
+        &[1, 2],
         &[],
     )
     .await;
@@ -544,6 +549,47 @@ async fn failed_push_keeps_the_queue_and_the_local_state() {
         [("1".to_owned(), Flag::Read, true)]
     );
     assert_eq!(fake.flags(1), Some((true, false)));
+    // The pull went ahead anyway.
+    assert_eq!(fake.flags(2), Some((false, false)));
+}
+
+#[tokio::test]
+async fn forbidden_outside_sign_in_is_not_unauthorized() {
+    let fake = Fake::new().await;
+    fake.mount(Mock::given(method("GET")).respond_with(ResponseTemplate::new(403)))
+        .await;
+    let result = sync(&fake.client, &fake.db, NOW, DEFAULT_KEEP_READ_DAYS).await;
+    assert!(matches!(result, Err(Error::Protocol(_))));
+}
+
+#[tokio::test]
+async fn malformed_items_are_skipped_and_missing_dates_use_the_crawl_time() {
+    let fake = Fake::new().await;
+    let crawl = NOW - DAY;
+    let mut undated = item(2, "feed/1", crawl, false, false);
+    undated["published"] = Value::Null;
+    let mut broken = item(3, "feed/1", crawl, false, false);
+    broken["origin"] = Value::Null;
+    fake.serve(
+        NOW - 30 * DAY,
+        vec![item(1, "feed/1", crawl, false, false), undated, broken],
+        &[1, 2, 3],
+        &[],
+    )
+    .await;
+
+    let report = sync(&fake.client, &fake.db, NOW, DEFAULT_KEEP_READ_DAYS)
+        .await
+        .unwrap();
+
+    assert_eq!(report.fetched, 2);
+    let published: i64 = fake.db.with_conn(|c| {
+        c.query_row("SELECT published FROM articles WHERE id = '2'", [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    });
+    assert_eq!(published, crawl * 1000);
 }
 
 // Live tests against a real account:

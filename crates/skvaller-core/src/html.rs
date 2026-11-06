@@ -17,9 +17,10 @@ use html5ever::tokenizer::TokenizerOpts;
 use html5ever::tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeBuilderOpts, TreeSink};
 use html5ever::{Attribute, ParseOpts, QualName, parse_document};
 
-/// Deeper than any real page, which stays under a hundred or so; shallow enough that a
-/// tree this deep parses, and Readability reads it, in good time.
-pub(crate) const MAX_DEPTH: usize = 500;
+/// Deeper than any real page, which stays under a hundred or so. Readability's work
+/// grows with nodes times depth: a hostile 2 MB page this deep takes it about 4 s,
+/// against 10 s at 500.
+pub(crate) const MAX_DEPTH: usize = 200;
 
 /// The page is fed to the parser this much at a time; between pieces, a page found too
 /// deep is given up on. The piece that crosses the limit can nest a few hundred levels

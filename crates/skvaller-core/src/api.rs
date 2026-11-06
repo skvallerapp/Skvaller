@@ -96,6 +96,11 @@ impl Client {
         ) {
             return Ok(Err(None));
         }
+        // ClientLogin answers wrong credentials with 403. Elsewhere a 403 more likely
+        // comes from a proxy or rate limit, so `check` doesn't treat it as signed out.
+        if status == StatusCode::FORBIDDEN {
+            return Err(Error::Unauthorized);
+        }
         check(status)?;
         let body = res.text().await?;
         let Some(token) = body
@@ -187,6 +192,11 @@ impl Client {
                 req = req.query(&[("c", c)]);
             }
             let page: Page = self.json(req).await?;
+            // An empty page ends the stream too, in case a server keeps handing out new
+            // continuations with nothing behind them.
+            if page.item_refs.is_empty() {
+                return Ok(ids);
+            }
             ids.extend(page.item_refs.iter().filter_map(|r| parse_item_id(&r.id)));
             match next_page(page.continuation, &continuation) {
                 Some(c) => continuation = Some(c),
@@ -195,12 +205,13 @@ impl Client {
         }
     }
 
-    /// Full articles for the given IDs.
+    /// Full articles for the given IDs. Items that don't parse are left out, so one
+    /// malformed item can't fail every sync.
     pub(crate) async fn items_contents(&self, ids: &[String]) -> Result<Vec<Item>> {
         #[derive(Deserialize)]
         struct Page {
             #[serde(default)]
-            items: Vec<Item>,
+            items: Vec<serde_json::Value>,
         }
         let form: Vec<_> = ids
             .iter()
@@ -211,7 +222,11 @@ impl Client {
         }
         let req = self.post("stream/items/contents").form(&form);
         let page: Page = self.json(req).await?;
-        Ok(page.items)
+        Ok(page
+            .items
+            .into_iter()
+            .filter_map(|item| serde_json::from_value(item).ok())
+            .collect())
     }
 
     /// The short-lived token that write calls need.
@@ -283,7 +298,7 @@ impl Client {
 
 fn check(status: StatusCode) -> Result<()> {
     match status {
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(Error::Unauthorized),
+        StatusCode::UNAUTHORIZED => Err(Error::Unauthorized),
         s if s.is_success() => Ok(()),
         s => Err(Error::Protocol(format!("HTTP {s}"))),
     }
@@ -379,9 +394,8 @@ pub(crate) struct Item {
     /// `crawlTimeMsec`.
     #[serde(rename = "timestampUsec")]
     pub timestamp_usec: Option<String>,
-    /// Unix seconds.
-    #[serde(default)]
-    pub published: i64,
+    /// Unix seconds. Some servers send `null` or leave it out.
+    pub published: Option<i64>,
     pub title: Option<String>,
     pub author: Option<String>,
     #[serde(default)]
