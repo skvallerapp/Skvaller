@@ -9,6 +9,7 @@
 mod badge;
 mod commands;
 mod config;
+mod logging;
 mod sync_gate;
 
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
@@ -16,6 +17,7 @@ use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Manager, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
+use tracing::Level;
 
 const SETTINGS_MENU_ITEM: &str = "settings";
 
@@ -100,11 +102,13 @@ fn main() {
 
 /// Loads the state, starts the background sync and opens the main window.
 fn start(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    logging::init(app.path().app_log_dir().ok().as_deref());
     let state = commands::AppState::load(app)?;
     app.set_theme(state.theme().native());
     app.manage(state);
     // Before the sync, so a run that ends in the startup error doesn't sync first.
     create_main_window(app).map_err(|e| format!("Opening the main window failed: {e}"))?;
+    show_config_notice(app);
     commands::start_background_sync(app.clone());
     // Needs the main window, so the badge shows before the first sync ends.
     commands::update_badge(app);
@@ -117,13 +121,32 @@ fn start(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 /// show it in. The dialog can't block here: setup runs on the main thread, which has
 /// to be free to show it.
 fn show_startup_error(app: &AppHandle, error: &str) {
-    eprintln!("Starting failed: {error}");
+    tracing::event!(
+        name: "app.start.failure",
+        Level::ERROR,
+        error.message = error,
+        "starting failed: {{error.message}}",
+    );
     let handle = app.clone();
     app.dialog()
         .message(error)
         .title("Skvaller can't start")
         .kind(MessageDialogKind::Error)
         .show(move |_| handle.exit(1));
+}
+
+/// Tells the user, over the main window, that config.json couldn't be read.
+fn show_config_notice(app: &AppHandle) {
+    let state = app.state::<commands::AppState>();
+    let (Some(notice), Some(main)) = (state.config_notice(), app.get_webview_window("main")) else {
+        return;
+    };
+    app.dialog()
+        .message(&notice.message)
+        .title(notice.title)
+        .kind(MessageDialogKind::Warning)
+        .parent(&main)
+        .show(|_| {});
 }
 
 /// The main window, from tauri.conf.json. Article links ask for a new window (see
@@ -143,7 +166,15 @@ fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
             if matches!(url.scheme(), "http" | "https")
                 && let Err(e) = handle.opener().open_url(url.as_str(), None::<&str>)
             {
-                eprintln!("Opening {url} failed: {e}");
+                // Not the whole link, which can carry tokens.
+                tracing::event!(
+                    name: "link.open.failure",
+                    Level::WARN,
+                    url.scheme = url.scheme(),
+                    server.address = url.host_str().unwrap_or_default(),
+                    error.message = %e,
+                    "opening a {{url.scheme}} link to {{server.address}} failed: {{error.message}}",
+                );
             }
             NewWindowResponse::Deny
         })
