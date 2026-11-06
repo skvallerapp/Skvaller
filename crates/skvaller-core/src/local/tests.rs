@@ -204,7 +204,7 @@ async fn a_refresh_keeps_what_the_user_did_and_asks_only_for_changes() {
         .mount(&server)
         .await;
     // Kept long enough that nothing is pruned.
-    let report = refresh(&db, NOW, 3000).await.unwrap();
+    let report = refresh(&db, NOW, 3000, None).await.unwrap();
 
     assert_eq!(report.fetched, 1);
     let articles = all(&db);
@@ -222,7 +222,7 @@ async fn a_refresh_keeps_what_the_user_did_and_asks_only_for_changes() {
         .respond_with(ResponseTemplate::new(304))
         .mount(&server)
         .await;
-    assert_eq!(refresh(&db, NOW, 3000).await.unwrap().fetched, 0);
+    assert_eq!(refresh(&db, NOW, 3000, None).await.unwrap().fetched, 0);
     assert_eq!(all(&db).len(), 2);
 }
 
@@ -242,7 +242,7 @@ async fn a_failing_feed_says_why_and_the_others_go_on() {
     serve(&server, "/good.xml", xml(rss(TWO_ITEMS))).await;
     serve(&server, "/bad.xml", ResponseTemplate::new(500)).await;
 
-    refresh(&db, NOW, 30).await.unwrap();
+    refresh(&db, NOW, 30, None).await.unwrap();
 
     let feeds = db.feeds().unwrap();
     let error = |id: &str| {
@@ -264,7 +264,7 @@ async fn a_failing_feed_says_why_and_the_others_go_on() {
     server.reset().await;
     serve(&server, "/bad.xml", xml(rss(""))).await;
     serve(&server, "/good.xml", xml(rss(TWO_ITEMS))).await;
-    refresh(&db, NOW, 30).await.unwrap();
+    refresh(&db, NOW, 30, None).await.unwrap();
     assert!(db.feeds().unwrap().iter().all(|f| f.fetch_error.is_none()));
 }
 
@@ -281,10 +281,32 @@ async fn a_pruned_entry_does_not_come_back_while_the_feed_lists_it() {
 
     // Long after: the read one is pruned, and stays gone.
     let later = NOW + 400 * DAY;
-    refresh(&db, later, 30).await.unwrap();
-    refresh(&db, later, 30).await.unwrap();
+    refresh(&db, later, 30, None).await.unwrap();
+    refresh(&db, later, 30, None).await.unwrap();
     let ids: Vec<String> = all(&db).into_iter().map(|a| a.id).collect();
     assert_eq!(ids, [article_id(&feed, "a2").to_string()]);
+}
+
+#[tokio::test]
+async fn old_unread_entries_go_after_their_own_period_except_starred() {
+    let server = MockServer::start().await;
+    serve(&server, "/feed.xml", xml(rss(TWO_ITEMS))).await;
+    let db = Db::open_in_memory().unwrap();
+    let feed = subscribe(&db, &format!("{}/feed.xml", server.uri()), None, NOW)
+        .await
+        .unwrap();
+    let starred = article_id(&feed, "a1").to_string();
+    db.set_starred(&[starred.as_str()], true).unwrap();
+
+    // Kept forever without a period of their own, and within one.
+    let later = NOW + 400 * DAY;
+    assert_eq!(refresh(&db, later, 30, None).await.unwrap().pruned, 0);
+    assert_eq!(refresh(&db, later, 30, Some(500)).await.unwrap().pruned, 0);
+    // Past it, the unstarred one goes, and stays gone.
+    assert_eq!(refresh(&db, later, 30, Some(180)).await.unwrap().pruned, 1);
+    assert_eq!(refresh(&db, later, 30, Some(180)).await.unwrap().fetched, 0);
+    let ids: Vec<String> = all(&db).into_iter().map(|a| a.id).collect();
+    assert_eq!(ids, [starred]);
 }
 
 #[tokio::test]
@@ -301,7 +323,7 @@ async fn an_entry_without_a_date_keeps_the_one_it_was_first_seen_with() {
         .await
         .unwrap();
 
-    refresh(&db, NOW + DAY, 30).await.unwrap();
+    refresh(&db, NOW + DAY, 30, None).await.unwrap();
     assert_eq!(all(&db)[0].published, NOW * 1000);
 }
 
@@ -386,7 +408,7 @@ async fn a_feed_unsubscribed_while_fetched_is_skipped_and_one_redirected_to_is_f
 async fn a_refresh_that_reaches_no_feed_fails_and_one_without_feeds_works() {
     let db = Db::open_in_memory().unwrap();
     // No feeds: nothing to reach, and the refresh is done.
-    refresh(&db, NOW, 30).await.unwrap();
+    refresh(&db, NOW, 30, None).await.unwrap();
     assert_eq!(db.last_sync().unwrap(), Some(NOW * 1000));
 
     // A port nothing listens on: likely offline, so the refresh fails, keeping the feed.
@@ -407,7 +429,7 @@ async fn a_refresh_that_reaches_no_feed_fails_and_one_without_feeds_works() {
         .unwrap();
     assert!(added);
     assert!(matches!(
-        refresh(&db, NOW + 60, 30).await,
+        refresh(&db, NOW + 60, 30, None).await,
         Err(Error::Local(_))
     ));
     assert_eq!(
@@ -429,7 +451,7 @@ async fn a_refresh_that_reaches_no_feed_fails_and_one_without_feeds_works() {
         icon_url: None,
     })
     .unwrap();
-    refresh(&db, NOW + 120, 30).await.unwrap();
+    refresh(&db, NOW + 120, 30, None).await.unwrap();
 }
 
 #[tokio::test]
@@ -452,7 +474,7 @@ async fn repeated_entry_id_keeps_the_first_and_its_reader_view_text() {
     db.set_full_text(&id, &articles[0].url, "<p>full</p>")
         .unwrap();
 
-    let report = refresh(&db, NOW, 3000).await.unwrap();
+    let report = refresh(&db, NOW, 3000, None).await.unwrap();
 
     assert_eq!(report.fetched, 0);
     assert!(db.full_text(&id).unwrap().is_some());

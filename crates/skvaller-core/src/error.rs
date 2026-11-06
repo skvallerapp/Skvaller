@@ -25,4 +25,20 @@ pub enum Error {
     Keychain(#[from] keyring::Error),
 }
 
+impl Error {
+    /// The cache file is damaged, or not an SQLite database at all. Only starting it over
+    /// helps.
+    #[must_use]
+    pub fn is_corrupt(&self) -> bool {
+        matches!(
+            self,
+            Error::Db(rusqlite::Error::SqliteFailure(e, _))
+                if matches!(
+                    e.code,
+                    rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase
+                )
+        )
+    }
+}
+
 pub type Result<T, E = Error> = std::result::Result<T, E>;

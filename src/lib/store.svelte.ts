@@ -509,12 +509,35 @@ class Store {
               a.id === this.articleId || (this.view === 'unread' ? this.read.has(a.id) : !this.starred.has(a.id)),
           ),
         )
-      Promise.all(loads).catch((e) => console.error('Reloading after a sync failed', e))
+      Promise.all(loads).catch((e) => {
+        this.#noteCorrupt(e)
+        console.error('Reloading after a sync failed', e)
+      })
     }
   }
 
   async #reload(keep?: (a: Article) => boolean) {
-    await Promise.all([this.#loadLibrary(), this.#loadList(keep)])
+    try {
+      await Promise.all([this.#loadLibrary(), this.#loadList(keep)])
+    } catch (e) {
+      this.#noteCorrupt(e)
+      throw e
+    }
+  }
+
+  /** A read that found the cache damaged offers to start it over, as a sync that does. */
+  #noteCorrupt(e: unknown) {
+    if ((e as { kind?: string } | null)?.kind === 'corrupt') this.status = { ...this.status, cacheBroken: true }
+  }
+
+  /** Starts the active account's damaged cache over. Its sync, which follows, brings the
+   * articles back. */
+  async rebuildCache() {
+    const account = this.#account()
+    await api.rebuildCache(account)
+    if (account !== this.#account()) return
+    this.status = { ...this.status, error: null, cacheBroken: false }
+    await this.#reload()
   }
 
   async #loadLibrary() {
