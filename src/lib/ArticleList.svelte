@@ -8,10 +8,11 @@
   import { animate } from './motion'
   import { dragRegion, macWindow } from './platform'
   import { store } from './store.svelte'
+  import type { Article } from './types'
   import { viewInfo } from './views'
 
-  // Fixed row height keeps the list virtualized and cheap at 5,000+ rows.
-  // Room for a headline of three lines.
+  // Row heights come from the data, never from measuring the DOM, so the list stays
+  // virtualized and cheap at 5,000+ rows. Room for a headline of three lines.
   const ROW_HEIGHT = 87
   const OVERSCAN = 6
 
@@ -20,10 +21,29 @@
   let height = $state(0)
 
   const items = $derived(store.visible)
+  const rowHeight = $derived((_article: Article) => ROW_HEIGHT)
+  /** Where each row starts, plus where the last one ends. */
+  const offsets = $derived.by(() => {
+    const o = new Float64Array(items.length + 1)
+    for (let i = 0; i < items.length; i++) o[i + 1] = o[i] + rowHeight(items[i])
+    return o
+  })
   const selectedIndex = $derived(items.findIndex((a) => a.id === store.articleId))
-  const first = $derived(Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN))
-  const last = $derived(Math.min(items.length, Math.ceil((scrollTop + height) / ROW_HEIGHT) + OVERSCAN))
+  const first = $derived(Math.max(0, rowAt(offsets, scrollTop) - OVERSCAN))
+  const last = $derived(Math.min(items.length, rowAt(offsets, scrollTop + height) + 1 + OVERSCAN))
   const rows = $derived(items.slice(first, last))
+
+  /** The row at `y`: the number of rows that end at or above it. */
+  function rowAt(o: Float64Array, y: number) {
+    let lo = 0
+    let hi = o.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (o[mid + 1] <= y) lo = mid + 1
+      else hi = mid
+    }
+    return lo
+  }
 
   const title = $derived.by(() => {
     const scope = store.scope
@@ -143,10 +163,10 @@
     const id = store.articleId
     const i = untrack(() => items.findIndex((a) => a.id === id))
     if (i === -1) return
-    const top = i * ROW_HEIGHT
+    const [top, bottom] = untrack(() => [offsets[i], offsets[i + 1]])
     if (top < viewport.scrollTop) viewport.scrollTop = top
-    else if (top + ROW_HEIGHT > viewport.scrollTop + viewport.clientHeight)
-      viewport.scrollTop = top + ROW_HEIGHT - viewport.clientHeight
+    else if (bottom > viewport.scrollTop + viewport.clientHeight)
+      viewport.scrollTop = bottom - viewport.clientHeight
     // A row with keyboard focus (or, on Linux, a clicked one) passes it on, so Enter
     // and the focus ring stay on the open article.
     if (pane.contains(document.activeElement))
@@ -165,22 +185,49 @@
     confirming = false
     if (viewport) viewport.scrollTop = 0
     scrollTop = 0
-    scrolledTo = 0
+    scrolledPast = 0
     passed = []
+  })
+
+  // When row heights change (not the rows themselves), the selected row stays where it is
+  // on screen if it's in view; otherwise the top row does.
+  let laidOut: { items: Article[]; rowHeight: typeof rowHeight; offsets: Float64Array } | null = null
+  $effect(() => {
+    const now = { items, rowHeight, offsets }
+    const before = laidOut
+    laidOut = now
+    if (!before || before.items !== now.items || before.rowHeight === now.rowHeight) return
+    untrack(() => {
+      const top = scrollTop
+      const i = selectedIndex
+      const was = before.offsets
+      const o = now.offsets
+      if (i !== -1 && was[i + 1] > top && was[i] < top + height) {
+        viewport.scrollTop = o[i] - (was[i] - top)
+      } else {
+        // As far into the top row as before, in proportion, so it stays the top row.
+        const r = rowAt(was, top)
+        viewport.scrollTop = o[r] + ((top - was[r]) / (was[r + 1] - was[r])) * (o[r + 1] - o[r])
+      }
+      scrollTop = Math.max(0, viewport.scrollTop)
+      // The rows above moved, but none scrolled out.
+      scrolledPast = rowAt(o, scrollTop)
+    })
   })
 
   // With markReadOnScroll, rows that leave the top of the list while scrolling down are
   // marked read, once a frame. Scrolling up marks none.
-  let scrolledTo = 0
+  /** How many rows were above the top at the last scroll. */
+  let scrolledPast = 0
   let passed: string[] = []
   let frame = 0
 
   function onScroll() {
     // Elastic overscroll can go above the top.
     const top = Math.max(0, viewport.scrollTop)
-    if (store.settings.markReadOnScroll && top > scrolledTo) {
-      const end = Math.min(items.length, Math.floor(top / ROW_HEIGHT))
-      for (let i = Math.floor(scrolledTo / ROW_HEIGHT); i < end; i++) passed.push(items[i].id)
+    const past = rowAt(offsets, top)
+    if (store.settings.markReadOnScroll && past > scrolledPast) {
+      for (let i = scrolledPast; i < past; i++) passed.push(items[i].id)
       if (passed.length > 0 && frame === 0)
         frame = requestAnimationFrame(() => {
           frame = 0
@@ -189,7 +236,7 @@
           store.markRead(ids)
         })
     }
-    scrolledTo = top
+    scrolledPast = past
     scrollTop = top
   }
 </script>
@@ -263,15 +310,15 @@
       {#if items.length === 0}
         <p class="empty">{viewInfo(store.view).empty}</p>
       {:else}
-        <div class="spacer" style:height="{items.length * ROW_HEIGHT}px">
+        <div class="spacer" style:height="{offsets[items.length]}px">
           <!-- The selection's background: one for the list, behind every row's text, so
                it can slide between rows. It goes when the selection does, so a new list's
                first selection appears in place. -->
           {#if selectedIndex !== -1}
             <div
               class="highlight"
-              style:height="{ROW_HEIGHT}px"
-              style:transform="translateY({selectedIndex * ROW_HEIGHT}px)"
+              style:height="{offsets[selectedIndex + 1] - offsets[selectedIndex]}px"
+              style:transform="translateY({offsets[selectedIndex]}px)"
             ></div>
           {/if}
           {#each rows as article, i (article.id)}
@@ -280,8 +327,8 @@
               class:selected={article.id === store.articleId}
               aria-current={article.id === store.articleId || undefined}
               class:unread={!store.read.has(article.id)}
-              style:height="{ROW_HEIGHT}px"
-              style:transform="translateY({(first + i) * ROW_HEIGHT}px)"
+              style:height="{offsets[first + i + 1] - offsets[first + i]}px"
+              style:transform="translateY({offsets[first + i]}px)"
               onclick={() => {
                 focus.pane = 'list'
                 store.open(article.id)
@@ -435,7 +482,9 @@
     right: 0;
     top: 0;
     background: var(--accent-muted);
-    transition: transform 120ms ease-out;
+    transition:
+      transform 120ms ease-out,
+      height 120ms ease-out;
   }
 
   .active .highlight {
