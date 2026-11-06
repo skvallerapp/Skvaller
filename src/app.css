@@ -22,7 +22,7 @@
   --accent-text: #ffffff;
   /* The selected row of the pane that isn't in focus. */
   --accent-muted: color-mix(in srgb, var(--accent) 22%, transparent);
-  --unread-dot: #9a5136;
+  --unread: #9a5136;
   --star: #e0a21b;
   --error: #b52f28;
   /* Behind white text, so the same in both themes. */
@@ -47,7 +47,7 @@
   --hover: rgb(255 255 255 / 0.04);
   --active: rgb(255 255 255 / 0.08);
   --accent: #52709c;
-  --unread-dot: #8aa4c8;
+  --unread: #8aa4c8;
   --star: #f0b63a;
   --error: #f0776c;
   --thumb-bg: #3a3a3d;
@@ -69,7 +69,7 @@
   --hover: rgb(255 236 224 / 0.05);
   --active: rgb(255 236 224 / 0.09);
   --accent: #9a6342;
-  --unread-dot: #cfa080;
+  --unread: #cfa080;
   --star: #f0b63a;
   --error: #f4847a;
   --thumb-bg: #5a4640;
