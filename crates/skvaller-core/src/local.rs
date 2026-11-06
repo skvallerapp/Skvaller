@@ -93,6 +93,7 @@ pub async fn refresh(
         before(keep_read_days),
         keep_unread_days.map_or(i64::MIN, before),
     )?;
+    db.optimize()?;
     // Every feed out of reach is more likely the network than every site down: a
     // failure, so it is tried again, as a sync account's would be.
     if tried > 0 && reached == 0 {

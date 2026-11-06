@@ -6,7 +6,9 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use rusqlite::config::DbConfig;
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::full_text::MAX_ATTEMPTS;
@@ -280,11 +282,18 @@ impl Db {
             let conn = db.lock();
             conn.pragma_update(None, "journal_mode", "WAL")?;
             conn.pragma_update(None, "synchronous", "NORMAL")?;
+            // A checkpoint truncates the log back to this, after a large sync grew it.
+            conn.pragma_update(None, "journal_size_limit", 16 * 1024 * 1024)?;
         }
         let reader = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
+        // 16 MB, up from 2: the article list's index pages stay in memory between loads.
+        // No mmap_size: an I/O error in a mapped file is a signal that ends the app,
+        // not an error a damaged cache can be reported with.
+        reader.pragma_update(None, "cache_size", -16_000)?;
+        reader.pragma_update(None, "temp_store", "MEMORY")?;
         db.reader = Some(Mutex::new(reader));
         Ok(db)
     }
@@ -310,11 +319,12 @@ impl Db {
                     conn.set_db_config(DbConfig::SQLITE_DBCONFIG_RESET_DATABASE, false)?;
                 }
                 conn.execute_batch(&format!(
-                    "BEGIN; {SCHEMA} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+                    "BEGIN IMMEDIATE; {SCHEMA} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
                 ))?;
             }
         }
         conn.pragma_update(None, "foreign_keys", true)?;
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
         Ok(Self {
             conn: Mutex::new(conn),
             reader: None,
@@ -506,7 +516,7 @@ impl Db {
 
     fn set_flag(&self, ids: &[impl AsRef<str>], flag: Flag, value: bool) -> Result<()> {
         let mut conn = self.lock();
-        let tx = conn.transaction()?;
+        let tx = write(&mut conn)?;
         {
             let col = flag.column();
             let mut update = tx.prepare(&format!(
@@ -563,7 +573,7 @@ impl Db {
     /// changed.
     pub(crate) fn replace_subscriptions(&self, feeds: &[FeedRow]) -> Result<usize> {
         let mut conn = self.lock();
-        let tx = conn.transaction()?;
+        let tx = write(&mut conn)?;
         let has_feeds: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM feeds WHERE subscribed)",
             [],
@@ -679,7 +689,7 @@ impl Db {
     /// feed entry.
     pub(crate) fn upsert_articles(&self, articles: &[ArticleRow]) -> Result<usize> {
         let mut conn = self.lock();
-        let tx = conn.transaction()?;
+        let tx = write(&mut conn)?;
         let mut stored = 0;
         {
             let mut feed = tx.prepare(
@@ -760,7 +770,7 @@ impl Db {
             "NOT EXISTS (SELECT 1 FROM pending WHERE article_id = articles.id AND flag = '{col}')"
         );
         let mut conn = self.lock();
-        let tx = conn.transaction()?;
+        let tx = write(&mut conn)?;
         // Two updates, so neither scans every article: the listed ones by ID, and the
         // unlisted ones among those the index has with the listed value.
         let changed = tx.execute(
@@ -798,6 +808,13 @@ impl Db {
             conn.execute_batch("PRAGMA incremental_vacuum")?;
         }
         Ok(pruned)
+    }
+
+    /// Updates the statistics the query planner picks indexes by, where the data
+    /// changed enough to matter. Cheap when nothing did. For the end of a sync.
+    pub(crate) fn optimize(&self) -> Result<()> {
+        self.lock().execute_batch("PRAGMA optimize")?;
+        Ok(())
     }
 
     /// Feeds with an address: in the local account, every one. Only the local account
@@ -858,7 +875,7 @@ impl Db {
         last_modified: Option<&str>,
     ) -> Result<usize> {
         let mut conn = self.lock();
-        let tx = conn.transaction()?;
+        let tx = write(&mut conn)?;
         // Unsubscribed while it was fetched.
         let exists: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM feeds WHERE id = ?1)",
@@ -967,7 +984,7 @@ impl Db {
     /// refers to them and a deleted folder's don't pass to a new one.
     pub fn create_folder(&self, title: &str) -> Result<String> {
         let mut conn = self.lock();
-        let tx = conn.transaction()?;
+        let tx = write(&mut conn)?;
         let existing: Option<String> = tx
             .query_row(
                 "SELECT id FROM folders WHERE title = ?1 COLLATE NOCASE",
@@ -1007,7 +1024,7 @@ impl Db {
     /// Removes a folder. Its feeds stay, in no folder.
     pub fn delete_folder(&self, folder_id: &str) -> Result<()> {
         let mut conn = self.lock();
-        let tx = conn.transaction()?;
+        let tx = write(&mut conn)?;
         tx.execute(
             "UPDATE feeds SET folder_id = NULL WHERE folder_id = ?1",
             [folder_id],
@@ -1058,6 +1075,13 @@ impl Db {
     pub(crate) fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> T) -> T {
         f(&self.lock())
     }
+}
+
+/// A transaction that takes the write lock at its start. A deferred one that reads
+/// first and then writes fails at once, without waiting, if another connection wrote
+/// meanwhile, such as a second copy of the app or a sqlite3 shell.
+fn write(conn: &mut Connection) -> rusqlite::Result<Transaction<'_>> {
+    conn.transaction_with_behavior(TransactionBehavior::Immediate)
 }
 
 fn set_meta(conn: &Connection, key: &str, value: i64) -> Result<()> {
@@ -1200,7 +1224,21 @@ mod tests {
     fn reopening_keeps_the_schema() {
         let path = std::env::temp_dir().join(format!("skvaller-test-{}.db", std::process::id()));
         Db::open(&path).unwrap();
-        Db::open(&path).unwrap();
+        let db = Db::open(&path).unwrap();
+        let pragma = |c: &Connection, name: &str| -> i64 {
+            c.pragma_query_value(None, name, |r| r.get(0)).unwrap()
+        };
+        assert_eq!(
+            db.with_conn(|c| (pragma(c, "journal_size_limit"), pragma(c, "temp_store"))),
+            (16 * 1024 * 1024, 2)
+        );
+        let reader = db.read();
+        assert_eq!(
+            (pragma(&reader, "cache_size"), pragma(&reader, "temp_store")),
+            (-16_000, 2)
+        );
+        drop(reader);
+        drop(db);
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }
