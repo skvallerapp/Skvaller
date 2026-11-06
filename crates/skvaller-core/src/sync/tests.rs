@@ -333,7 +333,8 @@ async fn first_sync_fetches_unread_starred_and_the_last_30_days() {
             pushed: 0,
             fetched: 4,
             changed: 0,
-            pruned: 0
+            pruned: 0,
+            subscriptions: 3
         }
     );
     assert_eq!(fake.flags(3), Some((true, true)));
@@ -426,7 +427,8 @@ async fn next_sync_fetches_since_the_newest_crawl_and_follows_server_state() {
             pushed: 0,
             fetched: 1,
             changed: 2,
-            pruned: 0
+            pruned: 0,
+            subscriptions: 0
         }
     );
     assert_eq!(fake.flags(10), Some((true, true)));
@@ -494,7 +496,8 @@ async fn queued_changes_are_sent_then_cleared() {
             pushed: 2,
             fetched: 0,
             changed: 0,
-            pruned: 0
+            pruned: 0,
+            subscriptions: 0
         }
     );
     assert!(fake.db.pending().unwrap().is_empty());

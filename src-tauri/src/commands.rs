@@ -109,6 +109,7 @@ impl Runtime {
             last_sync: self.db.last_sync().ok().flatten(),
             error: lock(&self.last_error).clone(),
             unauthorized: self.token_rejected.load(Ordering::Relaxed),
+            changed: false,
         }
     }
 }
@@ -538,6 +539,9 @@ pub struct SyncStatus {
     error: Option<String>,
     /// The server rejected the token: the user has to sign in again.
     unauthorized: bool,
+    /// The sync that just finished changed the cached articles or the feeds they are in,
+    /// so the article list needs loading again.
+    changed: bool,
 }
 
 #[tauri::command]
@@ -1373,7 +1377,10 @@ async fn run_sync(app: &AppHandle, rt: &Arc<Runtime>) -> Ran {
             None => refresh_local(&rt.db, now, keep_read_days).await,
         };
         Some(match synced {
-            Ok(_) => status(SyncStatus::default()),
+            Ok(report) => status(SyncStatus {
+                changed: report.changed_articles(),
+                ..SyncStatus::default()
+            }),
             Err(e) => {
                 let unauthorized = matches!(e, Error::Unauthorized);
                 if unauthorized {

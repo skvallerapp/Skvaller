@@ -15,4 +15,4 @@ export const defaultSettings: Settings = {
   unreadBadge: true,
 }
 
-export const idleStatus: SyncStatus = { accountId: '', syncing: false, lastSync: null, error: null, unauthorized: false }
+export const idleStatus: SyncStatus = { accountId: '', syncing: false, lastSync: null, error: null, unauthorized: false, changed: false }

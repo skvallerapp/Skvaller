@@ -495,16 +495,22 @@ class Store {
     if (status.accountId !== this.activeId) return
     this.status = status
     if (status.unauthorized) this.signedIn = false
-    // After a sync, the Unread view keeps what was read since it opened (FR-7a), and the
-    // Starred view what was unstarred.
-    else if (this.signedIn && !status.syncing && !status.error)
-      this.#reload(
-        (a) =>
-          // The open article stays too: unread, it may not be marked yet.
-          a.id === this.articleId || (this.view === 'unread' ? this.read.has(a.id) : !this.starred.has(a.id)),
-      ).catch((e) =>
-        console.error('Reloading after a sync failed', e),
-      )
+    else if (this.signedIn && !status.syncing && !status.error) {
+      // The sidebar's feeds can change without the articles, as icons do. The list,
+      // the costly load, only when the articles did.
+      const loads = [this.#loadLibrary()]
+      // After a sync, the Unread view keeps what was read since it opened (FR-7a), and
+      // the Starred view what was unstarred.
+      if (status.changed)
+        loads.push(
+          this.#loadList(
+            (a) =>
+              // The open article stays too: unread, it may not be marked yet.
+              a.id === this.articleId || (this.view === 'unread' ? this.read.has(a.id) : !this.starred.has(a.id)),
+          ),
+        )
+      Promise.all(loads).catch((e) => console.error('Reloading after a sync failed', e))
+    }
   }
 
   async #reload(keep?: (a: Article) => boolean) {

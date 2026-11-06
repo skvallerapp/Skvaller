@@ -78,6 +78,9 @@ export interface SyncStatus {
   error: string | null
   /** The server rejected the token: the user has to sign in again. */
   unauthorized: boolean
+  /** The sync that just finished changed the cached articles or the feeds they are in,
+   * so the article list needs loading again. */
+  changed: boolean
 }
 
 export interface Session {
