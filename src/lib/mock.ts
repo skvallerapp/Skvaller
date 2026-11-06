@@ -86,6 +86,8 @@ const makeArticles = (feeds: Feed[], count: number, idBase: number): Article[] =
     published: now - i * 17 * 60_000,
     read: i % 5 !== 0,
     starred: i % 23 === 0,
+    // Some articles have none, as in real feeds.
+    thumbnail: i % 4 !== 3,
   }
 })
 

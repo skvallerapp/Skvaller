@@ -11,7 +11,7 @@ use tokio::task::JoinSet;
 
 use crate::api::{Item, READ, READING_LIST, STARRED, Subscription, parse_item_id};
 use crate::db::{ArticleRow, FeedRow, Flag};
-use crate::{Client, Db, Error, Result};
+use crate::{Client, Db, Error, Result, thumbnail};
 
 pub(crate) const DAY: i64 = 24 * 60 * 60;
 /// Later syncs list articles from this much before the newest crawl time already seen,
@@ -265,6 +265,19 @@ fn store(db: &Db, items: Vec<Item>, prune_before: i64) -> Result<(usize, Option<
             let id = parse_item_id(&item.id)?;
             let (read, starred) = (item.has_state(READ), item.has_state(STARRED));
             let crawl_time = item.crawl_time();
+            let url = item
+                .canonical
+                .into_iter()
+                .chain(item.alternate)
+                .next()
+                .map(|l| l.href)
+                .unwrap_or_default();
+            let thumbnail = thumbnail::from_enclosures(
+                item.enclosure
+                    .iter()
+                    .map(|e| (e.href.as_str(), e.mime.as_deref())),
+                &url,
+            );
             let html = item
                 .content
                 .or(item.summary)
@@ -274,14 +287,9 @@ fn store(db: &Db, items: Vec<Item>, prune_before: i64) -> Result<(usize, Option<
                 id,
                 read,
                 starred,
-                url: item
-                    .canonical
-                    .into_iter()
-                    .chain(item.alternate)
-                    .next()
-                    .map(|l| l.href)
-                    .unwrap_or_default(),
+                url,
                 html,
+                thumbnail,
                 feed_title: item
                     .origin
                     .title

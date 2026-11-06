@@ -479,3 +479,55 @@ async fn repeated_entry_id_keeps_the_first_and_its_reader_view_text() {
     assert_eq!(report.fetched, 0);
     assert!(db.full_text(&id).unwrap().is_some());
 }
+
+#[tokio::test]
+async fn new_entries_want_a_thumbnail_from_their_media_and_only_once() {
+    let server = MockServer::start().await;
+    let items = r#"
+        <item><guid>m1</guid><title>Thumb</title><link>/1</link>
+              <media:content url="https://cdn.example/full.jpg" type="image/jpeg"/>
+              <media:thumbnail url="/thumb.jpg" width="640" height="360"/></item>
+        <item><guid>m2</guid><title>Enclosure</title><link>/2</link>
+              <enclosure url="https://cdn.example/e.png" type="image/png" length="1"/></item>
+        <item><guid>m3</guid><title>Text only</title><link>/3</link>
+              <media:thumbnail url="https://cdn.example/icon.png" width="24" height="24"/></item>"#;
+    let feed = rss(items).replace(
+        r#"<rss version="2.0">"#,
+        r#"<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">"#,
+    );
+    serve(&server, "/feed.xml", xml(feed)).await;
+    let db = Db::open_in_memory().unwrap();
+    let url = format!("{}/feed.xml", server.uri());
+    let feed_id = subscribe(&db, &url, None, NOW).await.unwrap();
+
+    let source = |guid: &str| -> Option<Option<String>> {
+        db.with_conn(|c| {
+            c.query_row(
+                "SELECT url FROM thumbnail_sources WHERE article_id = ?1",
+                [article_id(&feed_id, guid).to_string()],
+                |r| r.get(0),
+            )
+            .ok()
+        })
+    };
+    assert_eq!(
+        source("m1"),
+        Some(Some(format!("{}/thumb.jpg", server.uri())))
+    );
+    assert_eq!(
+        source("m2"),
+        Some(Some("https://cdn.example/e.png".to_owned()))
+    );
+    // Its only image is an icon: the HTML is looked at instead.
+    assert_eq!(source("m3"), Some(None));
+
+    // One done with is not wanted again when the feed lists it next time.
+    db.give_up_thumbnail(&article_id(&feed_id, "m1").to_string())
+        .unwrap();
+    refresh(&db, NOW, 30, None).await.unwrap();
+    assert_eq!(source("m1"), None);
+    assert_eq!(
+        source("m2"),
+        Some(Some("https://cdn.example/e.png".to_owned()))
+    );
+}

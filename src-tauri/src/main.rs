@@ -60,6 +60,9 @@ fn main() {
                 let _ = settings.close();
             }
         })
+        .register_asynchronous_uri_scheme_protocol("thumb", |ctx, request, responder| {
+            commands::serve_thumbnail(ctx.app_handle(), &request, responder);
+        })
         .setup(|app| {
             if let Err(e) = start(app.handle()) {
                 show_startup_error(app.handle(), &e.to_string());

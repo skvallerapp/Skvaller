@@ -109,6 +109,10 @@ class Store {
         if (accountId === this.activeId)
           this.#loadLibrary().catch((e) => console.error('Loading the feeds failed', e))
       })
+      await api.onThumbnailsChanged((accountId) => {
+        if (accountId === this.activeId && this.signedIn)
+          this.#loadList(this.#keepListed).catch((e) => console.error('Loading the thumbnails failed', e))
+      })
       await api.onAccountsChanged((session) =>
         this.#applySession(session).catch((e) => console.error('Showing the accounts failed', e)),
       )
@@ -499,22 +503,19 @@ class Store {
       // The sidebar's feeds can change without the articles, as icons do. The list,
       // the costly load, only when the articles did.
       const loads = [this.#loadLibrary()]
-      // After a sync, the Unread view keeps what was read since it opened (FR-7a), and
-      // the Starred view what was unstarred.
-      if (status.changed)
-        loads.push(
-          this.#loadList(
-            (a) =>
-              // The open article stays too: unread, it may not be marked yet.
-              a.id === this.articleId || (this.view === 'unread' ? this.read.has(a.id) : !this.starred.has(a.id)),
-          ),
-        )
+      if (status.changed) loads.push(this.#loadList(this.#keepListed))
       Promise.all(loads).catch((e) => {
         this.#noteCorrupt(e)
         console.error('Reloading after a sync failed', e)
       })
     }
   }
+
+  /** After a sync, the Unread view keeps what was read since it opened (FR-7a), and the
+   * Starred view what was unstarred. The open article stays too: unread, it may not be
+   * marked yet. */
+  #keepListed = (a: Article) =>
+    a.id === this.articleId || (this.view === 'unread' ? this.read.has(a.id) : !this.starred.has(a.id))
 
   async #reload(keep?: (a: Article) => boolean) {
     try {

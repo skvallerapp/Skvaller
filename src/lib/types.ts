@@ -32,6 +32,8 @@ export interface Article {
   published: number
   read: boolean
   starred: boolean
+  /** A thumbnail is cached: `thumbnailUrl` shows it. */
+  thumbnail: boolean
 }
 
 export interface Counts {

@@ -10,6 +10,7 @@ mod local;
 mod opml;
 mod sync;
 mod text;
+mod thumbnail;
 
 pub use api::Client;
 pub use db::{ArticleSummary, Counts, Db, Feed, Folder, Scope, Selection, View};
@@ -19,3 +20,4 @@ pub use keychain::{KEYCHAIN_SERVICE, delete_token, load_token, save_token};
 pub use local::{refresh as refresh_local, subscribe};
 pub use opml::{ImportReport, export as export_opml, import as import_opml};
 pub use sync::{DEFAULT_KEEP_READ_DAYS, SyncReport, sync};
+pub use thumbnail::prefetch as prefetch_thumbnails;

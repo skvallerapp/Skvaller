@@ -17,6 +17,7 @@ use crate::full_text::{USER_AGENT, decode};
 use crate::html;
 use crate::sync::{DAY, fetch_icons};
 use crate::text::plain_text;
+use crate::thumbnail;
 use crate::{Db, Error, Result, SyncReport};
 
 /// Larger feeds are not read. Big ones, with full articles, are a few megabytes.
@@ -358,6 +359,7 @@ fn store(db: &Db, feed_id: &str, feed: &model::Feed, page: &Page, now: i64) -> R
                 read: false,
                 starred: false,
                 html,
+                thumbnail: thumbnail::from_media(&entry.media, &page.url),
             };
             (row, date.is_some())
         })

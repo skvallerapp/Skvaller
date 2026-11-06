@@ -407,6 +407,27 @@ pub(crate) struct Item {
     pub origin: Origin,
     #[serde(default)]
     pub categories: Vec<String>,
+    /// Media attached to the item, such as its lead image.
+    #[serde(default, deserialize_with = "lenient")]
+    pub enclosure: Vec<Enclosure>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct Enclosure {
+    pub href: String,
+    #[serde(rename = "type")]
+    pub mime: Option<String>,
+}
+
+/// `T` if the value has its shape, else its default: an odd shape in an optional field
+/// must not fail the whole page of items.
+fn lenient<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: DeserializeOwned + Default,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 #[derive(Deserialize)]

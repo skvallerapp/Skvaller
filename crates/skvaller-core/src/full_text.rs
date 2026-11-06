@@ -366,6 +366,7 @@ mod tests {
             read: false,
             starred: false,
             html: String::new(),
+            thumbnail: None,
         }
     }
 
