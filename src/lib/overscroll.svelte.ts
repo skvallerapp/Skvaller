@@ -1,6 +1,6 @@
 // Pulling a list past its top or bottom, by trackpad or touch, stretches it away from the
-// edge, and it springs back when let go. A pull at the top that goes far enough refreshes,
-// if it began with the list at the top. A trackpad's momentum that reaches an edge bounces
+// edge, and it springs back when let go. Given a refresh, a pull at the top that goes far
+// enough runs it, if it began with the list at the top. A trackpad's momentum that reaches an edge bounces
 // the list off it, as macOS does. A mouse wheel doesn't stretch it.
 // The browser's own elastic overscroll is off (`overscroll-behavior: none`), so all three
 // platforms work alike. With animations off the list stays put, and a long pull at the top
@@ -65,7 +65,7 @@ export class Overscroll {
   readonly armed = $derived(this.progress === 1 || this.refreshing)
   readonly hold = HOLD
 
-  #refresh: () => Promise<void>
+  #refresh: (() => Promise<void>) | undefined
   #el: HTMLElement | null = null
   /** The pull so far, before the rubber band. */
   #pull = 0
@@ -95,7 +95,7 @@ export class Overscroll {
   /** This touch was kept from scrolling the list, so it scrolls it here instead. */
   #touchOwned = false
 
-  constructor(refresh: () => Promise<void>) {
+  constructor(refresh?: () => Promise<void>) {
     this.#refresh = refresh
   }
 
@@ -160,7 +160,7 @@ export class Overscroll {
     this.#pull = this.#pull !== 0 && Math.sign(next) !== Math.sign(this.#pull) ? 0 : next
     if (animate()) this.offset = stretch(this.#pull, d)
     // Momentum before it shows as such doesn't count, as when the list stretches.
-    else if (stretch(this.#pull - this.#coasted, d) >= TRIGGER && this.fromTop && !this.#spent) {
+    else if (stretch(this.#pull - this.#coasted, d) >= TRIGGER && this.#refreshes() && !this.#spent) {
       this.#spent = true
       this.#start()
     }
@@ -180,14 +180,19 @@ export class Overscroll {
     this.#pull = 0
     if (this.refreshing) return
     // With animations off, a long enough pull already refreshed.
-    if (pulled >= TRIGGER && this.fromTop && animate()) this.#start()
+    if (pulled >= TRIGGER && this.#refreshes() && animate()) this.#start()
     else this.#settle(0)
+  }
+
+  /** A pull far enough in this gesture runs the refresh. */
+  #refreshes() {
+    return this.fromTop && this.#refresh !== undefined
   }
 
   #start() {
     this.refreshing = true
     this.#settle(HOLD)
-    this.#refresh().finally(() => this.#settle(0, SETTLE_MS, () => (this.refreshing = false)))
+    this.#refresh!().finally(() => this.#settle(0, SETTLE_MS, () => (this.refreshing = false)))
   }
 
   /** Springs the list to `target`, then calls `then`. With animations off, the list
