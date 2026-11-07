@@ -902,21 +902,22 @@
     outline-color: transparent;
   }
 
+  /* The nav has a fixed width, so a long name or detail wraps instead of being cut. */
   .nav-row.account {
-    height: 48px;
+    height: auto;
+    min-height: 48px;
+    padding-block: 6px;
+  }
+
+  .account :global(svg) {
+    flex-shrink: 0;
   }
 
   .account span {
     display: flex;
     flex-direction: column;
     min-width: 0;
-  }
-
-  .account strong,
-  .account small {
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
+    overflow-wrap: anywhere;
   }
 
   .account small {
