@@ -1,19 +1,21 @@
 // Single-key shortcuts (FR-10). Keys are named as `keyName` returns them: 'j', ' ',
 // 'Shift+j', 'Enter'. The user can rebind every action in Settings; config.json keeps
 // only the keys that differ from the defaults.
+import { t } from './i18n.svelte'
 import type { ShortcutAction } from './types'
 
-export const shortcutActions: { action: ShortcutAction; label: string }[] = [
-  { action: 'next', label: 'Next Article' },
-  { action: 'previous', label: 'Previous Article' },
-  { action: 'readOn', label: 'Read On' },
-  { action: 'readBack', label: 'Read Back' },
-  { action: 'toggleRead', label: 'Mark as Read or Unread' },
-  { action: 'toggleStar', label: 'Star or Remove Star' },
-  { action: 'openInBrowser', label: 'Open in Browser' },
-  { action: 'toggleReaderView', label: 'Show or Hide Reader View' },
-  { action: 'sync', label: 'Sync' },
-  { action: 'markAllRead', label: 'Mark All as Read' },
+/** In the order Settings lists them. */
+export const shortcutActions: ShortcutAction[] = [
+  'next',
+  'previous',
+  'readOn',
+  'readBack',
+  'toggleRead',
+  'toggleStar',
+  'openInBrowser',
+  'toggleReaderView',
+  'sync',
+  'markAllRead',
 ]
 
 const defaults: Record<ShortcutAction, string> = {
@@ -38,7 +40,7 @@ type Overrides = Partial<Record<ShortcutAction, string | null>>
 /** The key of each action, `null` for none. */
 export function bindings(overrides: Overrides): Record<ShortcutAction, string | null> {
   const result = { ...defaults } as Record<ShortcutAction, string | null>
-  for (const { action } of shortcutActions) {
+  for (const action of shortcutActions) {
     const key = overrides[action]
     // An arrow key saved before the arrows were reserved does nothing now: use the default.
     if (key !== undefined && !(key !== null && arrowKeys.has(key))) result[action] = key
@@ -59,7 +61,7 @@ export function rebind(
   const current = bindings(overrides)
   let displaced: ShortcutAction | null = null
   if (key !== null) {
-    for (const { action: other } of shortcutActions) {
+    for (const other of shortcutActions) {
       if (other !== action && current[other] === key) {
         current[other] = null
         displaced = other
@@ -68,7 +70,7 @@ export function rebind(
   }
   current[action] = key
   const result: Overrides = {}
-  for (const { action: a } of shortcutActions) {
+  for (const a of shortcutActions) {
     if (current[a] !== defaults[a]) result[a] = current[a]
   }
   return { overrides: result, displaced }
@@ -98,7 +100,6 @@ export function keyName(e: KeyboardEvent): string | null {
 }
 
 const keyLabels: Record<string, string> = {
-  ' ': 'Space',
   ArrowUp: '↑',
   ArrowDown: '↓',
   ArrowLeft: '←',
@@ -110,9 +111,13 @@ export function keyLabel(name: string, mac: boolean): string {
   const shift = name.startsWith('Shift+')
   const key = shift ? name.slice('Shift+'.length) : name
   const label =
-    key === 'Enter' && mac ? 'Return' : (keyLabels[key] ?? (key.length === 1 ? key.toUpperCase() : key))
+    key === ' '
+      ? t('keys.space')
+      : key === 'Enter'
+        ? t(mac ? 'keys.return' : 'keys.enter')
+        : (keyLabels[key] ?? (key.length === 1 ? key.toUpperCase() : key))
   if (!shift) return label
-  return mac ? `⇧${label}` : `Shift+${label}`
+  return mac ? `⇧${label}` : `${t('keys.shift')}+${label}`
 }
 
 /** Alt+1 to Alt+9 (⌘1 to ⌘9 on macOS) switch to the first nine accounts. Not ⌥ on
@@ -135,5 +140,5 @@ export function accountIndex(e: KeyboardEvent, mac: boolean): number | null {
 /** How the shortcut of the account at `index` shows: '⌘1' on macOS, 'Alt+1' elsewhere. */
 export function accountShortcut(index: number, mac: boolean): string | null {
   if (index >= accountShortcuts) return null
-  return `${mac ? '⌘' : 'Alt+'}${index + 1}`
+  return mac ? `⌘${index + 1}` : `${t('keys.alt')}+${index + 1}`
 }

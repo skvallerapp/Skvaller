@@ -1547,7 +1547,9 @@ pub fn show_settings_window(app: &AppHandle) -> tauri::Result<()> {
         .iter()
         .find(|w| w.label == SETTINGS_WINDOW)
         .expect("tauri.conf.json defines the Settings window");
-    WebviewWindowBuilder::from_config(app, config)?.build()?;
+    WebviewWindowBuilder::from_config(app, config)?
+        .initialization_script(crate::locale::script())
+        .build()?;
     Ok(())
 }
 

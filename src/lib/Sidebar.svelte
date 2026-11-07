@@ -11,6 +11,7 @@
   import AccountSwitcher from './AccountSwitcher.svelte'
   import AddFeed from './AddFeed.svelte'
   import { formatSynced } from './format'
+  import { currentLanguage, t } from './i18n.svelte'
   import { confirm, openSettings } from './api'
   import { animate, ms } from './motion'
   import { activePane, focus } from './layout.svelte'
@@ -74,9 +75,9 @@
 
   const status = $derived.by(() => {
     const s = store.status
-    if (s.syncing) return 'Syncing…'
-    if (s.error) return 'Sync failed'
-    return s.lastSync ? formatSynced(s.lastSync) : 'Not synced yet'
+    if (s.syncing) return t('sidebar.syncing')
+    if (s.error) return t('sidebar.syncFailed')
+    return s.lastSync ? formatSynced(s.lastSync) : t('sidebar.notSynced')
   })
 
   /** SQLite's NOCASE order, which the cache sorts each list by: ASCII case folded, the
@@ -213,7 +214,8 @@
   let menuRequest = 0
 
   function makeFeedMenu(): Promise<FeedMenu> {
-    const key = store.isLocal ? JSON.stringify(store.folders) : ''
+    // Made again in another language, too.
+    const key = JSON.stringify([currentLanguage(), store.isLocal && store.folders])
     if (feedMenu && key === feedMenuKey) return feedMenu
     const old = feedMenu
     feedMenuKey = key
@@ -223,7 +225,7 @@
     const menu = (async (): Promise<FeedMenu> => {
       void old?.then(closeAll).catch(() => {})
       const readerView = await CheckMenuItem.new({
-        text: 'Always Use Reader View',
+        text: t('sidebar.alwaysReaderView'),
         action: () => {
           const feed = store.feed(menuFeedId)
           if (feed) store.setFeedReaderView(feed.id, !feed.readerView)
@@ -234,15 +236,15 @@
         return { menu, readerView, moves: [], resources: [readerView, menu] }
       }
       const moves: [string | null, CheckMenuItem][] = []
-      for (const [id, text] of [[null, 'No Folder'], ...folders.map((f) => [f.id, f.title])])
+      for (const [id, text] of [[null, t('sidebar.noFolder')], ...folders.map((f) => [f.id, f.title])])
         moves.push([id, await CheckMenuItem.new({ text: text!, action: () => store.moveFeed(menuFeedId, id) })])
       const items = [
         readerView,
         await PredefinedMenuItem.new({ item: 'Separator' }),
-        await MenuItem.new({ text: 'Rename…', action: () => startRename({ kind: 'feed', id: menuFeedId }) }),
-        await Submenu.new({ text: 'Move To', items: moves.map(([, item]) => item) }),
+        await MenuItem.new({ text: t('sidebar.rename'), action: () => startRename({ kind: 'feed', id: menuFeedId }) }),
+        await Submenu.new({ text: t('sidebar.moveTo'), items: moves.map(([, item]) => item) }),
         await PredefinedMenuItem.new({ item: 'Separator' }),
-        await MenuItem.new({ text: 'Unsubscribe…', action: () => void unsubscribe(menuFeedId) }),
+        await MenuItem.new({ text: t('sidebar.unsubscribe'), action: () => void unsubscribe(menuFeedId) }),
       ]
       const menu = await Menu.new({ items })
       return { menu, readerView, moves, resources: [...moves.map(([, item]) => item), ...items, menu] }
@@ -279,6 +281,8 @@
   }
 
   let folderMenu: Promise<{ menu: Menu; resources: { close(): Promise<void> }[] }> | null = null
+  /** The language `folderMenu` is in. */
+  let folderMenuLanguage = ''
 
   // The menus go with the sidebar, as it does on sign-out.
   onDestroy(() => {
@@ -291,10 +295,15 @@
     e.preventDefault()
     const request = ++menuRequest
     try {
+      if (folderMenuLanguage !== currentLanguage()) {
+        void folderMenu?.then(closeAll).catch(() => {})
+        folderMenu = null
+        folderMenuLanguage = currentLanguage()
+      }
       folderMenu ??= (async () => {
         const items = [
-          await MenuItem.new({ text: 'Rename…', action: () => startRename({ kind: 'folder', id: menuFolderId }) }),
-          await MenuItem.new({ text: 'Delete Folder…', action: () => void deleteFolder(menuFolderId) }),
+          await MenuItem.new({ text: t('sidebar.rename'), action: () => startRename({ kind: 'folder', id: menuFolderId }) }),
+          await MenuItem.new({ text: t('sidebar.deleteFolder'), action: () => void deleteFolder(menuFolderId) }),
         ]
         const menu = await Menu.new({ items })
         return { menu, resources: [...items, menu] }
@@ -317,9 +326,9 @@
     if (!feed) return
     const account = store.activeId
     const ok = await confirm(
-      'Its articles are removed from this device, starred ones too.',
-      `Unsubscribe from ${feed.title}?`,
-      'Unsubscribe',
+      t('sidebar.unsubscribeMessage'),
+      t('sidebar.unsubscribeTitle', { feed: feed.title }),
+      t('sidebar.unsubscribeConfirm'),
     )
     if (ok && store.activeId === account) store.unsubscribe(feedId)
   }
@@ -328,7 +337,11 @@
     const folder = store.folders.find((f) => f.id === folderId)
     if (!folder) return
     const account = store.activeId
-    const ok = await confirm('Its feeds stay, in no folder.', `Delete ${folder.title}?`, 'Delete Folder')
+    const ok = await confirm(
+      t('sidebar.deleteFolderMessage'),
+      t('sidebar.deleteFolderTitle', { folder: folder.title }),
+      t('sidebar.deleteFolderConfirm'),
+    )
     if (ok && store.activeId === account) store.deleteFolder(folderId)
   }
 
@@ -403,7 +416,7 @@
       <input
         class="label"
         value={label}
-        aria-label="Name"
+        aria-label={t('sidebar.name')}
         spellcheck="false"
         use:renameField
         onblur={(e) => finishRename(e.currentTarget, true)}
@@ -445,8 +458,8 @@
     {/if}
     <span class="label">{label}</span>
     {#if feed?.fetchError}
-      <span class="fetch-error" title="Can’t update: {feed.fetchError}">
-        <CircleAlert size={13} strokeWidth={2.25} role="img" aria-label="Can’t update" />
+      <span class="fetch-error" title={t('sidebar.cantUpdateWhy', { error: feed.fetchError })}>
+        <CircleAlert size={13} strokeWidth={2.25} role="img" aria-label={t('sidebar.cantUpdate')} />
       </span>
     {/if}
     {#if count > 0}<span class="count">{count.toLocaleString()}</span>{/if}
@@ -454,15 +467,19 @@
   {/if}
 {/snippet}
 
-<nav class="sidebar" class:active={activePane() === 'sidebar'} aria-label="Feeds" bind:this={nav}>
+<nav class="sidebar" class:active={activePane() === 'sidebar'} aria-label={t('sidebar.label')} bind:this={nav}>
   <div class="toolbar" data-tauri-drag-region={dragRegion}>
     {#if store.isLocal}<AddFeed />{/if}
     {#if store.accounts.length > 1}<AccountSwitcher />{/if}
     <!-- On macOS, ⌘, comes from the app menu, which a browser doesn't have. -->
     <button
       class="icon-button"
-      aria-label="Settings"
-      title={macWindow ? 'Settings (⌘,)' : isMac ? 'Settings' : 'Settings (Ctrl+,)'}
+      aria-label={t('sidebar.settings')}
+      title={macWindow
+        ? t('sidebar.settingsWithKey', { key: '⌘,' })
+        : isMac
+          ? t('sidebar.settings')
+          : t('sidebar.settingsWithKey', { key: `${t('keys.ctrl')}+,` })}
       onclick={() => openSettings()}
     >
       <SettingsIcon size={18} strokeWidth={2} />
@@ -470,8 +487,8 @@
     <button
       class="icon-button sync"
       class:spinning={store.status.syncing}
-      aria-label="Sync"
-      title="Sync"
+      aria-label={t('sidebar.sync')}
+      title={t('sidebar.sync')}
       onclick={() => store.sync()}
     >
       <RotateCw size={18} strokeWidth={2} />
@@ -481,14 +498,12 @@
     <h1>{title}</h1>
     {#if store.status.cacheBroken}
       <p class="failed" title={store.status.error ?? undefined}>
-        Cache damaged ·
+        {t('sidebar.cacheDamaged')} ·
         <button
           class="rebuild"
           disabled={rebuilding}
-          title={store.isLocal
-            ? 'Starts the cache over with your feeds from their backup. Read and starred marks are lost.'
-            : 'Starts the cache over and downloads the articles again. Changes not synced yet are lost.'}
-          onclick={rebuild}>{rebuilding ? 'Rebuilding…' : 'Rebuild'}</button
+          title={store.isLocal ? t('sidebar.rebuildLocal') : t('sidebar.rebuildSync')}
+          onclick={rebuild}>{rebuilding ? t('sidebar.rebuilding') : t('sidebar.rebuild')}</button
         >
       </p>
     {:else}
@@ -502,7 +517,7 @@
 
     {#if shownFolders.length > 0 || looseFeeds.length > 0}
       <section>
-        <h2>Feeds</h2>
+        <h2>{t('sidebar.feeds')}</h2>
         {#each entries as entry (`${entry.kind}:${entry.id}`)}
           {#if entry.kind === 'feed'}
             {@render row({ kind: 'feed', id: entry.id }, entry.feed.title, store.counts.get(entry.id) ?? 0, false, entry.feed)}
@@ -513,7 +528,7 @@
             <button
               class="disclosure"
               class:open={!collapsed.has(folder.id)}
-              aria-label={collapsed.has(folder.id) ? `Expand ${folder.title}` : `Collapse ${folder.title}`}
+              aria-label={t(collapsed.has(folder.id) ? 'sidebar.expand' : 'sidebar.collapse', { folder: folder.title })}
               aria-expanded={!collapsed.has(folder.id)}
               onclick={() => toggleFolder(folder.id)}
             >
@@ -536,7 +551,7 @@
   <div
     class="views"
     role="radiogroup"
-    aria-label="Show"
+    aria-label={t('sidebar.viewPicker')}
     tabindex="-1"
     style:--count={views.length}
     style:--index={viewIndex}

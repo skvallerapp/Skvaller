@@ -36,6 +36,11 @@ cargo test --workspace # Rust tests
 bun run check          # type-check the UI
 ```
 
+## Translations
+
+Skvaller is in English for now. To translate it into your language, see
+[CONTRIBUTING.md](CONTRIBUTING.md#translations).
+
 ## License
 
 [GPL-3.0](LICENSE)

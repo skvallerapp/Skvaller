@@ -6,6 +6,7 @@
   import { tick } from 'svelte'
   import { errorMessage } from './api'
   import { sentence } from './format'
+  import { t } from './i18n.svelte'
   import { macWindow } from './platform'
   import ServiceLogo from './ServiceLogo.svelte'
   import { hosted, selfHosted, serviceFor, type Service } from './services'
@@ -79,29 +80,27 @@
       <SignIn service={chosen} {submit} {embedded} {back} />
     {:else}
       {#if !embedded}
-        <h1>Add Account</h1>
-        <p class="intro">
-          Skvaller syncs with a service that speaks the Google Reader API, or fetches your feeds itself.
-        </p>
+        <h1>{t('addAccount.title')}</h1>
+        <p class="intro">{t('addAccount.intro')}</p>
       {/if}
       {#if initialError}<p class="error" role="alert">{initialError}</p>{/if}
       <div class="groups" bind:this={list}>
         <section>
-          <h2 class="heading">Services</h2>
+          <h2 class="heading">{t('addAccount.services')}</h2>
           {#each hosted as service (service.id)}{@render row(service)}{/each}
         </section>
         <section>
-          <h2 class="heading">Self-Hosted</h2>
+          <h2 class="heading">{t('addAccount.selfHosted')}</h2>
           {#each selfHosted as service (service.id)}{@render row(service)}{/each}
         </section>
         {#if addLocal}
           <section>
-            <h2 class="heading">Without an Account</h2>
+            <h2 class="heading">{t('addAccount.withoutAccount')}</h2>
             <button type="button" class="service" disabled={addingLocal} onclick={local}>
               <Laptop size={27} aria-hidden="true" />
               <span class="text">
-                <strong>{addingLocal ? 'Adding…' : 'On This Device'}</strong>
-                <small>Skvaller fetches your feeds itself</small>
+                <strong>{addingLocal ? t('common.adding') : t('addAccount.local')}</strong>
+                <small>{t('addAccount.localDetail')}</small>
               </span>
               <ChevronRight size={16} class="chevron" />
             </button>

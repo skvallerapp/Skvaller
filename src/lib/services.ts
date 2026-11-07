@@ -3,6 +3,7 @@
 import freshrss from './logos/freshrss.svg'
 import miniflux from './logos/miniflux.svg'
 import theOldReader from './logos/theoldreader.png'
+import { t } from './i18n.svelte'
 
 export interface Service {
   id: 'theoldreader' | 'freshrss' | 'miniflux' | 'other'
@@ -13,10 +14,10 @@ export interface Service {
   logo?: string
   /** The API address, for a hosted service: the form then doesn't ask for one. */
   server?: string
-  username: string
-  password: string
-  /** How to get a password the API accepts. */
-  help: string
+  /** What the service calls the user name and the password. Its help, on how to get a
+   * password the API accepts, is the message `services.<id>.help`. */
+  username: 'email' | 'username'
+  password: 'password' | 'apiPassword'
 }
 
 export const hosted: Service[] = [
@@ -26,9 +27,8 @@ export const hosted: Service[] = [
     detail: 'theoldreader.com',
     logo: theOldReader,
     server: 'https://theoldreader.com',
-    username: 'Email',
-    password: 'Password',
-    help: 'If you sign in to The Old Reader with Google or Facebook, set a password in its settings first.',
+    username: 'email',
+    password: 'password',
   },
 ]
 
@@ -38,26 +38,25 @@ export const selfHosted: Service[] = [
     name: 'FreshRSS',
     detail: 'freshrss.org',
     logo: freshrss,
-    username: 'Username',
-    password: 'API password',
-    help: 'In FreshRSS, allow API access under Settings → Authentication, then set an API password under Profile.',
+    username: 'username',
+    password: 'apiPassword',
   },
   {
     id: 'miniflux',
     name: 'Miniflux',
     detail: 'miniflux.app',
     logo: miniflux,
-    username: 'Username',
-    password: 'Password',
-    help: 'In Miniflux, turn on the Google Reader API under Settings → Integrations. It has its own username and password.',
+    username: 'username',
+    password: 'password',
   },
   {
     id: 'other',
-    name: 'Other',
+    get name() {
+      return t('services.otherName')
+    },
     detail: 'Google Reader API',
-    username: 'Username',
-    password: 'API password',
-    help: 'Any service that speaks the Google Reader API. Use its API password if it has one.',
+    username: 'username',
+    password: 'apiPassword',
   },
 ]
 

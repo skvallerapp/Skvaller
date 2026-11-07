@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from './i18n.svelte'
   import { isMac } from './platform'
   import { arrowKeys, bindings, keyLabel, keyName, rebind, shortcutActions } from './shortcuts'
   import type { Settings, ShortcutAction } from './types'
@@ -9,8 +10,7 @@
     $props()
 
   const keys = $derived(bindings(overrides))
-  const labelOf = (action: ShortcutAction) =>
-    shortcutActions.find((a) => a.action === action)!.label
+  const labelOf = (action: ShortcutAction) => t(`shortcuts.actions.${action}`)
 
   /** The action waiting for its new key. */
   let recordingAction = $state<ShortcutAction | null>(null)
@@ -26,7 +26,7 @@
     recordingAction = null
     const result = rebind(overrides, action, key)
     notice = result.displaced
-      ? `${keyLabel(key!, isMac)} was the key for ${labelOf(result.displaced)}, which now has none.`
+      ? t('shortcuts.displaced', { key: keyLabel(key!, isMac), action: labelOf(result.displaced) })
       : null
     onchange(result.overrides)
   }
@@ -53,16 +53,16 @@
     const key = keyName(e)
     if (key === null) {
       // A modifier on its own: wait for the rest. Cmd, Ctrl or Alt combinations: refuse.
-      if (e.metaKey || e.ctrlKey || e.altKey) notice = 'A shortcut is a single key, with or without Shift.'
+      if (e.metaKey || e.ctrlKey || e.altKey) notice = t('shortcuts.singleKey')
       return
     }
     if (arrowKeys.has(key)) {
-      notice = 'The arrow keys move in and between the sidebar and the article list.'
+      notice = t('shortcuts.arrows')
       return
     }
     // Enter has to keep pressing the focused button.
     if (key === 'Enter' || key === 'Shift+Enter') {
-      notice = `${keyLabel('Enter', isMac)} can’t be a shortcut.`
+      notice = t('shortcuts.notAllowed', { key: keyLabel('Enter', isMac) })
       return
     }
     assign(key)
@@ -83,11 +83,11 @@
 <svelte:window onkeydowncapture={onkeydown} {onpointerdown} />
 
 <section>
-  <h2>Keys</h2>
+  <h2>{t('shortcuts.heading')}</h2>
   <div class="group">
-    {#each shortcutActions as { action, label } (action)}
+    {#each shortcutActions as action (action)}
       <div class="row">
-        <span id="shortcut-{action}">{label}</span>
+        <span id="shortcut-{action}">{labelOf(action)}</span>
         <button
           class="key"
           class:recording={recordingAction === action}
@@ -98,9 +98,9 @@
         >
           <span id="shortcut-{action}-key">
             {#if recordingAction === action}
-              Press a key…
+              {t('shortcuts.pressKey')}
             {:else if keys[action] === null}
-              None
+              {t('shortcuts.none')}
             {:else}
               {keyLabel(keys[action]!, isMac)}
             {/if}
@@ -113,13 +113,13 @@
     {#if notice}
       {notice}
     {:else if recordingAction}
-      Press Esc to cancel, or {isMac ? 'Delete' : 'Backspace'} for no key.
+      {t('shortcuts.recording', { key: t(isMac ? 'keys.delete' : 'keys.backspace') })}
     {:else}
-      Click a key to change it. ↑ and ↓ move in the sidebar or the list, and ← and → move between them.
+      {t('shortcuts.help')}
     {/if}
   </p>
   <button class="button restore" disabled={Object.keys(overrides).length === 0} onclick={restoreDefaults}>
-    Restore Defaults
+    {t('shortcuts.restore')}
   </button>
 </section>
 

@@ -9,6 +9,7 @@
   import Sidebar from './lib/Sidebar.svelte'
   import AccountSwitcher from './lib/AccountSwitcher.svelte'
   import AddAccount from './lib/AddAccount.svelte'
+  import { t } from './lib/i18n.svelte'
   import { isMac, macWindow } from './lib/platform'
   import { accountIndex, arrowKeys, bindings, keyName } from './lib/shortcuts'
   import { store } from './lib/store.svelte'
@@ -133,7 +134,7 @@
       addLocal={store.accounts.some((a) => a.kind === 'local') ? null : () => store.addLocalAccount()}
       account={store.account?.kind === 'greader' ? store.account : null}
       initialError={store.status.unauthorized
-        ? `${store.account?.description} no longer accepts the sign-in. Sign in again.`
+        ? t('app.signInAgain', { account: store.account?.description ?? '' })
         : store.status.error}
     />
   {/key}
@@ -155,7 +156,7 @@
     </div>
     {#if layout.sidebarOpen}
       <Resizer
-        label="Resize sidebar"
+        label={t('app.resizeSidebar')}
         value={layout.sidebarWidth}
         min={SIDEBAR.min}
         max={SIDEBAR.max}
@@ -169,7 +170,7 @@
       <ArticleList bind:this={list} onmarkedall={() => sidebar?.selectNext()} />
     </div>
     <Resizer
-      label="Resize article list"
+      label={t('app.resizeList')}
       value={layout.listWidth}
       min={LIST.min}
       max={LIST.max}

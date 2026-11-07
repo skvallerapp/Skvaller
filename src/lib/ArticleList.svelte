@@ -5,6 +5,7 @@
   import { tick, untrack } from 'svelte'
   import { fontStacks } from './fonts'
   import { formatTime } from './format'
+  import { t } from './i18n.svelte'
   import { activePane, focus, layout, toggleSidebar } from './layout.svelte'
   import { thumbnailUrl } from './api'
   import { lineCount } from './lines.svelte'
@@ -89,11 +90,7 @@
   })
 
   const unread = $derived(store.unreadInView)
-  const unreadLabel = $derived(
-    unread === 0
-      ? 'No Unread Items'
-      : `${unread.toLocaleString()} Unread ${unread === 1 ? 'Item' : 'Items'}`,
-  )
+  const unreadLabel = $derived(unread === 0 ? t('list.noUnread') : t('list.unread', { count: unread }))
 
   // "Mark all as read" asks first, unless the confirmMarkAllRead setting is off.
   // The confirmation closes on Escape, Cancel, a click or focus elsewhere, leaving the
@@ -336,7 +333,7 @@
   onblur={() => (confirming = false)}
 />
 
-<section class="list" class:active={activePane() === 'list'} aria-label="Articles">
+<section class="list" class:active={activePane() === 'list'} aria-label={t('list.label')}>
   <div
     class="toolbar"
     class:window-buttons={macWindow && !layout.sidebarOpen}
@@ -344,7 +341,7 @@
   >
     <button
       class="icon-button"
-      aria-label={layout.sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+      aria-label={layout.sidebarOpen ? t('list.hideSidebar') : t('list.showSidebar')}
       aria-pressed={layout.sidebarOpen}
       onclick={toggleSidebar}
     >
@@ -358,8 +355,8 @@
       <button
         class="icon-button"
         bind:this={trigger}
-        aria-label="Mark All as Read"
-        title="Mark All as Read"
+        aria-label={t('list.markAll')}
+        title={t('list.markAll')}
         aria-haspopup={store.settings.confirmMarkAllRead ? 'dialog' : undefined}
         aria-expanded={store.settings.confirmMarkAllRead ? confirming : undefined}
         disabled={unread === 0}
@@ -374,13 +371,11 @@
           aria-labelledby="mark-all-question"
           data-tauri-drag-region="false"
         >
-          <p id="mark-all-question">
-            Mark {unread.toLocaleString()} {unread === 1 ? 'article' : 'articles'} as read?
-          </p>
+          <p id="mark-all-question">{t('list.markAllQuestion', { count: unread })}</p>
           <div class="actions">
-            <button class="button" onclick={cancel}>Cancel</button>
+            <button class="button" onclick={cancel}>{t('common.cancel')}</button>
             <button class="button primary" bind:this={confirmButton} onclick={confirmMarkAll}>
-              Mark as Read
+              {t('list.markAsRead')}
             </button>
           </div>
         </div>

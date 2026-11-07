@@ -9,6 +9,7 @@
 mod badge;
 mod commands;
 mod config;
+mod locale;
 mod logging;
 mod menu;
 mod sync_gate;
@@ -160,6 +161,7 @@ fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
         .expect("tauri.conf.json defines the main window");
     let handle = app.clone();
     WebviewWindowBuilder::from_config(app, config)?
+        .initialization_script(locale::script())
         .on_new_window(move |url, _| {
             if matches!(url.scheme(), "http" | "https")
                 && let Err(e) = handle.opener().open_url(url.as_str(), None::<&str>)

@@ -61,6 +61,10 @@ pub struct Settings {
     pub unread_badge: bool,
     #[serde(deserialize_with = "or_default")]
     pub thumbnail_size: ThumbnailSize,
+    /// The UI's language, as a BCP 47 tag such as `sv` or `pt-BR`. `None` follows the
+    /// system. The UI knows the languages it has.
+    #[serde(deserialize_with = "or_default")]
+    pub language: Option<String>,
 }
 
 /// How large the article list shows each article's thumbnail.
@@ -189,6 +193,7 @@ impl Default for Settings {
             mark_read_on_scroll: false,
             unread_badge: true,
             thumbnail_size: ThumbnailSize::default(),
+            language: None,
         }
     }
 }
@@ -581,10 +586,11 @@ mod tests {
     fn reading_settings_default_and_round_trip() {
         let config = Config::parse(
             br#"{ "markReadOn": "later", "sortSubscriptions": "alphabetical",
-                              "thumbnailSize": "huge" }"#,
+                              "thumbnailSize": "huge", "language": 5 }"#,
         )
         .unwrap();
         assert_eq!(config.settings.thumbnail_size, ThumbnailSize::Medium);
+        assert_eq!(config.settings.language, None);
         assert_eq!(config.settings.mark_read_on, MarkReadOn::Open);
         assert_eq!(
             config.settings.sort_subscriptions,
@@ -597,8 +603,10 @@ mod tests {
         config.settings.mark_read_on = MarkReadOn::Delay;
         config.settings.unread_badge = false;
         config.settings.thumbnail_size = ThumbnailSize::Large;
+        config.settings.language = Some("sv".into());
         let json = serde_json::to_value(&config).unwrap();
         assert_eq!(json["markReadOn"], "delay");
+        assert_eq!(json["language"], "sv");
         assert_eq!(json["thumbnailSize"], "large");
         assert_eq!(json["sortSubscriptions"], "foldersFirst");
         let back = Config::parse(&serde_json::to_vec(&json).unwrap()).unwrap();

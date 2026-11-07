@@ -12,6 +12,7 @@
   import * as api from './lib/api'
   import { sentence } from './lib/format'
   import { slideHighlight } from './lib/highlight.svelte'
+  import { languageName, languages, t, type MessageKey, type ParamsFor } from './lib/i18n.svelte'
   import { dragRegion, macWindow } from './lib/platform'
   import ShortcutList from './lib/ShortcutList.svelte'
   import AddAccount from './lib/AddAccount.svelte'
@@ -21,69 +22,94 @@
   /** A section of the window. An account's is `account:<id>`. */
   type Pane = 'appearance' | 'reading' | 'shortcuts' | 'add-account' | `account:${string}`
 
-  const panes: { pane: Pane; label: string; icon: typeof Palette }[] = [
-    { pane: 'appearance', label: 'Appearance', icon: Palette },
-    { pane: 'reading', label: 'Reading', icon: BookOpen },
-    { pane: 'shortcuts', label: 'Shortcuts', icon: Keyboard },
+  /** A choice whose label is the message for `key`, in the UI's language. */
+  type Choice<T> = { value: T; readonly label: string }
+  const choice = <T, K extends MessageKey>(value: T, key: K, ...params: ParamsFor<K>): Choice<T> => ({
+    value,
+    get label() {
+      return t(key, ...params)
+    },
+  })
+
+  const section = (pane: Pane, key: MessageKey, icon: typeof Palette) => ({
+    pane,
+    icon,
+    get label() {
+      return t(key)
+    },
+  })
+
+  const panes = [
+    section('appearance', 'settings.appearance', Palette),
+    section('reading', 'settings.reading', BookOpen),
+    section('shortcuts', 'settings.shortcuts', Keyboard),
   ]
 
-  const syncSchedules: { value: SyncSchedule; label: string }[] = [
-    { value: 'onStart', label: 'On Start' },
-    { value: 5, label: 'Every 5 Minutes' },
-    { value: 15, label: 'Every 15 Minutes' },
-    { value: 30, label: 'Every 30 Minutes' },
-    { value: 60, label: 'Every Hour' },
-    { value: 'manual', label: 'Manually' },
+  const syncSchedules: Choice<SyncSchedule>[] = [
+    choice('onStart', 'settings.syncSchedules.onStart'),
+    choice(5, 'settings.syncSchedules.everyMinutes', { count: 5 }),
+    choice(15, 'settings.syncSchedules.everyMinutes', { count: 15 }),
+    choice(30, 'settings.syncSchedules.everyMinutes', { count: 30 }),
+    choice(60, 'settings.syncSchedules.everyHour'),
+    choice('manual', 'settings.syncSchedules.manual'),
   ]
 
-  const retention = [
-    { days: 7, label: '1 Week' },
-    { days: 14, label: '2 Weeks' },
-    { days: 30, label: '1 Month' },
-    { days: 90, label: '3 Months' },
+  const retention: Choice<number>[] = [
+    choice(7, 'settings.weeks', { count: 1 }),
+    choice(14, 'settings.weeks', { count: 2 }),
+    choice(30, 'settings.months', { count: 1 }),
+    choice(90, 'settings.months', { count: 3 }),
   ]
 
   // 0 keeps them.
-  const unreadRetention = [
-    { value: 30, label: '1 Month' },
-    { value: 90, label: '3 Months' },
-    { value: 180, label: '6 Months' },
-    { value: 365, label: '1 Year' },
-    { value: 0, label: 'Forever' },
+  const unreadRetention: Choice<number>[] = [
+    choice(30, 'settings.months', { count: 1 }),
+    choice(90, 'settings.months', { count: 3 }),
+    choice(180, 'settings.months', { count: 6 }),
+    choice(365, 'settings.years', { count: 1 }),
+    choice(0, 'settings.keepForever'),
   ]
 
-  const sortOrders: { value: Settings['sortSubscriptions']; label: string }[] = [
-    { value: 'foldersFirst', label: 'Folders First' },
-    { value: 'alphabetical', label: 'Alphabetical' },
+  const sortOrders: Choice<Settings['sortSubscriptions']>[] = [
+    choice('foldersFirst', 'settings.sortOrders.foldersFirst'),
+    choice('alphabetical', 'settings.sortOrders.alphabetical'),
   ]
 
-  const markReadModes: { value: Settings['markReadOn']; label: string }[] = [
-    { value: 'open', label: 'On Open' },
-    { value: 'delay', label: 'After a Delay' },
-    { value: 'manual', label: 'Manually' },
+  const markReadModes: Choice<Settings['markReadOn']>[] = [
+    choice('open', 'settings.markReadModes.open'),
+    choice('delay', 'settings.markReadModes.delay'),
+    choice('manual', 'settings.markReadModes.manual'),
   ]
 
-  const thumbnailSizes: { value: Settings['thumbnailSize']; label: string }[] = [
-    { value: 'none', label: 'None' },
-    { value: 'small', label: 'Small' },
-    { value: 'medium', label: 'Medium' },
-    { value: 'large', label: 'Large' },
+  const thumbnailSizes: Choice<Settings['thumbnailSize']>[] = [
+    choice('none', 'settings.thumbnailSizes.none'),
+    choice('small', 'settings.thumbnailSizes.small'),
+    choice('medium', 'settings.thumbnailSizes.medium'),
+    choice('large', 'settings.thumbnailSizes.large'),
   ]
 
-  const themes: { value: Theme; label: string }[] = [
-    { value: 'system', label: 'System' },
-    { value: 'light', label: 'Light' },
-    { value: 'dark', label: 'Dark' },
-    { value: 'espresso', label: 'Espresso' },
+  const themes: Choice<Theme>[] = [
+    choice('system', 'settings.themes.system'),
+    choice('light', 'settings.themes.light'),
+    choice('dark', 'settings.themes.dark'),
+    choice('espresso', 'settings.themes.espresso'),
   ]
 
-  const fonts: { value: Font; label: string }[] = [
+  // The bundled fonts go by their names, in every language.
+  const fonts: Choice<Font>[] = [
     { value: 'inter', label: 'Inter' },
     { value: 'geist', label: 'Geist' },
-    { value: 'system', label: 'System' },
+    choice('system', 'settings.fontNames.system'),
     { value: 'source-serif', label: 'Source Serif' },
     { value: 'literata', label: 'Literata' },
-    { value: 'serif', label: 'System Serif' },
+    choice('serif', 'settings.fontNames.serif'),
+  ]
+
+  /** The language setting's choices: the system's, then each language by its own name.
+   * Only shown once there is more than English. */
+  const languageChoices: Choice<string>[] = [
+    choice('', 'settings.languageSystem'),
+    ...languages.map((tag) => ({ value: tag, label: languageName(tag) })),
   ]
 
   let pane = $state<Pane>('appearance')
@@ -114,11 +140,11 @@
   const account = $derived(accounts.find((a) => paneOf(a) === pane) ?? null)
   const current = $derived(
     account && subpage === 'reader-view'
-      ? { label: 'Reader View' }
+      ? { label: t('settings.readerView') }
       : account
       ? { label: account.description }
       : pane === 'add-account'
-        ? { label: 'Add Account' }
+        ? { label: t('addAccount.title') }
         : (panes.find((p) => p.pane === pane) ?? panes[0]),
   )
 
@@ -232,11 +258,15 @@
     try {
       const report = await api.importOpml(id)
       if (!report) return
-      const feeds = (n: number) => `${n.toLocaleString()} ${n === 1 ? 'feed' : 'feeds'}`
       const text =
         report.added === 0
-          ? 'No new feeds in the file.'
-          : `Added ${feeds(report.added)}.` + (report.skipped > 0 ? ` Skipped ${feeds(report.skipped)} already added or unusable.` : '')
+          ? t('settings.importedNone')
+          : report.skipped === 0
+            ? t('settings.imported', { count: report.added })
+            : t('common.twoSentences', {
+                first: t('settings.imported', { count: report.added }),
+                second: t('settings.importSkipped', { count: report.skipped }),
+              })
       opmlNote = { id, text }
       error = null
     } catch (e) {
@@ -246,7 +276,7 @@
 
   async function exportOpml(id: string) {
     try {
-      if (await api.exportOpml(id)) opmlNote = { id, text: 'Subscriptions exported.' }
+      if (await api.exportOpml(id)) opmlNote = { id, text: t('settings.exported') }
       error = null
     } catch (e) {
       error = sentence(api.errorMessage(e))
@@ -378,7 +408,7 @@
 {#snippet select<T extends string | number>(
   id: string,
   value: T,
-  choices: { value: T; label: string }[],
+  choices: { value: T; readonly label: string }[],
   onchange: (value: T) => void,
   other: (value: T) => string = String,
 )}
@@ -399,7 +429,7 @@
 {/snippet}
 
 <div class="settings" class:mac={macWindow}>
-  <nav aria-label="Settings" bind:this={nav}>
+  <nav aria-label={t('settings.label')} bind:this={nav}>
     <div class="drag" data-tauri-drag-region={dragRegion}></div>
     <ul>
       {#each panes as p (p.pane)}
@@ -417,7 +447,7 @@
         </li>
       {/each}
     </ul>
-    <ul class="accounts" aria-label="Accounts">
+    <ul class="accounts" aria-label={t('settings.accounts')}>
       {#each accounts as a (a.id)}
         <li>
           <button
@@ -430,7 +460,7 @@
             <CircleUser size={28} strokeWidth={1.5} />
             <span>
               <strong>{a.description}</strong>
-              <small>{a.kind === 'greader' ? a.username : 'Feeds on this device'}</small>
+              <small>{a.kind === 'greader' ? a.username : t('settings.localAccount')}</small>
             </span>
           </button>
         </li>
@@ -444,7 +474,7 @@
         >
           <span class="highlight"></span>
           <Plus size={18} strokeWidth={2} />
-          Add Account…
+          {t('accounts.add')}
         </button>
       </li>
     </ul>
@@ -453,7 +483,7 @@
   <main bind:this={main}>
     <header data-tauri-drag-region={dragRegion}>
       {#if account && subpage}
-        <button class="back" aria-label="Back to {account.description}" onclick={backToAccount}>
+        <button class="back" aria-label={t('settings.back', { account: account.description })} onclick={backToAccount}>
           <ChevronLeft size={16} strokeWidth={2} />{account.description}
         </button>
       {/if}
@@ -466,32 +496,45 @@
     {#if settings}
       <div class="content">
         {#if pane === 'appearance'}
+          {#if languages.length > 1}
+            <section>
+              <h2>{t('settings.language')}</h2>
+              <div class="group">
+                <div class="row">
+                  <label for="language">{t('settings.language')}</label>
+                  {@render select('language', settings.language ?? '', languageChoices, (language) =>
+                    change({ language: language || null }),
+                  )}
+                </div>
+              </div>
+            </section>
+          {/if}
           <section>
-            <h2>Colors</h2>
+            <h2>{t('settings.colors')}</h2>
             <div class="group">
               <div class="row">
-                <label for="theme">Theme</label>
+                <label for="theme">{t('settings.theme')}</label>
                 {@render select('theme', settings.theme, themes, (theme) => change({ theme }))}
               </div>
             </div>
           </section>
           <section>
-            <h2>Article List</h2>
+            <h2>{t('settings.articleList')}</h2>
             <div class="group">
               <div class="row">
-                <label for="thumbnails">Thumbnails</label>
+                <label for="thumbnails">{t('settings.thumbnails')}</label>
                 {@render select('thumbnails', settings.thumbnailSize, thumbnailSizes, (thumbnailSize) =>
                   change({ thumbnailSize }),
                 )}
               </div>
             </div>
-            <p class="note">Downloaded from each new article's image host after a sync. None turns this off.</p>
+            <p class="note">{t('settings.thumbnailsNote')}</p>
           </section>
           <section>
-              <h2>App Icon</h2>
+              <h2>{t('settings.appIcon')}</h2>
               <div class="group">
                 <div class="row">
-                  <label for="badge">Unread count badge</label>
+                  <label for="badge">{t('settings.badge')}</label>
                   <input
                     id="badge"
                     type="checkbox"
@@ -501,13 +544,13 @@
                   />
                 </div>
               </div>
-              <p class="note">The unread articles of every account.</p>
+              <p class="note">{t('settings.badgeNote')}</p>
             </section>
           <section>
-            <h2>Motion</h2>
+            <h2>{t('settings.motion')}</h2>
             <div class="group">
               <div class="row">
-                <label for="animations">Animations</label>
+                <label for="animations">{t('settings.animations')}</label>
                 <input
                   id="animations"
                   type="checkbox"
@@ -517,13 +560,13 @@
                 />
               </div>
             </div>
-            <p class="note">Off when the system is set to reduce motion.</p>
+            <p class="note">{t('settings.animationsNote')}</p>
           </section>
           <section>
-            <h2>Fonts</h2>
+            <h2>{t('settings.fonts')}</h2>
             <div class="group">
               <div class="row">
-                <label for="ui-font">Interface</label>
+                <label for="ui-font">{t('settings.uiFont')}</label>
                 {@render select(
                   'ui-font',
                   settings.uiFont,
@@ -532,7 +575,7 @@
                 )}
               </div>
               <div class="row">
-                <label for="headline-font">Headlines</label>
+                <label for="headline-font">{t('settings.headlineFont')}</label>
                 {@render select(
                   'headline-font',
                   settings.headlineFont,
@@ -541,7 +584,7 @@
                 )}
               </div>
               <div class="row">
-                <label for="article-font">Article Text</label>
+                <label for="article-font">{t('settings.articleFont')}</label>
                 {@render select(
                   'article-font',
                   settings.articleFont,
@@ -553,10 +596,10 @@
           </section>
         {:else if pane === 'reading'}
           <section>
-            <h2>Subscriptions</h2>
+            <h2>{t('settings.subscriptions')}</h2>
             <div class="group">
               <div class="row">
-                <label for="sort">Sort subscriptions</label>
+                <label for="sort">{t('settings.sort')}</label>
                 {@render select('sort', settings.sortSubscriptions, sortOrders, (sortSubscriptions) =>
                   change({ sortSubscriptions }),
                 )}
@@ -564,16 +607,16 @@
             </div>
           </section>
           <section>
-            <h2>Marking as Read</h2>
+            <h2>{t('settings.markingRead')}</h2>
             <div class="group">
               <div class="row">
-                <label for="mark-read-on">Mark article as read</label>
+                <label for="mark-read-on">{t('settings.markReadOn')}</label>
                 {@render select('mark-read-on', settings.markReadOn, markReadModes, (markReadOn) =>
                   change({ markReadOn }),
                 )}
               </div>
               <div class="row">
-                <label for="mark-on-scroll">Mark as read on scroll</label>
+                <label for="mark-on-scroll">{t('settings.markOnScroll')}</label>
                 <input
                   id="mark-on-scroll"
                   type="checkbox"
@@ -583,7 +626,7 @@
                 />
               </div>
               <div class="row">
-                <label for="confirm-mark-all">Ask before marking all as read</label>
+                <label for="confirm-mark-all">{t('settings.confirmMarkAll')}</label>
                 <input
                   id="confirm-mark-all"
                   type="checkbox"
@@ -593,10 +636,7 @@
                 />
               </div>
             </div>
-            <p class="note">
-              On scroll, articles are marked read as they leave the top of the list. Scrolling
-              back up doesn’t mark any.
-            </p>
+            <p class="note">{t('settings.markReadNote')}</p>
           </section>
         {:else if pane === 'shortcuts'}
           <ShortcutList
@@ -617,7 +657,7 @@
           {@const a = account}
           <section>
             {#if feeds?.length === 0}
-              <p class="intro">No subscriptions yet.</p>
+              <p class="intro">{t('settings.noSubscriptions')}</p>
             {:else if feeds}
               <div class="group">
                 {#each feeds as feed (feed.id)}
@@ -639,18 +679,15 @@
                 {/each}
               </div>
             {/if}
-            <p class="note">
-              Articles of these feeds open in Reader View: the full text, from the article’s web
-              page, instead of what the feed sends.
-            </p>
+            <p class="note">{t('settings.readerViewNote')}</p>
           </section>
         {:else if account}
           {@const a = account}
           <section>
-            <h2>General</h2>
+            <h2>{t('settings.general')}</h2>
             <div class="group">
               <div class="row">
-                <label for="description">Description</label>
+                <label for="description">{t('settings.accountName')}</label>
                 <input
                   id="description"
                   class="text"
@@ -665,36 +702,36 @@
               </div>
               {#if a.kind === 'greader'}
                 <div class="row">
-                  <span>Server</span>
+                  <span>{t('settings.server')}</span>
                   <span class="value" title={a.server}>{a.server}</span>
                 </div>
               {/if}
             </div>
           </section>
           <section>
-            <h2>Reading</h2>
+            <h2>{t('settings.reading')}</h2>
             <div class="group">
               <button id="reader-view-row" class="row link" onclick={() => openReaderView(a.id)}>
-                <span>Reader View (full-text)</span>
+                <span>{t('settings.readerViewRow')}</span>
                 <ChevronRight size={16} strokeWidth={2} aria-hidden="true" />
               </button>
             </div>
           </section>
           <section>
-            <h2>Syncing</h2>
+            <h2>{t('settings.syncing')}</h2>
             <div class="group">
               <div class="row">
-                <label for="sync">Sync</label>
+                <label for="sync">{t('settings.syncSchedule')}</label>
                 {@render select(
                   'sync',
                   a.sync,
                   syncSchedules,
                   (sync) => changeAccount(a.id, { sync }),
-                  (minutes) => `Every ${minutes} Minutes`,
+                  (minutes) => t('settings.syncSchedules.everyMinutes', { count: Number(minutes) }),
                 )}
               </div>
               <div class="row">
-                <label for="sync-on-wake">Sync after waking from sleep</label>
+                <label for="sync-on-wake">{t('settings.syncOnWake')}</label>
                 <input
                   id="sync-on-wake"
                   type="checkbox"
@@ -704,67 +741,61 @@
                 />
               </div>
               <div class="row">
-                <label for="keep-read">Keep read items</label>
+                <label for="keep-read">{t('settings.keepRead')}</label>
                 {@render select(
                   'keep-read',
                   a.keepReadDays,
-                  retention.map((r) => ({ value: r.days, label: r.label })),
+                  retention,
                   (keepReadDays) => changeAccount(a.id, { keepReadDays }),
-                  (days) => `${days} Days`,
+                  (days) => t('settings.days', { count: days }),
                 )}
               </div>
               {#if a.kind === 'local'}
                 <div class="row">
-                  <label for="keep-unread">Keep unread items</label>
+                  <label for="keep-unread">{t('settings.keepUnread')}</label>
                   {@render select(
                     'keep-unread',
                     a.keepUnreadDays,
                     unreadRetention,
                     (keepUnreadDays) => changeAccount(a.id, { keepUnreadDays }),
-                    (days) => `${days} Days`,
+                    (days) => t('settings.days', { count: days }),
                   )}
                 </div>
               {/if}
             </div>
-            <p class="note">Starred articles are always kept.</p>
+            <p class="note">{t('settings.keepStarredNote')}</p>
           </section>
           <section>
-            <h2>Subscriptions</h2>
+            <h2>{t('settings.subscriptions')}</h2>
             <div class="buttons">
               {#if a.kind === 'local'}
-                <button class="button wide" onclick={() => importOpml(a.id)}>Import OPML…</button>
+                <button class="button wide" onclick={() => importOpml(a.id)}>{t('settings.importOpml')}</button>
               {/if}
-              <button class="button wide" onclick={() => exportOpml(a.id)}>Export as OPML…</button>
+              <button class="button wide" onclick={() => exportOpml(a.id)}>{t('settings.exportOpml')}</button>
             </div>
             {#if opmlNote?.id === a.id}<p class="note" role="status">{opmlNote.text}</p>{/if}
           </section>
           <section>
-            <h2>Account</h2>
+            <h2>{t('settings.account')}</h2>
             {#if confirmingRemove}
               <div class="group confirm" role="alertdialog" aria-labelledby="remove-question">
                 <p id="remove-question">
-                  <strong>Remove {a.description}?</strong>
-                  {#if a.kind === 'local'}
-                    This removes its subscriptions, folders and articles from this computer.
-                    They are kept nowhere else.
-                  {:else}
-                    This removes the account and its articles from this computer. Changes that
-                    haven’t synced yet are lost.
-                  {/if}
+                  <strong>{t('settings.removeQuestion', { account: a.description })}</strong>
+                  {a.kind === 'local' ? t('settings.removeLocal') : t('settings.removeSync')}
                 </p>
                 <div class="actions">
                   <!-- Cancel takes the focus, so a second Return doesn't remove it. -->
                   {#if a.kind === 'local'}
-                    <button class="button export" onclick={() => exportOpml(a.id)}>Export as OPML…</button>
+                    <button class="button export" onclick={() => exportOpml(a.id)}>{t('settings.exportOpml')}</button>
                   {/if}
                   <!-- svelte-ignore a11y_autofocus -->
-                  <button class="button" autofocus onclick={cancelRemove}>Cancel</button>
+                  <button class="button" autofocus onclick={cancelRemove}>{t('common.cancel')}</button>
                   <button
                     class="button destructive"
                     disabled={removing}
                     onclick={() => removeAccount(a.id)}
                   >
-                    Remove
+                    {t('settings.remove')}
                   </button>
                 </div>
               </div>
@@ -774,7 +805,7 @@
                 bind:this={removeButton}
                 onclick={() => (confirmingRemove = true)}
               >
-                Remove Account…
+                {t('settings.removeAccount')}
               </button>
             {/if}
           </section>

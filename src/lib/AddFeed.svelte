@@ -3,6 +3,7 @@
   import { tick } from 'svelte'
   import { errorMessage } from './api'
   import { sentence } from './format'
+  import { t } from './i18n.svelte'
   import { store } from './store.svelte'
   import type { CommandError } from './types'
 
@@ -20,11 +21,11 @@
   let busy = $state(false)
   let error = $state<string | null>(null)
 
-  const messages: Partial<Record<CommandError['kind'], string>> = {
-    noFeed: 'No feed found at this address.',
-    badUrl: 'Enter a web address, such as example.com or example.com/feed.xml.',
-    network: 'Could not reach the site. Check the address and your connection.',
-  }
+  const messages = $derived<Partial<Record<CommandError['kind'], string>>>({
+    noFeed: t('addFeed.noFeed'),
+    badUrl: t('addFeed.badUrl'),
+    network: t('addFeed.network'),
+  })
 
   async function toggle() {
     open = !open
@@ -87,8 +88,8 @@
   <button
     class="icon-button"
     bind:this={trigger}
-    aria-label="Add Feed"
-    title="Add Feed"
+    aria-label={t('addFeed.title')}
+    title={t('addFeed.title')}
     aria-haspopup="dialog"
     aria-expanded={open}
     onclick={toggle}
@@ -96,10 +97,10 @@
     <Plus size={18} strokeWidth={2} />
   </button>
   {#if open}
-    <div class="popover" role="dialog" aria-label="Add Feed" tabindex="-1" data-tauri-drag-region="false" onkeydown={onKeydown}>
+    <div class="popover" role="dialog" aria-label={t('addFeed.title')} tabindex="-1" data-tauri-drag-region="false" onkeydown={onKeydown}>
     <form onsubmit={submit}>
       <label>
-        <span>Feed or web site</span>
+        <span>{t('addFeed.address')}</span>
         <input
           bind:this={urlInput}
           bind:value={url}
@@ -111,23 +112,23 @@
         />
       </label>
       <label>
-        <span>Folder</span>
+        <span>{t('addFeed.folder')}</span>
         <select bind:value={folder}>
-          <option value="">None</option>
+          <option value="">{t('addFeed.noFolder')}</option>
           {#each store.folders as f (f.id)}<option value={f.id}>{f.title}</option>{/each}
-          <option value={NEW_FOLDER}>New Folder…</option>
+          <option value={NEW_FOLDER}>{t('addFeed.newFolderOption')}</option>
         </select>
       </label>
       {#if folder === NEW_FOLDER}
         <label>
-          <span>New folder</span>
+          <span>{t('addFeed.newFolder')}</span>
           <input bind:value={newFolder} required />
         </label>
       {/if}
       {#if error}<p class="error" role="alert">{error}</p>{/if}
       <div class="actions">
-        <button type="button" class="button" onclick={close}>Cancel</button>
-        <button class="button primary" disabled={busy}>{busy ? 'Adding…' : 'Add'}</button>
+        <button type="button" class="button" onclick={close}>{t('common.cancel')}</button>
+        <button class="button primary" disabled={busy}>{busy ? t('common.adding') : t('addFeed.add')}</button>
       </div>
     </form>
     </div>

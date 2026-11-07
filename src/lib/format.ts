@@ -1,3 +1,6 @@
+import { t } from './i18n.svelte'
+
+// Dates follow the system's region, not the UI's language.
 const time = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' })
 const day = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' })
 const dayInYear = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
@@ -19,13 +22,10 @@ export function formatSynced(ms: number): string {
   const d = new Date(ms)
   const yesterday = new Date()
   yesterday.setDate(yesterday.getDate() - 1)
-  const dayLabel =
-    d.toDateString() === new Date().toDateString()
-      ? 'Today'
-      : d.toDateString() === yesterday.toDateString()
-        ? 'Yesterday'
-        : shortDate(d)
-  return `${dayLabel} at ${time.format(d)}`
+  const at = time.format(d)
+  if (d.toDateString() === new Date().toDateString()) return t('format.today', { time: at })
+  if (d.toDateString() === yesterday.toDateString()) return t('format.yesterday', { time: at })
+  return t('format.dayAt', { date: shortDate(d), time: at })
 }
 
 export function formatFull(ms: number): string {
