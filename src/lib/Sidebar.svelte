@@ -599,12 +599,6 @@
     animation: spin 0.9s linear infinite;
   }
 
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
   /* Without the spin, a dimmed icon shows the sync. */
   :global(:root[data-motion='off']) .sync.spinning :global(svg) {
     opacity: 0.5;

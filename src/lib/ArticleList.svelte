@@ -107,22 +107,12 @@
 
   let pane: HTMLDivElement
 
-  // Pulling down at the top syncs, and the list waits there until the sync is done. If
-  // another sync was running, the pull's own returns at once, so it waits for that one.
+  // Pulling down at the top syncs, and the list waits there until no sync runs: one that
+  // was already running makes the pull's own return at once.
   const overscroll = new Overscroll(async () => {
     await store.sync()
-    await new Promise<void>((resolve) => {
-      const stop = $effect.root(() => {
-        $effect(() => {
-          if (store.status.syncing) return
-          resolve()
-          queueMicrotask(() => stop())
-        })
-      })
-    })
+    await store.idle()
   })
-  /** How far the pull at the top is towards a refresh, 0 to 1. */
-  const pulled = $derived(Math.min(1, Math.max(0, overscroll.offset) / overscroll.trigger))
   /** The copy of the old list, while it's on screen. */
   let ghost: HTMLElement | null = null
 
@@ -141,6 +131,8 @@
     ghost = copy
     copy.classList.add('ghost')
     copy.inert = true
+    // It slides from where the list rests, not from a stretch.
+    copy.style.transform = ''
     pane.append(copy)
     copy.scrollTop = viewport.scrollTop
     try {
@@ -309,7 +301,7 @@
   let frame = 0
 
   function onScroll() {
-    // Elastic overscroll can go above the top.
+    // overscroll-behavior keeps the list from going above the top, where it's supported.
     const top = Math.max(0, viewport.scrollTop)
     pass(items, offsets, top)
     scrollTop = top
@@ -407,16 +399,18 @@
     {#if overscroll.offset > 0 && (overscroll.fromTop || overscroll.refreshing)}
       <div
         class="refresh"
-        class:armed={pulled === 1}
+        class:armed={overscroll.armed}
         class:spinning={overscroll.refreshing}
         aria-hidden="true"
-        style:opacity={pulled}
+        style:height="{overscroll.hold}px"
+        style:opacity={overscroll.armed ? 1 : overscroll.progress}
         style:transform="translateY({(overscroll.offset - overscroll.hold) / 2}px)"
       >
+        <!-- A full turn when armed, so the spin starts where the pull left it. -->
         <RotateCw
           size={18}
           strokeWidth={2}
-          style={overscroll.refreshing ? undefined : `transform: rotate(${pulled * 270}deg)`}
+          style={overscroll.refreshing ? undefined : `transform: rotate(${overscroll.progress * 360}deg)`}
         />
       </div>
     {/if}
@@ -578,13 +572,12 @@
     contain: strict;
   }
 
-  /* Shows in the gap above a list pulled down, centered in it. */
+  /* Shows in the gap above a list pulled down, centered in it. Its height is the hold's. */
   .refresh {
     position: absolute;
     top: 0;
     left: 0;
     right: 0;
-    height: 48px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -598,12 +591,6 @@
 
   .refresh.spinning :global(svg) {
     animation: spin 0.9s linear infinite;
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
   }
 
   .pane > :global(.ghost) {
