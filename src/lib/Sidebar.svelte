@@ -19,9 +19,12 @@
   import { store } from './store.svelte'
   import type { Feed, Folder, Scope } from './types'
   import { slideHighlight } from './highlight.svelte'
+  import { Overscroll } from './overscroll.svelte'
   import { viewInfo, views } from './views'
 
   const current = $derived(viewInfo(store.view))
+  /** Pulling the feeds past their ends stretches them, with no refresh. */
+  const overscroll = new Overscroll()
 
   const collapsed = new SvelteSet<string>()
 
@@ -510,43 +513,50 @@
       <p class:failed={store.status.error} title={store.status.error ?? undefined}>{status}</p>
     {/if}
   </header>
-  <div class="scroll">
-    <section>
-      {@render row({ kind: 'all' }, current.allLabel, store.countTotal)}
-    </section>
-
-    {#if shownFolders.length > 0 || looseFeeds.length > 0}
+  <!-- Clips the list as it stretches past its ends, which just springs back here. -->
+  <div class="clip">
+    <div
+      class="scroll"
+      style:transform={overscroll.offset ? `translateY(${overscroll.offset}px)` : null}
+      {@attach overscroll.attach}
+    >
       <section>
-        <h2>{t('sidebar.feeds')}</h2>
-        {#each entries as entry (`${entry.kind}:${entry.id}`)}
-          {#if entry.kind === 'feed'}
-            {@render row({ kind: 'feed', id: entry.id }, entry.feed.title, store.counts.get(entry.id) ?? 0, false, entry.feed)}
-          {:else}
-          {@const folder = entry.folder}
-          <!-- global: inside the if block, a local outro wouldn't run as the row goes. -->
-          <div class="folder" out:leave|global>
-            <button
-              class="disclosure"
-              class:open={!collapsed.has(folder.id)}
-              aria-label={t(collapsed.has(folder.id) ? 'sidebar.expand' : 'sidebar.collapse', { folder: folder.title })}
-              aria-expanded={!collapsed.has(folder.id)}
-              onclick={() => toggleFolder(folder.id)}
-            >
-              <ChevronRight size={16} strokeWidth={2} />
-            </button>
-            {@render row({ kind: 'folder', id: folder.id }, folder.title, store.folderCounts.get(folder.id) ?? 0)}
-          </div>
-          {#if !collapsed.has(folder.id)}
-            <div transition:slide={{ duration: ms(160) }}>
-              {#each feedsByFolder.get(folder.id) ?? [] as feed (feed.id)}
-                {@render row({ kind: 'feed', id: feed.id }, feed.title, store.counts.get(feed.id) ?? 0, true, feed)}
-              {/each}
-            </div>
-          {/if}
-          {/if}
-        {/each}
+        {@render row({ kind: 'all' }, current.allLabel, store.countTotal)}
       </section>
-    {/if}
+
+      {#if shownFolders.length > 0 || looseFeeds.length > 0}
+        <section>
+          <h2>{t('sidebar.feeds')}</h2>
+          {#each entries as entry (`${entry.kind}:${entry.id}`)}
+            {#if entry.kind === 'feed'}
+              {@render row({ kind: 'feed', id: entry.id }, entry.feed.title, store.counts.get(entry.id) ?? 0, false, entry.feed)}
+            {:else}
+            {@const folder = entry.folder}
+            <!-- global: inside the if block, a local outro wouldn't run as the row goes. -->
+            <div class="folder" out:leave|global>
+              <button
+                class="disclosure"
+                class:open={!collapsed.has(folder.id)}
+                aria-label={t(collapsed.has(folder.id) ? 'sidebar.expand' : 'sidebar.collapse', { folder: folder.title })}
+                aria-expanded={!collapsed.has(folder.id)}
+                onclick={() => toggleFolder(folder.id)}
+              >
+                <ChevronRight size={16} strokeWidth={2} />
+              </button>
+              {@render row({ kind: 'folder', id: folder.id }, folder.title, store.folderCounts.get(folder.id) ?? 0)}
+            </div>
+            {#if !collapsed.has(folder.id)}
+              <div transition:slide={{ duration: ms(160) }}>
+                {#each feedsByFolder.get(folder.id) ?? [] as feed (feed.id)}
+                  {@render row({ kind: 'feed', id: feed.id }, feed.title, store.counts.get(feed.id) ?? 0, true, feed)}
+                {/each}
+              </div>
+            {/if}
+            {/if}
+          {/each}
+        </section>
+      {/if}
+    </div>
   </div>
   <div
     class="views"
@@ -644,9 +654,19 @@
     cursor: default;
   }
 
+  .clip {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
   .scroll {
     flex: 1;
     overflow-y: auto;
+    /* Overscroll stretches the list instead, alike on every platform. */
+    overscroll-behavior: none;
     /* The row highlights' stacking context: under every row's text, over the background. */
     isolation: isolate;
     padding: 0 8px 12px;
