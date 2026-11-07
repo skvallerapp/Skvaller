@@ -186,8 +186,9 @@ class Store {
     if (revision === this.#revision) this.accounts = accounts
   }
 
-  sync() {
-    if (this.activeId) api.syncNow(this.activeId).catch((e) => console.error('Syncing failed', e))
+  /** Resolves once the sync ends, or at once if another was running. */
+  async sync() {
+    if (this.activeId) await api.syncNow(this.activeId).catch((e) => console.error('Syncing failed', e))
   }
 
   feed(id: string): Feed | undefined {
