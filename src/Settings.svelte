@@ -10,14 +10,14 @@
   import Rss from '@lucide/svelte/icons/rss'
   import { onMount, tick } from 'svelte'
   import * as api from './lib/api'
-  import { sentence } from './lib/format'
+  import { dateExample, sentence } from './lib/format.svelte'
   import { slideHighlight } from './lib/highlight.svelte'
   import { languageName, languages, t, type MessageKey, type ParamsFor } from './lib/i18n.svelte'
   import { dragRegion, macWindow } from './lib/platform'
   import ShortcutList from './lib/ShortcutList.svelte'
   import AddAccount from './lib/AddAccount.svelte'
   import { styleRoot } from './lib/theme'
-  import type { Account, AccountChange, Feed, Font, Session, Settings, SyncSchedule, Theme } from './lib/types'
+  import type { Account, AccountChange, Clock, DateFormat, Feed, Font, Session, Settings, SyncSchedule, Theme } from './lib/types'
 
   /** A section of the window. An account's is `account:<id>`. */
   type Pane = 'appearance' | 'reading' | 'shortcuts' | 'add-account' | `account:${string}`
@@ -86,6 +86,18 @@
     choice('small', 'settings.thumbnailSizes.small'),
     choice('medium', 'settings.thumbnailSizes.medium'),
     choice('large', 'settings.thumbnailSizes.large'),
+  ]
+
+  const clocks: Choice<Clock>[] = [
+    choice('system', 'settings.clocks.system'),
+    choice('h24', 'settings.clocks.h24'),
+    choice('h12', 'settings.clocks.h12'),
+  ]
+
+  // Shown as today's date in each format.
+  const dateFormats: Choice<DateFormat>[] = [
+    choice('system', 'settings.dateFormats.system'),
+    ...(['dayMonth', 'monthDay', 'iso'] as const).map((value) => ({ value, label: dateExample(value) })),
   ]
 
   const themes: Choice<Theme>[] = [
@@ -509,6 +521,19 @@
               </div>
             </section>
           {/if}
+          <section>
+            <h2>{t('settings.dateTime')}</h2>
+            <div class="group">
+              <div class="row">
+                <label for="clock">{t('settings.clock')}</label>
+                {@render select('clock', settings.clock, clocks, (clock) => change({ clock }))}
+              </div>
+              <div class="row">
+                <label for="dateFormat">{t('settings.dateFormat')}</label>
+                {@render select('dateFormat', settings.dateFormat, dateFormats, (dateFormat) => change({ dateFormat }))}
+              </div>
+            </div>
+          </section>
           <section>
             <h2>{t('settings.colors')}</h2>
             <div class="group">

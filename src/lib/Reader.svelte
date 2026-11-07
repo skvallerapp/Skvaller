@@ -4,7 +4,7 @@
   import Star from '@lucide/svelte/icons/star'
   import { readyArticle } from './articleHtml'
   import { bundledFontFaces, fontStacks } from './fonts'
-  import { escapeHtml, formatFull } from './format'
+  import { escapeHtml, formatFull } from './format.svelte'
   import { t } from './i18n.svelte'
   import { animate, motion } from './motion'
   import { dragRegion } from './platform'
@@ -60,8 +60,9 @@
   // opens in the system browser; see `readyArticle`.
   // Only our own header fields are escaped. The body is shown as the feed sent it,
   // except for media, http URLs and links; see `readyArticle`.
-  // The settings the frame shows are set on its root, so changing one doesn't reload the
-  // article. The HTML starts with them too, so a new article doesn't flash.
+  // The settings the frame shows are set on its root, and the date's text is set from its
+  // `data-published`, so changing one doesn't reload the article. The HTML starts with
+  // them too, so a new article doesn't flash.
   const frameRoot = $derived({
     theme: palette(store.settings.theme),
     motion: motion(store.settings.animations),
@@ -74,6 +75,8 @@
     root.dataset.motion = frameRoot.motion
     root.style.setProperty('--article-font', frameRoot.articleFont)
     root.style.setProperty('--headline-font', frameRoot.headlineFont)
+    const date = root.querySelector<HTMLElement>('.date[data-published]')
+    if (date) date.textContent = formatFull(Number(date.dataset.published))
   }
 
   /** Escaped text, as a link to the system browser when there is a URL. */
@@ -87,7 +90,7 @@
     const root = untrack(() => frameRoot)
     return `<!doctype html><html data-theme="${root.theme}" data-motion="${root.motion}" style="--article-font: ${root.articleFont}; --headline-font: ${root.headlineFont}"><head><meta charset="utf-8"><style>${frameCss}</style></head><body><article>
       <header>
-        <div class="date">${escapeHtml(formatFull(article.published))}</div>
+        <div class="date" data-published="${article.published}">${escapeHtml(untrack(() => formatFull(article.published)))}</div>
         <h1>${linked(article.title, article.url)}</h1>
         <div class="source">${escapeHtml(article.author)}<br>${linked(feed?.title ?? '', feed?.siteUrl)}</div>
       </header>

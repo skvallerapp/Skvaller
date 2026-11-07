@@ -10,7 +10,7 @@
   import { SvelteSet } from 'svelte/reactivity'
   import AccountSwitcher from './AccountSwitcher.svelte'
   import AddFeed from './AddFeed.svelte'
-  import { formatSynced } from './format'
+  import { formatSynced } from './format.svelte'
   import { currentLanguage, t } from './i18n.svelte'
   import { confirm, openSettings } from './api'
   import { animate, ms } from './motion'

@@ -134,7 +134,15 @@ export interface Settings {
   thumbnailSize: 'none' | 'small' | 'medium' | 'large'
   /** The UI's language, as a BCP 47 tag such as `sv`; `null` follows the system. */
   language: string | null
+  /** How times show: as the system's region shows them, or on a chosen clock. */
+  clock: Clock
+  /** How dates show: as the system's region shows them, or in a chosen order. Month
+   * names follow the region either way. */
+  dateFormat: DateFormat
 }
+
+export type Clock = 'system' | 'h24' | 'h12'
+export type DateFormat = 'system' | 'dayMonth' | 'monthDay' | 'iso'
 
 export type Theme = 'system' | 'light' | 'dark' | 'espresso'
 

@@ -175,6 +175,13 @@
   "settings.thumbnailSizes.medium": "Medelstora",
   "settings.thumbnailSizes.large": "Stora",
   "settings.thumbnailsNote": "Hämtas från varje ny artikels bildvärd efter en synkronisering. Välj ”Ingen” för att stänga av.",
+  "settings.dateTime": "Datum och tid",
+  "settings.clock": "Klocka",
+  "settings.clocks.system": "System",
+  "settings.clocks.h24": "24-timmars",
+  "settings.clocks.h12": "12-timmars",
+  "settings.dateFormat": "Datumformat",
+  "settings.dateFormats.system": "System",
 
   "settings.appIcon": "Appikon",
   "settings.badge": "Märke med antal olästa",

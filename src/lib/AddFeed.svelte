@@ -2,7 +2,7 @@
   import Plus from '@lucide/svelte/icons/plus'
   import { tick } from 'svelte'
   import { errorMessage } from './api'
-  import { sentence } from './format'
+  import { sentence } from './format.svelte'
   import { t } from './i18n.svelte'
   import { store } from './store.svelte'
   import type { CommandError } from './types'
