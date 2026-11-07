@@ -127,6 +127,34 @@ impl Theme {
             Theme::Dark | Theme::Espresso => Some(tauri::Theme::Dark),
         }
     }
+
+    /// The colour of the page behind the text: `--reader-bg` in app.css. A window shows
+    /// it before its page has painted, so it must match, or the window flashes. `system`
+    /// is the system's theme, which decides for System. The window's idea of it and the
+    /// webview's `prefers-color-scheme`, which the page's palette follows, agree: both come
+    /// from the system's colour scheme.
+    pub fn background(self, system: tauri::Theme) -> tauri::window::Color {
+        use tauri::window::Color;
+        match (self, system) {
+            (Theme::Light, _) | (Theme::System, tauri::Theme::Light) => {
+                Color(0xfa, 0xfa, 0xf9, 255)
+            }
+            (Theme::Dark, _) | (Theme::System, _) => Color(0x20, 0x20, 0x22, 255),
+            (Theme::Espresso, _) => Color(0x2d, 0x21, 0x1e, 255),
+        }
+    }
+
+    /// A script that gives the page its theme before it first paints. It sets
+    /// `window.__SKVALLER_THEME__` to the theme's name, as the UI knows it, then runs
+    /// theme.js, which puts the palette in `data-theme` on the root element.
+    pub fn script(self) -> String {
+        // JSON is valid JavaScript, and the name is the one serde gives it.
+        let name = serde_json::to_string(&self).expect("a theme is a string");
+        format!(
+            "window.__SKVALLER_THEME__ = {name};\n{}",
+            include_str!("theme.js")
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -441,6 +469,54 @@ mod tests {
         let conf: serde_json::Value =
             serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         assert_eq!(conf["identifier"], skvaller_core::KEYCHAIN_SERVICE);
+    }
+
+    #[test]
+    fn the_theme_script_sets_the_name_the_ui_styles_itself_with_and_runs_theme_js() {
+        // The names are `Theme` in types.ts, which `styleRoot` puts in `data-theme`.
+        for (theme, name) in [
+            (Theme::System, "system"),
+            (Theme::Light, "light"),
+            (Theme::Dark, "dark"),
+            (Theme::Espresso, "espresso"),
+        ] {
+            let script = theme.script();
+            let rest = script
+                .strip_prefix(&format!("window.__SKVALLER_THEME__ = \"{name}\";\n"))
+                .expect("the script starts by setting the theme");
+            assert_eq!(rest, include_str!("theme.js"));
+        }
+    }
+
+    #[test]
+    fn the_window_background_is_the_themes_reader_background() {
+        // `--reader-bg` is the first one in the palette's block, which `selector` starts.
+        fn reader_bg(selector: &str) -> String {
+            let css = include_str!("../../src/app.css");
+            let block = &css[css.find(selector).expect("app.css has the palette")..];
+            let value = &block[block.find("--reader-bg: ").unwrap() + "--reader-bg: ".len()..];
+            value[..value.find(';').unwrap()].to_string()
+        }
+        let hex = |c: tauri::window::Color| format!("#{:02x}{:02x}{:02x}", c.0, c.1, c.2);
+        let (light, dark) = (tauri::Theme::Light, tauri::Theme::Dark);
+        assert_eq!(hex(Theme::Light.background(dark)), reader_bg(":root {"));
+        assert_eq!(
+            hex(Theme::Dark.background(light)),
+            reader_bg(":root[data-theme='dark']")
+        );
+        assert_eq!(
+            hex(Theme::Espresso.background(light)),
+            reader_bg(":root[data-theme='espresso']")
+        );
+        // System is whichever the system is.
+        assert_eq!(
+            Theme::System.background(light),
+            Theme::Light.background(dark)
+        );
+        assert_eq!(
+            Theme::System.background(dark),
+            Theme::Dark.background(light)
+        );
     }
 
     #[test]
