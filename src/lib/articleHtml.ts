@@ -17,13 +17,48 @@ export function readyArticle(html: string, base: string): string {
     media.setAttribute('preload', 'none')
     media.setAttribute('controls', '')
   }
+  // Resolved against `base` too: the frame has no base URL, so a relative one would
+  // load from the app.
   for (const el of doc.querySelectorAll('[src], [poster], [srcset]')) {
-    for (const name of ['src', 'poster', 'srcset']) {
+    for (const name of ['src', 'poster']) {
       const value = el.getAttribute(name)
-      if (value) el.setAttribute(name, value.replace(/(^|,)(\s*)http:\/\//gi, '$1$2https://'))
+      if (value) el.setAttribute(name, resource(value, base))
     }
+    const srcset = el.getAttribute('srcset')
+    if (srcset) el.setAttribute('srcset', readySrcset(srcset, base))
   }
   return doc.head.innerHTML + doc.body.innerHTML
+}
+
+/** `url` made absolute against `base`, and asked for over https. */
+function resource(url: string, base: string): string {
+  let absolute = url.trim()
+  try {
+    absolute = new URL(absolute, base || undefined).href
+  } catch {
+    // Left as is: no better guess.
+  }
+  return absolute.replace(/^http:\/\//i, 'https://')
+}
+
+/** A srcset with each candidate's URL readied by `resource`. As in HTML, a URL runs to
+ * the next whitespace, less trailing commas, and its descriptors run to the next comma. */
+function readySrcset(srcset: string, base: string): string {
+  const candidates: string[] = []
+  const candidate = /[\s,]*(\S+)/y
+  let match
+  while ((match = candidate.exec(srcset))) {
+    const url = match[1].replace(/,+$/, '')
+    let descriptors = ''
+    if (url === match[1]) {
+      const end = srcset.indexOf(',', candidate.lastIndex)
+      const stop = end === -1 ? srcset.length : end
+      descriptors = srcset.slice(candidate.lastIndex, stop).trim()
+      candidate.lastIndex = stop
+    }
+    candidates.push(descriptors ? `${resource(url, base)} ${descriptors}` : resource(url, base))
+  }
+  return candidates.join(', ')
 }
 
 /** Links that open in the system browser: each asks for a new window, which the app

@@ -86,7 +86,10 @@ class Store {
     this.view === 'starred' ? this.starredByFeed : this.unreadByFeed,
   )
 
-  readonly countTotal: number = $derived([...this.counts.values()].reduce((sum, n) => sum + n, 0))
+  readonly countTotal: number = $derived(sum(this.counts))
+
+  /** Unread articles in the whole account, whatever the view. */
+  readonly unreadTotal: number = $derived(sum(this.unreadByFeed))
 
   /** Unread articles in the current list. */
   readonly unreadInView: number = $derived(
@@ -664,3 +667,9 @@ function adjusted(counts: Map<string, number>, articles: Article[], delta: numbe
 }
 
 export const store = new Store()
+
+function sum(counts: Map<string, number>): number {
+  let total = 0
+  for (const n of counts.values()) total += n
+  return total
+}

@@ -84,6 +84,11 @@
     return url ? `<a href="${escapeHtml(url)}" target="_blank">${escapeHtml(text)}</a>` : escapeHtml(text)
   }
 
+  // Its own derived, on the URL alone: a new `article` object or feed list after every
+  // library reload must not parse the article again.
+  const articleUrl = $derived(article?.url ?? '')
+  const body = $derived(readyArticle((showFullText ? store.fullText : store.html) ?? '', articleUrl))
+
   const srcdoc = $derived.by(() => {
     if (!article) return ''
     const feed = store.feed(article.feedId)
@@ -94,7 +99,7 @@
         <h1>${linked(article.title, article.url)}</h1>
         <div class="source">${escapeHtml(article.author)}<br>${linked(feed?.title ?? '', feed?.siteUrl)}</div>
       </header>
-      ${readyArticle((showFullText ? store.fullText : store.html) ?? '', article.url)}
+      ${body}
     </article></body></html>`
   })
 

@@ -6,13 +6,13 @@
   import { t } from './i18n.svelte'
   import { store } from './store.svelte'
   import type { CommandError } from './types'
+  import { dismissOutside } from './dismiss'
 
   /** The folder select's value for a folder made on the spot. */
   const NEW_FOLDER = '\u0000new'
 
   // Closes on Escape, Cancel, adding, or a click elsewhere, like the account menu.
   let open = $state(false)
-  let root: HTMLElement
   let trigger: HTMLButtonElement
   let urlInput = $state<HTMLInputElement>()
   let url = $state('')
@@ -70,21 +70,13 @@
     }
   }
 
-  // Only focus moving to another element closes it; WebKit doesn't focus clicked
-  // buttons, so clicks outside close it in onWindowPointerdown.
-  function onFocusout(e: FocusEvent) {
-    const next = e.relatedTarget as Node | null
-    if (next && !busy && !root.contains(next)) open = false
-  }
-
-  function onWindowPointerdown(e: PointerEvent) {
-    if (open && !busy && !root.contains(e.target as Node)) open = false
+  // Unlike `close`, leaves focus where the click or focus went.
+  function dismiss() {
+    if (!busy) open = false
   }
 </script>
 
-<svelte:window onpointerdown={onWindowPointerdown} />
-
-<div bind:this={root} onfocusout={onFocusout}>
+<div {@attach dismissOutside(dismiss)}>
   <button
     class="icon-button"
     bind:this={trigger}

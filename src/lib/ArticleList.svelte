@@ -16,6 +16,7 @@
   import { store } from './store.svelte'
   import type { Article } from './types'
   import { viewInfo } from './views'
+  import { dismissOutside } from './dismiss'
 
   // Row heights come from the data, never from measuring the DOM, so the list stays
   // virtualized and cheap at 5,000+ rows: the headline's lines are counted from canvas
@@ -98,7 +99,6 @@
   // The confirmation closes on Escape, Cancel, a click or focus elsewhere, leaving the
   // window, or when nothing is left to mark.
   let confirming = $state(false)
-  let markAll: HTMLDivElement
   let trigger: HTMLButtonElement
   let confirmButton = $state<HTMLButtonElement>()
 
@@ -185,19 +185,6 @@
 
   function onWindowKeydown(e: KeyboardEvent) {
     if (confirming && e.key === 'Escape') cancel()
-  }
-
-  function onWindowPointerdown(e: PointerEvent) {
-    if (confirming && !markAll.contains(e.target as Node)) confirming = false
-  }
-
-  // Only focus moving to another element closes it here. WebKit doesn't focus a
-  // clicked button, so a click in the confirmation leaves focus with nothing; closing
-  // then would remove the button before its click lands. Clicks outside close it in
-  // onWindowPointerdown.
-  function onFocusout(e: FocusEvent) {
-    const next = e.relatedTarget as Node | null
-    if (next && !markAll.contains(next)) confirming = false
   }
 
   // Brings a newly opened article's row into view, such as when stepping through with
@@ -340,7 +327,6 @@
 
 <svelte:window
   onkeydown={onWindowKeydown}
-  onpointerdown={onWindowPointerdown}
   onblur={() => (confirming = false)}
 />
 
@@ -362,7 +348,7 @@
       <h1>{title}</h1>
       <p>{unreadLabel}</p>
     </div>
-    <div class="mark-all" bind:this={markAll} onfocusout={onFocusout}>
+    <div class="mark-all" {@attach dismissOutside(() => (confirming = false))}>
       <button
         class="icon-button"
         bind:this={trigger}

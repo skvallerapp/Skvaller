@@ -36,14 +36,23 @@ pub(crate) fn plain_text(html: &str, max: usize) -> String {
     };
 
     while let Some(c) = rest.chars().next() {
-        // As in HTML, `<` starts a tag only before a letter, `/` or `!`; otherwise it's text.
+        // As in HTML, `<` starts a tag only before a letter, `/`, `!` or `?` (a bogus
+        // comment, such as Word's `<?xml:namespace …>`); otherwise it's text.
         let starts_tag = c == '<'
             && rest[1..]
                 .bytes()
                 .next()
-                .is_some_and(|b| b.is_ascii_alphabetic() || b == b'/' || b == b'!');
+                .is_some_and(|b| b.is_ascii_alphabetic() || matches!(b, b'/' | b'!' | b'?'));
         if starts_tag && rest.starts_with("<!--") {
-            rest = rest[4..].find("-->").map_or("", |i| &rest[4 + i + 3..]);
+            let body = &rest[4..];
+            // HTML ends `<!-->` and `<!--->` right away.
+            rest = if let Some(after) = body.strip_prefix('>') {
+                after
+            } else if let Some(after) = body.strip_prefix("->") {
+                after
+            } else {
+                body.find("-->").map_or("", |i| &body[i + 3..])
+            };
             continue;
         }
         if starts_tag {
@@ -84,15 +93,20 @@ fn tag_name(s: &str) -> String {
 }
 
 /// Where the tag at the start of `s` ends, past its `>`. A `>` inside a quoted
-/// attribute value doesn't end it.
+/// attribute value doesn't end it. A quote opens a value only right after `=`, so
+/// the apostrophe in `alt=don't` is just a character.
 fn tag_end(s: &str) -> usize {
     let mut quote = None;
+    let mut after_eq = false;
     for (i, b) in s.bytes().enumerate() {
         match (quote, b) {
-            (None, b'"' | b'\'') => quote = Some(b),
+            (None, b'"' | b'\'') if after_eq => quote = Some(b),
             (Some(q), _) if b == q => quote = None,
             (None, b'>') => return i + 1,
             _ => {}
+        }
+        if quote.is_none() && !b.is_ascii_whitespace() {
+            after_eq = b == b'=';
         }
     }
     s.len()
@@ -151,7 +165,9 @@ fn entity(s: &str) -> (char, usize) {
                 None if num.bytes().all(|b| b.is_ascii_digit()) => num.parse().ok(),
                 _ => None,
             };
+            // HTML never yields NUL or control characters here; drop them as unknown.
             code.and_then(char::from_u32)
+                .filter(|c| !c.is_control() || c.is_whitespace())
         }),
     };
     match c {
@@ -209,6 +225,17 @@ mod tests {
             "Real"
         );
         assert_eq!(plain_text("&#+65; &#x+41;", 100), "&#+65; &#x+41;");
+        assert_eq!(
+            plain_text("<img alt=don't src=x>Hello it's me", 100),
+            "Hello it's me"
+        );
+        assert_eq!(
+            plain_text(r#"<?xml:namespace prefix = o ns="urn:x" />Hello"#, 100),
+            "Hello"
+        );
+        assert_eq!(plain_text("<!-->Visible", 100), "Visible");
+        assert_eq!(plain_text("<!--->Visible", 100), "Visible");
+        assert_eq!(plain_text("a&#0;b", 100), "a&#0;b");
     }
 
     #[test]
