@@ -186,9 +186,21 @@ class Store {
     if (revision === this.#revision) this.accounts = accounts
   }
 
-  /** Resolves once the sync ends, or at once if another was running. */
+  /** Waiting for another account to be shown. */
+  #whenSwitched = new Set<() => void>()
+
+  /** Resolves once the sync ends, at once if another was running, or when another account
+   * is shown: its sync is none of the new account's. */
   async sync() {
-    if (this.activeId) await api.syncNow(this.activeId).catch((e) => console.error('Syncing failed', e))
+    if (!this.activeId) return
+    let switched!: () => void
+    const shown = new Promise<void>((resolve) => (switched = resolve))
+    this.#whenSwitched.add(switched)
+    try {
+      await Promise.race([api.syncNow(this.activeId).catch((e) => console.error('Syncing failed', e)), shown])
+    } finally {
+      this.#whenSwitched.delete(switched)
+    }
   }
 
   /** Waiting for the active account to stop syncing. */
@@ -514,6 +526,7 @@ class Store {
     this.starred.clear()
     this.status = { ...idleStatus }
     this.#idled()
+    for (const switched of this.#whenSwitched) switched()
     // Marks not saved yet belong to the account that goes; their write named it.
     this.#saveRead()
   }
