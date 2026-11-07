@@ -8,17 +8,17 @@
   import { isMac } from './platform'
   import { accountIndex, accountModifier, accountShortcut } from './shortcuts'
   import { store } from './store.svelte'
+  import { dismissOutside } from './dismiss'
 
   // Closes on Escape, a pick, a click or focus elsewhere, like the mark-all-read popover.
   let open = $state(false)
-  let root: HTMLElement
   let trigger: HTMLButtonElement
   let menu = $state<HTMLElement>()
 
   /** The active account's live count: its articles are being read right now. */
   const unread = (id: string, saved: number) =>
     id === store.activeId && store.signedIn
-      ? [...store.unreadByFeed.values()].reduce((sum, n) => sum + n, 0)
+      ? store.unreadTotal
       : saved
 
   async function toggle() {
@@ -71,22 +71,9 @@
     // The app's own shortcuts don't see keys the menu used.
     e.stopPropagation()
   }
-
-  function onWindowPointerdown(e: PointerEvent) {
-    if (open && !root.contains(e.target as Node)) open = false
-  }
-
-  // WebKit doesn't focus a clicked button, so only focus moving to another element
-  // closes the menu here; clicks outside close it in onWindowPointerdown.
-  function onFocusout(e: FocusEvent) {
-    const next = e.relatedTarget as Node | null
-    if (next && !root.contains(next)) open = false
-  }
 </script>
 
-<svelte:window onpointerdown={onWindowPointerdown} />
-
-<div class="switcher" bind:this={root} onfocusout={onFocusout}>
+<div class="switcher" {@attach dismissOutside(() => (open = false))}>
   <button
     class="icon-button"
     bind:this={trigger}

@@ -292,7 +292,10 @@ impl Client {
     async fn json<T: DeserializeOwned>(&self, req: RequestBuilder) -> Result<T> {
         let res = req.send().await?;
         check(res.status())?;
-        Ok(res.json().await?)
+        // A body that isn't the expected JSON, such as a proxy's sign-in page, is the
+        // server's fault, not the network's.
+        let body = res.bytes().await?;
+        serde_json::from_slice(&body).map_err(|e| Error::Protocol(e.to_string()))
     }
 }
 

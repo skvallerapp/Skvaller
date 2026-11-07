@@ -153,7 +153,7 @@ async fn a_page_without_a_feed_is_an_error() {
 async fn a_json_feed_works_too() {
     let server = MockServer::start().await;
     let feed = r#"{ "version": "https://jsonfeed.org/version/1.1", "title": "Jay",
-        "home_page_url": "https://jay.example/",
+        "home_page_url": "/blog/",
         "items": [{ "id": "j1", "url": "https://jay.example/1", "title": "Jason",
                     "content_html": "<p>Hi</p>", "date_published": "2026-11-01T08:00:00Z" }] }"#;
     serve(
@@ -173,6 +173,11 @@ async fn a_json_feed_works_too() {
     assert_eq!(articles.len(), 1);
     assert_eq!(articles[0].title, "Jason");
     assert_eq!(articles[0].published, 1_793_520_000_000);
+    // feed-rs leaves JSON Feed links relative.
+    assert_eq!(
+        db.feeds().unwrap()[0].site_url,
+        Some(format!("{}/blog/", server.uri()))
+    );
 }
 
 #[tokio::test]

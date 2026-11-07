@@ -395,6 +395,11 @@ impl AppState {
         lock(&self.config).clone()
     }
 
+    /// The account `id`, without copying the rest of the config.
+    fn account(&self, id: &str) -> Option<Account> {
+        lock(&self.config).account(id).cloned()
+    }
+
     /// The accounts, in order, and the active one's ID.
     pub fn accounts_for_menu(&self) -> (Vec<Account>, Option<String>) {
         let config = lock(&self.config);
@@ -549,7 +554,7 @@ async fn ensure_client(state: &AppState, rt: &Runtime) -> CommandResult<Option<C
     if rt.token_rejected.load(Ordering::Relaxed) {
         return Ok(None);
     }
-    let Some(account) = state.config().account(&rt.id).cloned() else {
+    let Some(account) = state.account(&rt.id) else {
         return Ok(None);
     };
     let AccountKind::Greader { server, .. } = &account.kind else {
@@ -579,7 +584,7 @@ async fn ensure_client(state: &AppState, rt: &Runtime) -> CommandResult<Option<C
 /// Whether the account can sync: a local one always can, a sync account needs a token
 /// the server has not rejected.
 async fn is_signed_in(state: &AppState, rt: &Runtime) -> CommandResult<bool> {
-    match state.config().account(&rt.id).map(|a| &a.kind) {
+    match state.account(&rt.id).map(|a| a.kind) {
         Some(AccountKind::Local) => Ok(true),
         Some(AccountKind::Greader { .. }) => Ok(ensure_client(state, rt).await?.is_some()),
         None => Ok(false),
@@ -595,11 +600,9 @@ pub struct AccountInfo {
     unread: i64,
 }
 
-fn account_infos(state: &AppState) -> Vec<AccountInfo> {
+fn account_infos(state: &AppState, accounts: Vec<Account>) -> Vec<AccountInfo> {
     let runtimes = lock(&state.runtimes).clone();
-    state
-        .config()
-        .accounts
+    accounts
         .into_iter()
         .map(|account| AccountInfo {
             unread: runtimes
@@ -664,7 +667,7 @@ async fn current_session(state: &AppState) -> CommandResult<Session> {
     };
     Ok(Session {
         revision,
-        accounts: account_infos(state),
+        accounts: account_infos(state, config.accounts),
         active_id: config.active,
         signed_in,
         status,
@@ -714,7 +717,7 @@ pub async fn session(state: State<'_, AppState>) -> CommandResult<Session> {
 
 #[tauri::command]
 pub async fn accounts(state: State<'_, AppState>) -> CommandResult<Vec<AccountInfo>> {
-    Ok(account_infos(&state))
+    Ok(account_infos(&state, state.config().accounts))
 }
 
 /// Signs in, saves the token in the keychain and makes the account the active one. An
@@ -740,7 +743,14 @@ pub async fn sign_in(
     );
     blocking(move || save_token(&key, &token)).await?;
 
-    let (rt, added) = add_account(&app, &state, kind)?;
+    let (rt, added) = match add_account(&app, &state, kind) {
+        Ok(added) => added,
+        Err(e) => {
+            // It may have made the existing account active before its cache failed.
+            emit_session(&app).await;
+            return Err(e);
+        }
+    };
     if added {
         // Its sync loop has started its first sync with the saved token: no need to
         // stop it.
@@ -943,9 +953,7 @@ pub async fn remove_account(
     id: String,
 ) -> CommandResult<()> {
     let account = state
-        .config()
         .account(&id)
-        .cloned()
         .ok_or_else(|| CommandError::other("the account was removed"))?;
     // One whose cache didn't open has no runtime.
     let rt = lock(&state.runtimes).get(&id).cloned();
@@ -975,9 +983,8 @@ pub async fn remove_account(
         }
     }
     drop(rt);
-    let account = Some(account);
 
-    if let Some(key) = account.and_then(|a| a.kind.keychain_key())
+    if let Some(key) = account.kind.keychain_key()
         && let Err(e) = blocking(move || delete_token(&key)).await
     {
         tracing::event!(
@@ -1121,7 +1128,7 @@ pub async fn set_starred(
 /// sync account's are managed on its server.
 fn local(state: &AppState, account_id: &str) -> CommandResult<Arc<Runtime>> {
     let rt = state.runtime(account_id)?;
-    match state.config().account(account_id).map(|a| &a.kind) {
+    match state.account(account_id).map(|a| a.kind) {
         Some(AccountKind::Local) => Ok(rt),
         _ => Err(CommandError::other(
             "this account's feeds are managed on its server",
@@ -1240,7 +1247,7 @@ pub async fn delete_folder(
 /// they are there as they are. Does nothing for a sync account, whose server has them.
 /// Best effort: a failure is logged.
 fn back_up_feeds(state: &AppState, rt: &Runtime) {
-    let Some(account) = state.config().account(&rt.id).cloned() else {
+    let Some(account) = state.account(&rt.id) else {
         return;
     };
     if account.kind != AccountKind::Local {
@@ -1312,17 +1319,19 @@ pub async fn rebuild_cache(
     account_id: String,
 ) -> CommandResult<()> {
     let account = state
-        .config()
         .account(&account_id)
-        .cloned()
         .ok_or_else(|| CommandError::other("the account was removed"))?;
-    if lock(&state.broken)
-        .get(&account_id)
-        .is_some_and(|b| !b.corrupt)
-    {
+    let old = lock(&state.runtimes).get(&account_id).cloned();
+    // Starting a healthy cache over would lose its queued changes.
+    let corrupt = match &old {
+        Some(rt) => rt.corrupt.load(Ordering::Relaxed),
+        None => lock(&state.broken)
+            .get(&account_id)
+            .is_some_and(|b| b.corrupt),
+    };
+    if !corrupt {
         return Err(CommandError::other("this account's cache isn't damaged"));
     }
-    let old = lock(&state.runtimes).get(&account_id).cloned();
     {
         // No sync may write while the files move.
         let _no_sync = match &old {
@@ -1442,9 +1451,8 @@ pub async fn export_opml(
 ) -> CommandResult<bool> {
     let rt = state.runtime(&id)?;
     let description = state
-        .config()
         .account(&id)
-        .map(|a| a.description.clone())
+        .map(|a| a.description)
         .unwrap_or_default();
     let xml = write_opml(&rt.db, &description)?;
     // No characters a file system refuses in the suggested name.
@@ -1658,7 +1666,7 @@ fn start_sync_loop(app: AppHandle, rt: Arc<Runtime>) {
             if rt.removed.load(Ordering::Relaxed) {
                 break;
             }
-            let Some(account) = state.config().account(&rt.id).cloned() else {
+            let Some(account) = state.account(&rt.id) else {
                 break;
             };
             let ago = |t: SystemTime| SystemTime::now().duration_since(t).unwrap_or_default();
@@ -1753,7 +1761,11 @@ async fn run_sync(app: &AppHandle, rt: &Arc<Runtime>) -> Ran {
     };
 
     let sync_once = async {
-        let account = state.config().account(&rt.id).cloned()?;
+        // A runtime retired by `rebuild_cache` or `remove_account` must not write.
+        if rt.is_removed() {
+            return None;
+        }
+        let account = state.account(&rt.id)?;
         // `None` for the local account, which fetches its feeds itself.
         let client = match account.kind {
             AccountKind::Greader { .. } => match ensure_client(&state, rt).await {

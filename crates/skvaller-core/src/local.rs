@@ -137,7 +137,7 @@ pub async fn subscribe(db: &Db, url: &str, folder_id: Option<&str>, now: i64) ->
         return Ok(id);
     }
     let id = format!("feed/{}", page.url);
-    let site_url = site_url(&parsed);
+    let site_url = site_url(&parsed, &page.url);
     let title = parsed
         .title
         .as_ref()
@@ -395,8 +395,9 @@ fn text(t: &model::Text) -> String {
 }
 
 /// The web site the feed is for: its alternate link, else its first one that is not
-/// itself.
-fn site_url(feed: &model::Feed) -> Option<Url> {
+/// itself. Resolved against `base`, the feed's URL: feed-rs leaves JSON Feed links as
+/// they are.
+fn site_url(feed: &model::Feed, base: &Url) -> Option<Url> {
     let links = || {
         feed.links
             .iter()
@@ -405,7 +406,7 @@ fn site_url(feed: &model::Feed) -> Option<Url> {
     links()
         .find(|l| l.rel.as_deref() == Some("alternate"))
         .or_else(|| links().next())
-        .and_then(|l| web_url(Url::parse(&l.href).ok()?))
+        .and_then(|l| web_url(base.join(&l.href).ok()?))
 }
 
 /// Only http(s) addresses from a feed: it is untrusted.
