@@ -1,6 +1,7 @@
 <script lang="ts">
   import CircleCheck from '@lucide/svelte/icons/circle-check'
   import PanelLeft from '@lucide/svelte/icons/panel-left'
+  import RotateCw from '@lucide/svelte/icons/rotate-cw'
   import Star from '@lucide/svelte/icons/star'
   import { tick, untrack } from 'svelte'
   import { fontStacks } from './fonts'
@@ -10,6 +11,7 @@
   import { thumbnailUrl } from './api'
   import { lineCount } from './lines.svelte'
   import { animate } from './motion'
+  import { Overscroll } from './overscroll.svelte'
   import { dragRegion, macWindow } from './platform'
   import { store } from './store.svelte'
   import type { Article } from './types'
@@ -104,6 +106,23 @@
   let { onmarkedall }: { onmarkedall: () => Promise<void> | undefined } = $props()
 
   let pane: HTMLDivElement
+
+  // Pulling down at the top syncs, and the list waits there until the sync is done. If
+  // another sync was running, the pull's own returns at once, so it waits for that one.
+  const overscroll = new Overscroll(async () => {
+    await store.sync()
+    await new Promise<void>((resolve) => {
+      const stop = $effect.root(() => {
+        $effect(() => {
+          if (store.status.syncing) return
+          resolve()
+          queueMicrotask(() => stop())
+        })
+      })
+    })
+  })
+  /** How far the pull at the top is towards a refresh, 0 to 1. */
+  const pulled = $derived(Math.min(1, Math.max(0, overscroll.offset) / overscroll.trigger))
   /** The copy of the old list, while it's on screen. */
   let ghost: HTMLElement | null = null
 
@@ -384,6 +403,23 @@
   </div>
 
   <div class="pane" bind:this={pane}>
+    <!-- Decorative: the sidebar's sync button says the same. -->
+    {#if overscroll.offset > 0 && (overscroll.fromTop || overscroll.refreshing)}
+      <div
+        class="refresh"
+        class:armed={pulled === 1}
+        class:spinning={overscroll.refreshing}
+        aria-hidden="true"
+        style:opacity={pulled}
+        style:transform="translateY({(overscroll.offset - overscroll.hold) / 2}px)"
+      >
+        <RotateCw
+          size={18}
+          strokeWidth={2}
+          style={overscroll.refreshing ? undefined : `transform: rotate(${pulled * 270}deg)`}
+        />
+      </div>
+    {/if}
     <div
       class="viewport"
       tabindex="-1"
@@ -391,6 +427,8 @@
       bind:clientHeight={height}
       bind:clientWidth={width}
       onscroll={onScroll}
+      style:transform={overscroll.offset ? `translateY(${overscroll.offset}px)` : null}
+      {@attach overscroll.attach}
     >
       {#if items.length === 0}
         <p class="empty">{viewInfo(store.view).empty}</p>
@@ -535,7 +573,37 @@
   .viewport {
     flex: 1;
     overflow-y: auto;
+    /* Overscroll stretches the list instead, alike on every platform. */
+    overscroll-behavior: none;
     contain: strict;
+  }
+
+  /* Shows in the gap above a list pulled down, centered in it. */
+  .refresh {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-3);
+    pointer-events: none;
+  }
+
+  .refresh.armed {
+    color: var(--text-2);
+  }
+
+  .refresh.spinning :global(svg) {
+    animation: spin 0.9s linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .pane > :global(.ghost) {
