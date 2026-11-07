@@ -54,7 +54,7 @@ function pullFor(y: number, d: number) {
 export class Overscroll {
   /** How far the list is stretched from its edge, in px: down from the top is positive. */
   offset = $state(0)
-  /** A refresh runs, with the list held at HOLD. */
+  /** A refresh runs, with the list held at HOLD, or the list springs back after one. */
   refreshing = $state(false)
   /** This gesture began with the list at the top and stayed there, so pulling down can
    * refresh. */
@@ -69,16 +69,16 @@ export class Overscroll {
   #el: HTMLElement | null = null
   /** The pull so far, before the rubber band. */
   #pull = 0
-  /** With animations off, this pull already refreshed. */
+  /** With animations off, this gesture already refreshed. */
   #spent = false
   #frame = 0
   #idle = 0
-  /** The wheel and touch listeners can keep the list from scrolling. They only do while
-   * it's at an edge or stretched, or a touch scrolls it here, so they don't hold up its
-   * scrolling elsewhere. */
+  /** The wheel and touch listeners can keep the list from scrolling. */
   #blocking: boolean | null = null
   /** When the last wheel event came. */
   #wheelAt = -Infinity
+  /** This wheel gesture is a mouse's. */
+  #mouse = false
   /** The size of the last wheel event. */
   #wheelSize = 0
   /** How many wheel events since the last larger one shrank smoothly. */
@@ -89,7 +89,8 @@ export class Overscroll {
   #coasting = false
   /** This momentum already bounced the list off an edge, or sprang it back. */
   #bounced = false
-  /** The pull since the last larger event: momentum, once it shows as such. */
+  /** The pull of smoothly shrinking events since the last larger one: momentum, once it
+   * shows as such. */
   #coasted = 0
   #touchY: number | null = null
   /** This touch was kept from scrolling the list, so it scrolls it here instead. */
@@ -104,15 +105,16 @@ export class Overscroll {
     this.#el = el
     // Svelte runs an attachment in an effect: reading the offset here would run it again,
     // and its cleanup would stop the spring back.
-    untrack(this.#block)
-    el.addEventListener('scroll', this.#block, { passive: true })
-    el.addEventListener('touchstart', this.#onTouchStart, { passive: true })
-    el.addEventListener('touchend', this.#onTouchEnd)
-    el.addEventListener('touchcancel', this.#onTouchCancel)
+    untrack(this.#updateListeners)
+    const passive = { passive: true }
+    el.addEventListener('scroll', this.#updateListeners, passive)
+    el.addEventListener('touchstart', this.#onTouchStart, passive)
+    el.addEventListener('touchend', this.#onTouchEnd, passive)
+    el.addEventListener('touchcancel', this.#onTouchCancel, passive)
     return () => {
       el.removeEventListener('wheel', this.#onWheel)
       el.removeEventListener('touchmove', this.#onTouchMove)
-      el.removeEventListener('scroll', this.#block)
+      el.removeEventListener('scroll', this.#updateListeners)
       el.removeEventListener('touchstart', this.#onTouchStart)
       el.removeEventListener('touchend', this.#onTouchEnd)
       el.removeEventListener('touchcancel', this.#onTouchCancel)
@@ -123,13 +125,13 @@ export class Overscroll {
     }
   }
 
-  /** Makes the wheel and touch listeners able to block scrolling, or not, as the list's
-   * place needs. */
-  #block = () => {
+  /** Makes the wheel and touch listeners able to keep the list from scrolling only while
+   * it's at an edge or stretched, or a touch scrolls it here, so they don't hold up its
+   * scrolling elsewhere. */
+  #updateListeners = () => {
     const el = this.#el
     if (!el) return
-    const blocking =
-      this.offset !== 0 || this.#pull !== 0 || this.#touchOwned || this.#atEdge(1) || this.#atEdge(-1)
+    const blocking = this.offset !== 0 || this.#touchOwned || this.#atEdge(1) || this.#atEdge(-1)
     if (blocking === this.#blocking) return
     this.#blocking = blocking
     const options = { passive: !blocking }
@@ -177,7 +179,6 @@ export class Overscroll {
     clearTimeout(this.#idle)
     const pulled = this.#el ? stretch(this.#pull, this.#el.clientHeight) : 0
     this.#pull = 0
-    this.#spent = false
     if (this.refreshing) return
     // With animations off, a long enough pull already refreshed.
     if (pulled >= TRIGGER && this.fromTop && animate()) this.#start()
@@ -187,10 +188,7 @@ export class Overscroll {
   #start() {
     this.refreshing = true
     this.#settle(HOLD)
-    this.#refresh().finally(() => {
-      this.refreshing = false
-      this.#settle(0)
-    })
+    this.#refresh().finally(() => this.#settle(0, SETTLE_MS, () => (this.refreshing = false)))
   }
 
   /** Springs the list to `target`, then calls `then`. With animations off, the list
@@ -198,24 +196,21 @@ export class Overscroll {
   #settle(target: number, ms = SETTLE_MS, then?: () => void) {
     cancelAnimationFrame(this.#frame)
     this.#frame = 0
-    if (!animate()) {
-      this.offset = 0
-      return
+    const done = () => {
+      then?.()
+      this.#updateListeners()
     }
     const from = this.offset
-    if (from === target) {
-      then?.()
-      this.#block()
-      return
+    if (!animate() || from === target) {
+      this.offset = animate() ? target : 0
+      return done()
     }
     const start = performance.now()
     const step = (now: number) => {
       const t = Math.min(1, (now - start) / ms)
       this.offset = from + (target - from) * (1 - (1 - t) ** 3)
       this.#frame = t < 1 ? requestAnimationFrame(step) : 0
-      if (t < 1) return
-      then?.()
-      this.#block()
+      if (t === 1) done()
     }
     this.#frame = requestAnimationFrame(step)
   }
@@ -224,22 +219,27 @@ export class Overscroll {
     // A pinch zooms.
     if (e.ctrlKey || e.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) return
     if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return
-    const notches = (e as WheelEvent & { wheelDeltaY?: number }).wheelDeltaY
-    if (notches && notches % NOTCH === 0) return
-    // A pause in the events starts a new gesture.
-    if (e.timeStamp - this.#wheelAt > WHEEL_IDLE) this.#wheelBegan()
+    // A pause in the events starts a new gesture. A mouse's starts with a whole notch, a
+    // trackpad's small; later trackpad events can look like notches too.
+    if (e.timeStamp - this.#wheelAt > WHEEL_IDLE) {
+      this.#wheelBegan()
+      const notches = (e as WheelEvent & { wheelDeltaY?: number }).wheelDeltaY
+      this.#mouse = !!notches && notches % NOTCH === 0
+    }
     this.#wheelAt = e.timeStamp
+    if (this.#mouse) return
     this.#leftTop()
     const size = Math.abs(e.deltaY)
+    /** This event may be momentum's: smoothly smaller than the last. */
+    const shrank = size < this.#wheelSize && size >= this.#wheelSize * SMOOTH
     if (size > this.#wheelSize) {
       this.#shrinking = 0
       this.#growing++
       this.#coasted = 0
     } else {
       this.#growing = 0
-      if (size >= this.#wheelSize * SMOOTH) {
-        if (size < this.#wheelSize) this.#shrinking++
-      } else {
+      if (shrank) this.#shrinking++
+      else if (size < this.#wheelSize) {
         this.#shrinking = 0
         this.#coasted = 0
       }
@@ -258,7 +258,8 @@ export class Overscroll {
     // The fingers are back, as a new gesture.
     if (this.#coasting && this.#growing >= HAND_BACK) this.#wheelBegan()
     if (this.#coasting) {
-      // The list holds still while it refreshes.
+      // While it refreshes, the list stays held: momentum may scroll it, but neither
+      // bounces nor releases it.
       if (this.refreshing) return
       if (this.#pull !== 0 || (this.#frame !== 0 && this.#atEdge(this.offset))) {
         // The fingers lifted: a stretched list springs back at once, as it does natively,
@@ -274,9 +275,12 @@ export class Overscroll {
       }
       return
     }
+    // Where the listener can't keep the list from scrolling, as in a gesture that began
+    // away from an edge, the browser scrolls it: stretching it too would show a gap.
+    if (!e.cancelable || !this.#blocking) return this.#updateListeners()
     const pull = -Math.sign(e.deltaY) * Math.min(size, WHEEL_MAX) * WHEEL_PULL
     if (!this.#take(pull)) return
-    if (this.#growing === 0) this.#coasted += pull
+    if (shrank) this.#coasted += pull
     e.preventDefault()
     clearTimeout(this.#idle)
     this.#idle = window.setTimeout(this.#release, WHEEL_IDLE)
@@ -293,18 +297,20 @@ export class Overscroll {
   }
 
   #began() {
-    this.fromTop = (this.#el?.scrollTop ?? 1) <= 0
+    this.fromTop = this.#atEdge(1)
+    this.#spent = false
   }
 
   /** A gesture that scrolled the list away from the top can't refresh. */
   #leftTop() {
-    if (this.fromTop && (this.#el?.scrollTop ?? 0) > 0) this.fromTop = false
+    if (this.fromTop && !this.#atEdge(1)) this.fromTop = false
   }
 
   #onTouchStart = (e: TouchEvent) => {
     this.#touchY = e.touches.length === 1 ? e.touches[0].clientY : null
     this.#touchOwned = false
     this.#began()
+    this.#updateListeners()
   }
 
   #onTouchMove = (e: TouchEvent) => {
@@ -313,16 +319,16 @@ export class Overscroll {
     const delta = y - this.#touchY
     this.#touchY = y
     this.#leftTop()
-    if (this.#take(delta)) {
-      if (e.cancelable) {
-        e.preventDefault()
-        this.#touchOwned = true
-      }
+    // As with the wheel: only where the listener keeps the list from scrolling.
+    const blocks = e.cancelable && this.#blocking
+    if (blocks && this.#take(delta)) {
+      e.preventDefault()
+      this.#touchOwned = true
     } else if (this.#touchOwned && this.#el) {
       // The browser doesn't scroll a touch that began as a pull.
       this.#el.scrollTop -= delta
       if (e.cancelable) e.preventDefault()
-    }
+    } else if (!blocks) this.#updateListeners()
   }
 
   #onTouchEnd = (e: TouchEvent) => {
@@ -330,7 +336,7 @@ export class Overscroll {
     this.#touchY = null
     this.#touchOwned = false
     if (this.#pull !== 0 || this.offset !== 0) this.#release()
-    else this.#block()
+    else this.#updateListeners()
   }
 
   /** The system took the touch over, as for a gesture of its own: no refresh. */
