@@ -39,9 +39,9 @@
     article h3 { font-size: 1.2em; }
     article :is(h4, h5, h6) { font-size: 1em; }
     a { color: var(--link); text-decoration: none; }
+    a:hover { text-decoration: underline dotted 2px; }
     /* The headline and feed name link to the article and the site, and look like text. */
     header a { color: inherit; }
-    header a:hover { text-decoration: underline; }
     blockquote { margin: 1.4em 0; padding-left: 1em; border-left: 3px solid var(--rule); color: var(--text-2); }
     img, video { max-width: 100%; height: auto; }
     pre { overflow-x: auto; }
