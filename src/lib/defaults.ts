@@ -13,6 +13,7 @@ export const defaultSettings: Settings = {
   markReadOn: 'open',
   markReadOnScroll: false,
   unreadBadge: true,
+  thumbnailSize: 'medium',
 }
 
 export const idleStatus: SyncStatus = { accountId: '', syncing: false, lastSync: null, error: null, unauthorized: false, changed: false, cacheBroken: false }

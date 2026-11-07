@@ -225,9 +225,25 @@ function sync() {
   status.syncing = true
   emit('sync-status', { ...status })
   setTimeout(() => {
+    // As a real sync: two new articles at the top, and a moment later their thumbnails.
+    const d = dataOf(id)
     status.syncing = false
     status.lastSync = Date.now()
-    emit('sync-status', { ...status })
+    if (d.feeds.length === 0) return emit('sync-status', { ...status })
+    const newest = Math.max(0, ...d.articles.map((a) => Number(a.id)))
+    const fresh = makeArticles(d.feeds, 2, 0).map((a, i) => ({
+      ...a,
+      id: String(newest + 2 - i),
+      published: Date.now() - i * 1000,
+      read: false,
+      thumbnail: false,
+    }))
+    d.articles.unshift(...fresh)
+    emit('sync-status', { ...status, changed: true })
+    setTimeout(() => {
+      for (const a of fresh) a.thumbnail = true
+      emit('thumbnails-changed', id)
+    }, 800)
   }, 1200)
 }
 

@@ -59,6 +59,23 @@ pub struct Settings {
     /// The unread count of every account on the app icon, where the system shows one.
     #[serde(deserialize_with = "unread_badge_or_default")]
     pub unread_badge: bool,
+    #[serde(deserialize_with = "or_default")]
+    pub thumbnail_size: ThumbnailSize,
+}
+
+/// How large the article list shows each article's thumbnail.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ThumbnailSize {
+    /// No thumbnails.
+    None,
+    /// A small square beside the text.
+    Small,
+    /// A larger square beside the text.
+    #[default]
+    Medium,
+    /// As wide as the list, under the headline.
+    Large,
 }
 
 /// How the sidebar orders folders and the feeds in no folder.
@@ -171,6 +188,7 @@ impl Default for Settings {
             mark_read_on: MarkReadOn::default(),
             mark_read_on_scroll: false,
             unread_badge: true,
+            thumbnail_size: ThumbnailSize::default(),
         }
     }
 }
@@ -561,9 +579,12 @@ mod tests {
 
     #[test]
     fn reading_settings_default_and_round_trip() {
-        let config =
-            Config::parse(br#"{ "markReadOn": "later", "sortSubscriptions": "alphabetical" }"#)
-                .unwrap();
+        let config = Config::parse(
+            br#"{ "markReadOn": "later", "sortSubscriptions": "alphabetical",
+                              "thumbnailSize": "huge" }"#,
+        )
+        .unwrap();
+        assert_eq!(config.settings.thumbnail_size, ThumbnailSize::Medium);
         assert_eq!(config.settings.mark_read_on, MarkReadOn::Open);
         assert_eq!(
             config.settings.sort_subscriptions,
@@ -575,8 +596,10 @@ mod tests {
         let mut config = Config::default();
         config.settings.mark_read_on = MarkReadOn::Delay;
         config.settings.unread_badge = false;
+        config.settings.thumbnail_size = ThumbnailSize::Large;
         let json = serde_json::to_value(&config).unwrap();
         assert_eq!(json["markReadOn"], "delay");
+        assert_eq!(json["thumbnailSize"], "large");
         assert_eq!(json["sortSubscriptions"], "foldersFirst");
         let back = Config::parse(&serde_json::to_vec(&json).unwrap()).unwrap();
         assert_eq!(back.settings, config.settings);

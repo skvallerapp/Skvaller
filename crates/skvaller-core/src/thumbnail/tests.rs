@@ -41,6 +41,21 @@ fn an_items_image_enclosure_is_picked_over_other_media() {
         Some("https://blog.example/media/b.PNG".to_owned())
     );
     assert_eq!(pick(&[("https://cdn.example/b.mp4", None)]), None);
+    // The bare medium as the type, or none at all.
+    assert_eq!(
+        pick(&[("https://cdn.example/c.jpg", Some("image"))]),
+        Some("https://cdn.example/c.jpg".to_owned())
+    );
+    assert_eq!(
+        pick(&[("https://cdn.example/d.webp", Some(""))]),
+        Some("https://cdn.example/d.webp".to_owned())
+    );
+    assert_eq!(pick(&[("https://cdn.example/e.mp3", Some(""))]), None);
+    // Credentials would go to the image's host.
+    assert_eq!(
+        pick(&[("https://me:secret@cdn.example/f.jpg", Some("image/jpeg"))]),
+        None
+    );
     assert_eq!(
         pick(&[("https://pixel.wp.com/g.gif", Some("image/gif"))]),
         None
@@ -112,8 +127,8 @@ fn the_first_images_in_the_html_are_picked_without_tiny_ones_or_trackers() {
 fn a_large_image_shrinks_to_fit_and_a_small_one_stays_its_size() {
     let big = decoded(&shrink(&png(2000, 1000, [10, 120, 200, 255])).unwrap());
     assert_eq!((big.width(), big.height()), (MAX_SIDE, MAX_SIDE / 2));
-    let tall = decoded(&shrink(&png(300, 1600, [10, 120, 200, 255])).unwrap());
-    assert_eq!((tall.width(), tall.height()), (150, MAX_SIDE));
+    let tall = decoded(&shrink(&png(300, 1100, [10, 120, 200, 255])).unwrap());
+    assert_eq!((tall.width(), tall.height()), (218, MAX_SIDE));
     let small = decoded(&shrink(&png(320, 200, [10, 120, 200, 255])).unwrap());
     assert_eq!((small.width(), small.height()), (320, 200));
 }
@@ -123,6 +138,8 @@ fn tiny_broken_and_see_through_images() {
     assert_eq!(shrink(&png(1, 1, [0, 0, 0, 0])), None);
     assert_eq!(shrink(&png(400, 60, [0, 0, 0, 255])), None);
     assert_eq!(shrink(b"<html>not an image</html>"), None);
+    // A banner or a divider.
+    assert_eq!(shrink(&png(2000, 300, [0, 0, 0, 255])), None);
     // Transparent becomes white, not black.
     let clear = decoded(&shrink(&png(200, 200, [0, 0, 0, 0])).unwrap()).to_rgb8();
     assert!(clear.get_pixel(100, 100).0.iter().all(|&c| c > 250));

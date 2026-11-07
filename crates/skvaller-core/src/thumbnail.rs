@@ -15,7 +15,7 @@ use std::time::Duration;
 use feed_rs::model::MediaObject;
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
-use image::{DynamicImage, ImageReader, Limits, RgbImage};
+use image::{DynamicImage, ImageDecoder, ImageReader, Limits, RgbImage};
 use reqwest::{StatusCode, Url};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -37,9 +37,15 @@ const MIN_SIDE: u32 = 100;
 /// Larger downloads are not read. A lead image is rarely over a megabyte or two.
 const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 /// Decoding stops past these, so a small file can't claim a huge image (a decompression
-/// bomb). Real photos are under 10,000 pixels a side.
-const MAX_DECODED_SIDE: u32 = 12_000;
+/// bomb). Real lead images are well under 10,000 pixels a side.
+const MAX_DECODED_SIDE: u32 = 10_000;
 const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
+/// Images decoded and scaled at the same time. Each can take a few hundred megabytes
+/// at the limits above, so fewer than the fetches.
+const PARALLEL_DECODES: usize = 2;
+/// Wider or taller than this many times the other side, an image is a banner or a
+/// divider, not a lead image.
+const MAX_ASPECT: u32 = 4;
 const TIMEOUT: Duration = Duration::from_secs(10);
 /// Images fetched at the same time. As for feed icons: hosts can be slow.
 const PARALLEL: usize = 6;
@@ -151,10 +157,12 @@ fn too_small(width: Option<u32>, height: Option<u32>) -> bool {
     width.is_some_and(|w| w < MIN_SIDE) || height.is_some_and(|h| h < MIN_SIDE)
 }
 
+/// Whether a feed's media is an image, by its type, else its file name. Some servers
+/// give the bare medium, `image`, as the type, or an empty one.
 fn is_image(mime: Option<&str>, url: &Url) -> bool {
-    match mime {
-        Some(mime) => mime.trim().to_ascii_lowercase().starts_with("image/"),
-        None => {
+    match mime.map(|m| m.trim().to_ascii_lowercase()) {
+        Some(mime) if !mime.is_empty() => mime == "image" || mime.starts_with("image/"),
+        _ => {
             let path = url.path().to_ascii_lowercase();
             IMAGE_EXTENSIONS.iter().any(|ext| path.ends_with(ext))
         }
@@ -162,13 +170,15 @@ fn is_image(mime: Option<&str>, url: &Url) -> bool {
 }
 
 /// `url` made absolute, if it is http(s) and could be a lead image: not from a host or
-/// path that serves only trackers, buttons and emoji.
+/// path that serves only trackers, buttons and emoji. None with a user name or password
+/// in it, which would be sent to the image's host.
 fn resolve(base: Option<&Url>, url: &str) -> Option<Url> {
     let url = match base {
         Some(base) => base.join(url.trim()).ok()?,
         None => Url::parse(url.trim()).ok()?,
     };
-    if !matches!(url.scheme(), "http" | "https") {
+    let credentials = !url.username().is_empty() || url.password().is_some();
+    if !matches!(url.scheme(), "http" | "https") || credentials {
         return None;
     }
     let host = url.host_str()?.to_ascii_lowercase();
@@ -219,14 +229,16 @@ pub async fn prefetch(db: &Db, mut stored: impl FnMut()) -> Result<()> {
         .user_agent(USER_AGENT)
         .build()?;
     let limit = Arc::new(Semaphore::new(PARALLEL));
+    let decoding = Arc::new(Semaphore::new(PARALLEL_DECODES));
     for batch in wanted.chunks(BATCH) {
         let mut fetches = JoinSet::new();
         for article in batch {
             let candidates = candidates(db, article).await?;
             let (http, limit, id) = (http.clone(), Arc::clone(&limit), article.id.clone());
+            let decoding = Arc::clone(&decoding);
             fetches.spawn(async move {
                 let _permit = limit.acquire_owned().await;
-                (id, thumbnail(&http, candidates).await)
+                (id, thumbnail(&http, &decoding, candidates).await)
             });
         }
         let mut any = false;
@@ -263,10 +275,16 @@ async fn candidates(db: &Db, article: &ThumbnailWanted) -> Result<Vec<String>> {
 
 /// The first of `candidates` that makes a thumbnail. Stops at the first that may work
 /// later, so the rest are not tried in its place.
-async fn thumbnail(http: &reqwest::Client, candidates: Vec<String>) -> Outcome {
+async fn thumbnail(
+    http: &reqwest::Client,
+    decoding: &Semaphore,
+    candidates: Vec<String>,
+) -> Outcome {
     for url in candidates {
         match fetch(http, &url).await {
             Fetched::Image(bytes) => {
+                let _decoding = decoding.acquire().await;
+                // A panic in a decoder counts as an unusable image.
                 let jpeg = tokio::task::spawn_blocking(move || shrink(&bytes))
                     .await
                     .ok()
@@ -323,8 +341,9 @@ async fn fetch(http: &reqwest::Client, url: &str) -> Fetched {
     }
 }
 
-/// The image as a thumbnail JPEG, scaled down to fit [`MAX_SIDE`], or `None` if it
-/// can't be decoded or is too small to be a lead image. Transparency becomes white.
+/// The image as a thumbnail JPEG, upright and scaled down to fit [`MAX_SIDE`], or `None`
+/// if it can't be decoded or is too small or too narrow to be a lead image.
+/// Transparency becomes white.
 fn shrink(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_DECODED_SIDE);
@@ -334,15 +353,26 @@ fn shrink(bytes: &[u8]) -> Option<Vec<u8>> {
         .with_guessed_format()
         .ok()?;
     reader.limits(limits);
-    let image = reader.decode().ok()?;
-    if image.width() < MIN_SIDE || image.height() < MIN_SIDE {
+    let mut decoder = reader.into_decoder().ok()?;
+    // From the header, before decoding: tiny images and banners aren't worth it.
+    let (width, height) = decoder.dimensions();
+    let (short, long) = (width.min(height), width.max(height));
+    if short < MIN_SIDE || long > short.saturating_mul(MAX_ASPECT) {
         return None;
     }
-    let image = if image.width() > MAX_SIDE || image.height() > MAX_SIDE {
+    // A camera's photo says which way is up; the pixels alone are sideways.
+    let orientation = decoder.orientation().ok();
+    let image = DynamicImage::from_decoder(decoder).ok()?;
+    let mut image = if image.width() > MAX_SIDE || image.height() > MAX_SIDE {
         image.resize(MAX_SIDE, MAX_SIDE, FilterType::Triangle)
     } else {
         image
     };
+    // After scaling down, which fits the same square box either way up: turning a full
+    // size image would take as much memory again.
+    if let Some(orientation) = orientation {
+        image.apply_orientation(orientation);
+    }
     let mut jpeg = Vec::new();
     JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY)
         .encode_image(&on_white(&image))

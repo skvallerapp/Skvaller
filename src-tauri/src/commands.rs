@@ -24,7 +24,7 @@ use tracing::Level;
 
 use crate::config::{
     Account, AccountKind, Config, DEFAULT_KEEP_UNREAD_DAYS, FIRST_ACCOUNT_ID, Settings,
-    SyncSchedule, Theme,
+    SyncSchedule, Theme, ThumbnailSize,
 };
 use crate::sync_gate::{Outcome, SyncGate};
 
@@ -358,7 +358,7 @@ impl AppState {
         // own account out.
         let (mut runtimes, mut broken) = (HashMap::new(), HashMap::new());
         for account in &config.accounts {
-            match Runtime::open(&accounts_dir, &account.id) {
+            match open_runtime(&accounts_dir, account) {
                 Ok(runtime) => {
                     runtimes.insert(account.id.clone(), Arc::new(runtime));
                 }
@@ -1141,6 +1141,9 @@ pub async fn subscribe(
     let id = subscribe_feed(&rt.db, &url, folder_id.as_deref(), now_secs()).await?;
     back_up_feeds(&state, &rt);
     update_badge(&app);
+    // Its articles are on screen now, not at the next sync.
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move { fetch_thumbnails(&app, &rt).await });
     Ok(id)
 }
 
@@ -1259,6 +1262,37 @@ fn back_up_feeds(state: &AppState, rt: &Runtime) {
     }
 }
 
+/// The account's runtime, at startup. A local account whose cache has no feeds, as when
+/// a new version's cache started over or the file went, gets them back from their
+/// backup, before a sync backs up the empty list over it. One the user emptied has an
+/// empty backup.
+fn open_runtime(dir: &Path, account: &Account) -> skvaller_core::Result<Runtime> {
+    let runtime = Runtime::open(dir, &account.id)?;
+    if account.kind == AccountKind::Local && runtime.db.feeds().is_ok_and(|f| f.is_empty()) {
+        restore_feeds(dir, &account.id, &runtime.db);
+    }
+    Ok(runtime)
+}
+
+/// Gives the local account's emptied cache its feeds back from their backup, if there
+/// is one. Best effort: a failure is logged.
+fn restore_feeds(dir: &Path, account_id: &str, db: &Db) {
+    let restored = match std::fs::read_to_string(feeds_backup_path(dir, account_id)) {
+        Ok(xml) => read_opml(db, &xml).map(drop).map_err(|e| e.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    };
+    if let Err(e) = restored {
+        tracing::event!(
+            name: "feeds.restore.failure",
+            Level::ERROR,
+            account.id = %account_id,
+            error.message = %e,
+            "restoring the feeds of account {{account.id}} failed: {{error.message}}",
+        );
+    }
+}
+
 /// Starts a damaged cache over: its files move aside, an empty cache takes their place,
 /// and the account syncs. A sync account gets its articles from the server again;
 /// the local account gets its feeds from their backup. Changes queued in the damaged
@@ -1322,17 +1356,8 @@ pub async fn rebuild_cache(
             return Err(CommandError::other(message));
         }
     };
-    if account.kind == AccountKind::Local
-        && let Ok(xml) = std::fs::read_to_string(feeds_backup_path(dir, &account_id))
-        && let Err(e) = read_opml(&rt.db, &xml)
-    {
-        tracing::event!(
-            name: "feeds.restore.failure",
-            Level::ERROR,
-            account.id = %account_id,
-            error.message = %e,
-            "restoring the feeds of account {{account.id}} failed: {{error.message}}",
-        );
+    if account.kind == AccountKind::Local {
+        restore_feeds(dir, &account_id, &rt.db);
     }
     lock(&state.broken).remove(&account_id);
     lock(&state.runtimes).insert(account_id, rt.clone());
@@ -1465,6 +1490,13 @@ pub async fn set_settings(
     }
     if badge_changed {
         update_badge(&app);
+    }
+    // Thumbnails turned off: no image host hears from the app from now on, not even for
+    // the rest of a run under way.
+    if settings.thumbnail_size == ThumbnailSize::None {
+        for rt in state.runtimes() {
+            drop(rt.thumbnail_gate.stop().await);
+        }
     }
     let _ = app.emit(SETTINGS_EVENT, settings);
     Ok(())
@@ -1806,7 +1838,9 @@ async fn prefetch(rt: &Runtime) {
 }
 
 /// Fetches thumbnails for new articles, telling the windows as they arrive. Skipped
-/// while the last sync's run still goes; removing the account stops it.
+/// while the last sync's run still goes, and while thumbnails are off: no image host
+/// hears from the app then. The articles wait, for a sync after they are turned on.
+/// Removing the account stops it.
 async fn fetch_thumbnails(app: &AppHandle, rt: &Runtime) {
     if rt.is_removed() {
         return;
@@ -1814,11 +1848,16 @@ async fn fetch_thumbnails(app: &AppHandle, rt: &Runtime) {
     let stored = || {
         let _ = app.emit(THUMBNAILS_EVENT, &rt.id);
     };
-    if let Outcome::Done(Err(e)) = rt
-        .thumbnail_gate
-        .run(prefetch_thumbnails(&rt.db, stored))
-        .await
-    {
+    // Read inside the gate: the setting is saved before turning them off stops a run, so
+    // either that stops this run or this run sees them off.
+    let work = async {
+        let off = app.state::<AppState>().config().settings.thumbnail_size == ThumbnailSize::None;
+        if off {
+            return Ok(());
+        }
+        prefetch_thumbnails(&rt.db, stored).await
+    };
+    if let Outcome::Done(Err(e)) = rt.thumbnail_gate.run(work).await {
         tracing::event!(
             name: "thumbnail.prefetch.failure",
             Level::WARN,
@@ -1838,7 +1877,7 @@ pub fn serve_thumbnail(
     request: &tauri::http::Request<Vec<u8>>,
     responder: tauri::UriSchemeResponder,
 ) {
-    // Both IDs are digits and letters, so a slash is the only thing encoded.
+    // Both IDs are digits, letters and minus signs, so a slash is the only thing encoded.
     let path = request
         .uri()
         .path()
@@ -1908,6 +1947,58 @@ mod tests {
         assert!(slept(before, after(8 * 3600), WAKE_CHECK));
         // A clock set back is no sleep.
         assert!(!slept(after(100), before, WAKE_CHECK));
+    }
+
+    #[test]
+    fn a_local_cache_without_feeds_gets_them_from_the_backup() {
+        let dir = std::env::temp_dir().join(format!("skvaller-restore-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let account = |id: &str, kind: AccountKind| Account {
+            id: id.into(),
+            description: "Local".into(),
+            kind,
+            sync: SyncSchedule::OnStart,
+            keep_read_days: 30,
+            keep_unread_days: 0,
+            sync_on_wake: true,
+        };
+        let opml = r#"<?xml version="1.0"?><opml version="2.0"><head><title>Local</title></head>
+            <body><outline text="Kernel Notes" type="rss" xmlUrl="https://kernel.example/feed.xml"/></body></opml>"#;
+        // Caches from an older version, each next to a feeds' backup.
+        for id in ["1", "2"] {
+            std::fs::write(feeds_backup_path(&dir, id), opml).unwrap();
+            rusqlite::Connection::open(db_path(&dir, id))
+                .unwrap()
+                .execute_batch("CREATE TABLE old (x); PRAGMA user_version = 7;")
+                .unwrap();
+        }
+        // A cache that went, and one the user emptied, backed up as such.
+        std::fs::write(feeds_backup_path(&dir, "3"), opml).unwrap();
+        let empty = opml.replace(
+            r#"<outline text="Kernel Notes" type="rss" xmlUrl="https://kernel.example/feed.xml"/>"#,
+            "",
+        );
+        std::fs::write(feeds_backup_path(&dir, "4"), empty).unwrap();
+
+        let local = open_runtime(&dir, &account("1", AccountKind::Local)).unwrap();
+        assert_eq!(local.db.feeds().unwrap().len(), 1);
+        drop(local);
+        // Opened again: nothing is restored twice.
+        let local = open_runtime(&dir, &account("1", AccountKind::Local)).unwrap();
+        assert_eq!(local.db.feeds().unwrap().len(), 1);
+        drop(local);
+        let gone = open_runtime(&dir, &account("3", AccountKind::Local)).unwrap();
+        assert_eq!(gone.db.feeds().unwrap().len(), 1);
+        drop(gone);
+        let emptied = open_runtime(&dir, &account("4", AccountKind::Local)).unwrap();
+        assert!(emptied.db.feeds().unwrap().is_empty());
+        drop(emptied);
+        // A sync account gets its feeds from the server.
+        let synced = open_runtime(&dir, &account("2", greader("https://rss.example"))).unwrap();
+        assert!(synced.db.feeds().unwrap().is_empty());
+        drop(synced);
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

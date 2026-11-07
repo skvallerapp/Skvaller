@@ -63,6 +63,13 @@
     { value: 'manual', label: 'Manually' },
   ]
 
+  const thumbnailSizes: { value: Settings['thumbnailSize']; label: string }[] = [
+    { value: 'none', label: 'None' },
+    { value: 'small', label: 'Small' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'large', label: 'Large' },
+  ]
+
   const themes: { value: Theme; label: string }[] = [
     { value: 'system', label: 'System' },
     { value: 'light', label: 'Light' },
@@ -467,6 +474,18 @@
                 {@render select('theme', settings.theme, themes, (theme) => change({ theme }))}
               </div>
             </div>
+          </section>
+          <section>
+            <h2>Article List</h2>
+            <div class="group">
+              <div class="row">
+                <label for="thumbnails">Thumbnails</label>
+                {@render select('thumbnails', settings.thumbnailSize, thumbnailSizes, (thumbnailSize) =>
+                  change({ thumbnailSize }),
+                )}
+              </div>
+            </div>
+            <p class="note">Downloaded from each new article's image host after a sync. None turns this off.</p>
           </section>
           <section>
               <h2>App Icon</h2>
