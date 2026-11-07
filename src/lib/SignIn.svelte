@@ -1,7 +1,7 @@
 <script lang="ts">
   import ChevronLeft from '@lucide/svelte/icons/chevron-left'
   import { errorMessage } from './api'
-  import { sentence, serverUrl } from './format'
+  import { sentence, serverUrl } from './format.svelte'
   import { t } from './i18n.svelte'
   import ServiceLogo from './ServiceLogo.svelte'
   import type { Service } from './services'

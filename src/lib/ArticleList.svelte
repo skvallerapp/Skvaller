@@ -4,7 +4,7 @@
   import Star from '@lucide/svelte/icons/star'
   import { tick, untrack } from 'svelte'
   import { fontStacks } from './fonts'
-  import { formatTime } from './format'
+  import { formatTime } from './format.svelte'
   import { t } from './i18n.svelte'
   import { activePane, focus, layout, toggleSidebar } from './layout.svelte'
   import { thumbnailUrl } from './api'

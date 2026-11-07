@@ -5,7 +5,7 @@
   import Laptop from '@lucide/svelte/icons/laptop'
   import { tick } from 'svelte'
   import { errorMessage } from './api'
-  import { sentence } from './format'
+  import { sentence } from './format.svelte'
   import { t } from './i18n.svelte'
   import { macWindow } from './platform'
   import ServiceLogo from './ServiceLogo.svelte'

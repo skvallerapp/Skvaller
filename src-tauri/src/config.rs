@@ -65,6 +65,37 @@ pub struct Settings {
     /// system. The UI knows the languages it has.
     #[serde(deserialize_with = "or_default")]
     pub language: Option<String>,
+    #[serde(deserialize_with = "or_default")]
+    pub clock: Clock,
+    #[serde(deserialize_with = "or_default")]
+    pub date_format: DateFormat,
+}
+
+/// How times show: as the system's region shows them, or on a chosen clock.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Clock {
+    #[default]
+    System,
+    /// 00:00 to 23:59.
+    H24,
+    /// 12:00 AM to 11:59 PM.
+    H12,
+}
+
+/// How dates show: as the system's region shows them, or in a chosen order. Month names
+/// follow the system's region either way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DateFormat {
+    #[default]
+    System,
+    /// 12 Oct 2026.
+    DayMonth,
+    /// Oct 12, 2026.
+    MonthDay,
+    /// 2026-10-12.
+    Iso,
 }
 
 /// How large the article list shows each article's thumbnail.
@@ -222,6 +253,8 @@ impl Default for Settings {
             unread_badge: true,
             thumbnail_size: ThumbnailSize::default(),
             language: None,
+            clock: Clock::default(),
+            date_format: DateFormat::default(),
         }
     }
 }
@@ -662,11 +695,14 @@ mod tests {
     fn reading_settings_default_and_round_trip() {
         let config = Config::parse(
             br#"{ "markReadOn": "later", "sortSubscriptions": "alphabetical",
-                              "thumbnailSize": "huge", "language": 5 }"#,
+                              "thumbnailSize": "huge", "language": 5,
+                              "clock": "h12", "dateFormat": "us" }"#,
         )
         .unwrap();
         assert_eq!(config.settings.thumbnail_size, ThumbnailSize::Medium);
         assert_eq!(config.settings.language, None);
+        assert_eq!(config.settings.clock, Clock::H12);
+        assert_eq!(config.settings.date_format, DateFormat::System);
         assert_eq!(config.settings.mark_read_on, MarkReadOn::Open);
         assert_eq!(
             config.settings.sort_subscriptions,
@@ -680,10 +716,14 @@ mod tests {
         config.settings.unread_badge = false;
         config.settings.thumbnail_size = ThumbnailSize::Large;
         config.settings.language = Some("sv".into());
+        config.settings.clock = Clock::H24;
+        config.settings.date_format = DateFormat::DayMonth;
         let json = serde_json::to_value(&config).unwrap();
         assert_eq!(json["markReadOn"], "delay");
         assert_eq!(json["language"], "sv");
         assert_eq!(json["thumbnailSize"], "large");
+        assert_eq!(json["clock"], "h24");
+        assert_eq!(json["dateFormat"], "dayMonth");
         assert_eq!(json["sortSubscriptions"], "foldersFirst");
         let back = Config::parse(&serde_json::to_vec(&json).unwrap()).unwrap();
         assert_eq!(back.settings, config.settings);

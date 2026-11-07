@@ -65,6 +65,7 @@ Some short messages need context:
 | `sidebar.viewPicker` | Names the buttons that pick Unread, Starred or All Articles. |
 | `settings.accountName` | The account's name, which the user can change. |
 | `settings.syncSchedule` | Labels the choice of how often to sync. |
+| `settings.clocks.*` | A 24- or 12-hour clock, not a length of time. |
 | `common.twoSentences` | Two sentences shown together. Change the space if your language uses none. |
 
 ### Style

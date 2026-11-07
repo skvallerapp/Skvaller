@@ -175,6 +175,13 @@
   "settings.thumbnailSizes.medium": "Medium",
   "settings.thumbnailSizes.large": "Large",
   "settings.thumbnailsNote": "Downloaded from each new article’s image host after a sync. None turns this off.",
+  "settings.dateTime": "Date and Time",
+  "settings.clock": "Clock",
+  "settings.clocks.system": "System",
+  "settings.clocks.h24": "24-hour",
+  "settings.clocks.h12": "12-hour",
+  "settings.dateFormat": "Date format",
+  "settings.dateFormats.system": "System",
 
   "settings.appIcon": "App Icon",
   "settings.badge": "Unread count badge",

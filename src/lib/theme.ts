@@ -2,6 +2,7 @@
 // `data-theme` on their root element.
 import { MediaQuery } from 'svelte/reactivity'
 import { fontStacks } from './fonts'
+import { setDateTime } from './format.svelte'
 import { setLanguage } from './i18n.svelte'
 import { motion } from './motion'
 import type { Settings, Theme } from './types'
@@ -14,11 +15,13 @@ export function palette(theme: Theme): Exclude<Theme, 'system'> {
   return systemDark.current ? 'dark' : 'light'
 }
 
-/** Shows the window in the settings' language, theme, interface font and motion. Reactive. */
+/** Shows the window in the settings' language, dates, theme, interface font and motion.
+ * Reactive. */
 export function styleRoot(settings: Settings) {
   const root = document.documentElement
   root.style.fontFamily = fontStacks[settings.uiFont]
   root.dataset.theme = palette(settings.theme)
   root.dataset.motion = motion(settings.animations)
   setLanguage(settings.language)
+  setDateTime(settings.clock, settings.dateFormat)
 }

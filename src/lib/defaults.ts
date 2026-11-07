@@ -15,6 +15,8 @@ export const defaultSettings: Settings = {
   unreadBadge: true,
   thumbnailSize: 'medium',
   language: null,
+  clock: 'system',
+  dateFormat: 'system',
 }
 
 export const idleStatus: SyncStatus = { accountId: '', syncing: false, lastSync: null, error: null, unauthorized: false, changed: false, cacheBroken: false }
