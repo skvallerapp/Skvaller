@@ -1495,6 +1495,7 @@ pub async fn set_settings(
     })?;
     if theme_changed {
         app.set_theme(settings.theme.native());
+        paint_backgrounds(&app, settings.theme);
     }
     if badge_changed {
         update_badge(&app);
@@ -1547,10 +1548,52 @@ pub fn show_settings_window(app: &AppHandle) -> tauri::Result<()> {
         .iter()
         .find(|w| w.label == SETTINGS_WINDOW)
         .expect("tauri.conf.json defines the Settings window");
-    WebviewWindowBuilder::from_config(app, config)?
-        .initialization_script(crate::locale::script())
-        .build()?;
+    open_themed(
+        WebviewWindowBuilder::from_config(app, config)?
+            .initialization_script(crate::locale::script()),
+        app.state::<AppState>().theme(),
+    )?;
     Ok(())
+}
+
+/// Opens a window in the theme from its first moment. The page gets its palette before it
+/// paints, and the window gets the page's background colour, which shows until then. The
+/// window stays hidden until the colour is set, as System needs the window to say whether
+/// the system is dark.
+pub fn open_themed(
+    builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
+    theme: Theme,
+) -> tauri::Result<WebviewWindow> {
+    let window = builder
+        .initialization_script(theme.script())
+        .visible(false)
+        .build()?;
+    // The colour only avoids a flash, so a failure to set it must not keep the window
+    // hidden: nothing else would show it.
+    paint_background(&window, theme);
+    window.show()?;
+    Ok(window)
+}
+
+/// Gives a window the background colour of `theme`.
+pub fn paint_background(window: &WebviewWindow, theme: Theme) {
+    let system = window.theme().unwrap_or(tauri::Theme::Light);
+    if let Err(e) = window.set_background_color(Some(theme.background(system))) {
+        tracing::event!(
+            name: "window.background.failure",
+            Level::WARN,
+            window.label = window.label(),
+            error.message = %e,
+            "setting the background of the {{window.label}} window failed: {{error.message}}",
+        );
+    }
+}
+
+/// Gives every window the background colour of `theme`, as it changed while they were open.
+fn paint_backgrounds(app: &AppHandle, theme: Theme) {
+    for window in app.webview_windows().values() {
+        paint_background(window, theme);
+    }
 }
 
 /// Starts every account's background sync.

@@ -48,6 +48,15 @@ fn main() {
         .on_menu_event(|app, event| menu::on_event(app, &event))
         // Settings has no use without the main window, and no way to bring it back.
         .on_window_event(|window, event| {
+            // With System, the window's background follows the system's theme.
+            if matches!(event, WindowEvent::ThemeChanged(_))
+                && let Some(window) = window.app_handle().get_webview_window(window.label())
+            {
+                commands::paint_background(
+                    &window,
+                    window.app_handle().state::<commands::AppState>().theme(),
+                );
+            }
             if window.label() == "main"
                 && matches!(event, WindowEvent::Destroyed)
                 && let Some(settings) = window.app_handle().get_webview_window("settings")
@@ -160,7 +169,7 @@ fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
         .find(|w| w.label == "main")
         .expect("tauri.conf.json defines the main window");
     let handle = app.clone();
-    WebviewWindowBuilder::from_config(app, config)?
+    let builder = WebviewWindowBuilder::from_config(app, config)?
         .initialization_script(locale::script())
         .on_new_window(move |url, _| {
             if matches!(url.scheme(), "http" | "https")
@@ -177,8 +186,8 @@ fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
                 );
             }
             NewWindowResponse::Deny
-        })
-        .build()?;
+        });
+    commands::open_themed(builder, app.state::<commands::AppState>().theme())?;
     Ok(())
 }
 
