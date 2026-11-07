@@ -38,6 +38,4 @@ Thumbs.db
 !.vscode/extensions.json
 *.swp
 
-# Private planning docs
-/REQUIREMENTS.md
 .playwright-mcp/
