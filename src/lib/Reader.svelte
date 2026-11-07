@@ -5,6 +5,7 @@
   import { readyArticle } from './articleHtml'
   import { bundledFontFaces, fontStacks } from './fonts'
   import { escapeHtml, formatFull } from './format'
+  import { t } from './i18n.svelte'
   import { animate, motion } from './motion'
   import { dragRegion } from './platform'
   import { openInBrowser } from './api'
@@ -151,20 +152,20 @@
   }
 </script>
 
-<section class="reader" aria-label="Article">
+<section class="reader" aria-label={t('reader.label')}>
   <div class="toolbar" data-tauri-drag-region={dragRegion}>
     {#if article}
       <div class="spacer">
         <!-- Announced, and shown until the next try or article. -->
         <span class="notice" role="status">
-          {store.fullTextState === 'failed' ? "Reader View isn't available for this article" : ''}
+          {store.fullTextState === 'failed' ? t('reader.unavailable') : ''}
         </span>
       </div>
       <button
         class="icon-button"
         class:unread={!store.read.has(article.id)}
         class:pop={unreadPop.pop}
-        aria-label={store.read.has(article.id) ? 'Mark as unread' : 'Mark as read'}
+        aria-label={store.read.has(article.id) ? t('reader.markUnread') : t('reader.markRead')}
         onclick={() => store.toggleRead(article.id)}
       >
         <UnreadIcon size={18} read={store.read.has(article.id)} />
@@ -173,7 +174,7 @@
         class="icon-button"
         class:starred={store.starred.has(article.id)}
         class:pop={starPop.pop}
-        aria-label={store.starred.has(article.id) ? 'Remove star' : 'Star'}
+        aria-label={store.starred.has(article.id) ? t('reader.unstar') : t('reader.addStar')}
         aria-pressed={store.starred.has(article.id)}
         onclick={() => store.toggleStarred(article.id)}
       >
@@ -183,10 +184,10 @@
         class="icon-button"
         class:reader-view={store.readerView}
         class:loading={loadingFullText}
-        aria-label="Reader View"
+        aria-label={t('reader.readerView')}
         aria-pressed={store.readerView}
         aria-busy={loadingFullText}
-        title="Reader View"
+        title={t('reader.readerView')}
         disabled={!article.url}
         onclick={() => store.toggleReaderView()}
       >
@@ -194,8 +195,8 @@
       </button>
       <button
         class="icon-button"
-        aria-label="Open in Browser"
-        title="Open in Browser"
+        aria-label={t('reader.openInBrowser')}
+        title={t('reader.openInBrowser')}
         disabled={!article.url}
         onclick={() => openInBrowser(article.url)}
       >
@@ -216,7 +217,7 @@
       {/key}
     {/if}
   {:else}
-    <p class="empty">No article selected</p>
+    <p class="empty">{t('reader.empty')}</p>
   {/if}
 </section>
 

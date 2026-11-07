@@ -4,6 +4,7 @@
   import Rss from '@lucide/svelte/icons/rss'
   import { tick } from 'svelte'
   import { openSettings } from './api'
+  import { t } from './i18n.svelte'
   import { isMac } from './platform'
   import { accountIndex, accountModifier, accountShortcut } from './shortcuts'
   import { store } from './store.svelte'
@@ -89,8 +90,8 @@
   <button
     class="icon-button"
     bind:this={trigger}
-    aria-label="Switch Account"
-    title="Switch Account"
+    aria-label={t('accounts.switch')}
+    title={t('accounts.switch')}
     aria-haspopup="menu"
     aria-expanded={open}
     onclick={toggle}
@@ -102,7 +103,7 @@
     <div
       class="menu"
       role="menu"
-      aria-label="Accounts"
+      aria-label={t('accounts.menu')}
       data-tauri-drag-region="false"
       bind:this={menu}
       onkeydown={onMenuKeydown}
@@ -129,7 +130,7 @@
       <div class="separator" role="separator"></div>
       <button class="item" role="menuitem" tabindex="-1" onclick={addAccount}>
         <span class="check"><Plus size={14} strokeWidth={2.5} /></span>
-        <span class="name">Add Account…</span>
+        <span class="name">{t('accounts.add')}</span>
       </button>
     </div>
   {/if}

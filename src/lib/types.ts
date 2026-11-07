@@ -132,6 +132,8 @@ export interface Settings {
   unreadBadge: boolean
   /** How large the article list shows thumbnails. */
   thumbnailSize: 'none' | 'small' | 'medium' | 'large'
+  /** The UI's language, as a BCP 47 tag such as `sv`; `null` follows the system. */
+  language: string | null
 }
 
 export type Theme = 'system' | 'light' | 'dark' | 'espresso'

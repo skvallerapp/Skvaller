@@ -2,6 +2,7 @@
   import ChevronLeft from '@lucide/svelte/icons/chevron-left'
   import { errorMessage } from './api'
   import { sentence, serverUrl } from './format'
+  import { t } from './i18n.svelte'
   import ServiceLogo from './ServiceLogo.svelte'
   import type { Service } from './services'
   import type { CommandError } from './types'
@@ -34,11 +35,9 @@
   let error = $state<string | null>(initialError)
 
   const messages = $derived<Record<CommandError['kind'], string>>({
-    unauthorized: `Wrong ${service.username.toLowerCase()} or ${service.password.toLowerCase()}.`,
-    badUrl: 'Enter the server address, such as https://rss.example.com.',
-    network: service.server
-      ? `Could not reach ${service.name}. Check your connection.`
-      : 'Could not reach the server. Check the address and your connection.',
+    unauthorized: t(`signIn.wrong.${service.username}.${service.password}`),
+    badUrl: t('signIn.badUrl'),
+    network: service.server ? t('signIn.networkService', { service: service.name }) : t('signIn.networkServer'),
     noFeed: '',
     other: '',
   })
@@ -75,7 +74,7 @@
 >
   <header>
     {#if back}
-      <button type="button" class="back" onclick={back} disabled={busy} aria-label="All services">
+      <button type="button" class="back" onclick={back} disabled={busy} aria-label={t('signIn.allServices')}>
         <ChevronLeft size={18} />
       </button>
     {/if}
@@ -87,7 +86,7 @@
 
   {#if !service.server}
     <label>
-      <span>Server</span>
+      <span>{t('signIn.server')}</span>
       <!-- svelte-ignore a11y_autofocus -->
       <input
         autofocus={!account}
@@ -101,11 +100,11 @@
     </label>
   {/if}
   <label>
-    <span>{service.username}</span>
+    <span>{t(`signIn.${service.username}`)}</span>
     <!-- svelte-ignore a11y_autofocus -->
     <input
       bind:value={username}
-      type={service.username === 'Email' ? 'email' : 'text'}
+      type={service.username === 'email' ? 'email' : 'text'}
       autofocus={!!service.server && !account}
       autocapitalize="off"
       autocorrect="off"
@@ -114,18 +113,18 @@
     />
   </label>
   <label>
-    <span>{service.password}</span>
+    <span>{t(`signIn.${service.password}`)}</span>
     <!-- Signing in again: only the password is missing. -->
     <!-- svelte-ignore a11y_autofocus -->
     <input type="password" autofocus={!!account} bind:value={password} required />
   </label>
   <p class="hint">
-    {service.help} Skvaller keeps only a sign-in token in your keychain, never the password.
+    {t('common.twoSentences', { first: t(`services.${service.id}.help`), second: t('signIn.tokenOnly') })}
   </p>
 
   {#if error}<p class="error" role="alert">{error}</p>{/if}
 
-  <button class="primary" disabled={busy}>{busy ? 'Signing in…' : 'Sign In'}</button>
+  <button class="primary" disabled={busy}>{busy ? t('signIn.signingIn') : t('signIn.submit')}</button>
 </form>
 
 <style>

@@ -3,6 +3,7 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { openUrl } from '@tauri-apps/plugin-opener'
+import { t } from './i18n.svelte'
 import { inTauri } from './platform'
 import type { AccountChange, Article, Library, Selection, Session, Settings, SyncStatus } from './types'
 
@@ -103,7 +104,7 @@ export const exportOpml = (id: string) => call<boolean>('export_opml', { id })
 export async function confirm(message: string, title: string, okLabel: string): Promise<boolean> {
   if (mock) return window.confirm(`${title}\n\n${message}`)
   const { ask } = await import('@tauri-apps/plugin-dialog')
-  return ask(message, { title, kind: 'warning', okLabel, cancelLabel: 'Cancel' })
+  return ask(message, { title, kind: 'warning', okLabel, cancelLabel: t('common.cancel') })
 }
 
 /** Opens an http(s) URL in the system browser. Anything else is ignored. */

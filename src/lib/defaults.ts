@@ -14,6 +14,7 @@ export const defaultSettings: Settings = {
   markReadOnScroll: false,
   unreadBadge: true,
   thumbnailSize: 'medium',
+  language: null,
 }
 
 export const idleStatus: SyncStatus = { accountId: '', syncing: false, lastSync: null, error: null, unauthorized: false, changed: false, cacheBroken: false }
