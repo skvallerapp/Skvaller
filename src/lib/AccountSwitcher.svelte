@@ -4,6 +4,8 @@
   import Rss from '@lucide/svelte/icons/rss'
   import { tick } from 'svelte'
   import { openSettings } from './api'
+  import { isMac } from './platform'
+  import { accountIndex, accountModifier, accountShortcut } from './shortcuts'
   import { store } from './store.svelte'
 
   // Closes on Escape, a pick, a click or focus elsewhere, like the mark-all-read popover.
@@ -60,7 +62,11 @@
     else if (e.key === 'Escape' || e.key === 'Tab') {
       e.preventDefault()
       close()
-    } else return
+    } else {
+      // An account's shortcut closes the menu, as a pick does; App switches.
+      if (accountIndex(e, isMac) !== null) close()
+      return
+    }
     // The app's own shortcuts don't see keys the menu used.
     e.stopPropagation()
   }
@@ -101,12 +107,14 @@
       bind:this={menu}
       onkeydown={onMenuKeydown}
     >
-      {#each store.accounts as account (account.id)}
+      {#each store.accounts as account, i (account.id)}
         {@const count = unread(account.id, account.unread)}
+        {@const shortcut = accountShortcut(i, isMac)}
         <button
           class="item"
           role="menuitemradio"
           aria-checked={account.id === store.activeId}
+          aria-keyshortcuts={shortcut ? `${accountModifier(isMac)}+${i + 1}` : undefined}
           tabindex="-1"
           onclick={() => pick(account.id)}
         >
@@ -115,6 +123,7 @@
           </span>
           <span class="name">{account.description}</span>
           {#if count > 0}<span class="count">{count.toLocaleString()}</span>{/if}
+          {#if shortcut}<kbd class="shortcut" aria-hidden="true">{shortcut}</kbd>{/if}
         </button>
       {/each}
       <div class="separator" role="separator"></div>
@@ -184,8 +193,18 @@
     color: var(--text-3);
   }
 
+  .shortcut {
+    flex: none;
+    margin-left: 4px;
+    font: inherit;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-3);
+  }
+
   .item:hover .count,
-  .item:focus-visible .count {
+  .item:focus-visible .count,
+  .item:hover .shortcut,
+  .item:focus-visible .shortcut {
     color: inherit;
   }
 

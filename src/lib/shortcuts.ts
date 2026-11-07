@@ -114,3 +114,26 @@ export function keyLabel(name: string, mac: boolean): string {
   if (!shift) return label
   return mac ? `⇧${label}` : `Shift+${label}`
 }
+
+/** Alt+1 to Alt+9 (⌘1 to ⌘9 on macOS) switch to the first nine accounts. Not ⌥ on
+ * macOS: with many layouts, such as Swedish and German, ⌥ and a digit types @, [ or |.
+ * macOS lists the accounts in the Accounts menu too, with the same keys: see menu.rs. */
+const accountShortcuts = 9
+
+/** The modifier of the account shortcuts, as `aria-keyshortcuts` names it. */
+export const accountModifier = (mac: boolean) => (mac ? 'Meta' : 'Alt')
+
+/** The index of the account the key switches to, or `null`. Goes by the key's place,
+ * not its character, which depends on the layout. */
+export function accountIndex(e: KeyboardEvent, mac: boolean): number | null {
+  const modifier = mac ? e.metaKey && !e.altKey : e.altKey && !e.metaKey
+  if (!modifier || e.ctrlKey || e.shiftKey) return null
+  const digit = /^Digit([1-9])$/.exec(e.code)
+  return digit ? Number(digit[1]) - 1 : null
+}
+
+/** How the shortcut of the account at `index` shows: '⌘1' on macOS, 'Alt+1' elsewhere. */
+export function accountShortcut(index: number, mac: boolean): string | null {
+  if (index >= accountShortcuts) return null
+  return `${mac ? '⌘' : 'Alt+'}${index + 1}`
+}
