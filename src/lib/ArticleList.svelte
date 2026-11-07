@@ -5,6 +5,7 @@
   import { tick, untrack } from 'svelte'
   import { formatTime } from './format'
   import { activePane, focus, layout, toggleSidebar } from './layout.svelte'
+  import { thumbnailUrl } from './api'
   import { animate } from './motion'
   import { dragRegion, macWindow } from './platform'
   import { store } from './store.svelte'
@@ -14,6 +15,10 @@
   // Row heights come from the data, never from measuring the DOM, so the list stays
   // virtualized and cheap at 5,000+ rows. Room for a headline of three lines.
   const ROW_HEIGHT = 87
+  // A Large thumbnail's height, and the row that has one: 8 px above the image and 2 px
+  // below it. Keep in step with `.thumb.large` below.
+  const LARGE_THUMBNAIL = 150
+  const LARGE_ROW_HEIGHT = ROW_HEIGHT + LARGE_THUMBNAIL + 10
   const OVERSCAN = 6
 
   let viewport: HTMLDivElement
@@ -21,7 +26,10 @@
   let height = $state(0)
 
   const items = $derived(store.visible)
-  const rowHeight = $derived((_article: Article) => ROW_HEIGHT)
+  const thumbnails = $derived(store.settings.thumbnailSize)
+  const rowHeight = $derived(
+    thumbnails === 'large' ? (a: Article) => (a.thumbnail ? LARGE_ROW_HEIGHT : ROW_HEIGHT) : () => ROW_HEIGHT,
+  )
   /** Where each row starts, plus where the last one ends. */
   const offsets = $derived.by(() => {
     const o = new Float64Array(items.length + 1)
@@ -187,33 +195,67 @@
     scrollTop = 0
     scrolledPast = 0
     passed = []
+    // Its list is laid out anew, not kept in place.
+    laidOut = null
   })
 
-  // When row heights change (not the rows themselves), the selected row stays where it is
-  // on screen if it's in view; otherwise the top row does.
-  let laidOut: { items: Article[]; rowHeight: typeof rowHeight; offsets: Float64Array } | null = null
+  // When the rows change in the same list, as after a sync or when thumbnails arrive, or
+  // their heights do, as when the thumbnail size changes, the list stays put: the selected
+  // row keeps its place on screen if it's in view, otherwise the top row does, and a list
+  // at the very top stays there so new articles show.
+  let laidOut: Layout | null = null
+  /** The list just moved to stay put: the highlight jumps with it instead of sliding. */
+  let settling = $state(false)
   $effect(() => {
-    const now = { items, rowHeight, offsets }
+    const now = { items, offsets }
     const before = laidOut
     laidOut = now
-    if (!before || before.items !== now.items || before.rowHeight === now.rowHeight) return
-    untrack(() => {
-      const top = scrollTop
-      const i = selectedIndex
-      const was = before.offsets
-      const o = now.offsets
-      if (i !== -1 && was[i + 1] > top && was[i] < top + height) {
-        viewport.scrollTop = o[i] - (was[i] - top)
-      } else {
-        // As far into the top row as before, in proportion, so it stays the top row.
-        const r = rowAt(was, top)
-        viewport.scrollTop = o[r] + ((top - was[r]) / (was[r + 1] - was[r])) * (o[r + 1] - o[r])
-      }
-      scrollTop = Math.max(0, viewport.scrollTop)
-      // The rows above moved, but none scrolled out.
-      scrolledPast = rowAt(o, scrollTop)
-    })
+    if (before && before.offsets !== now.offsets) untrack(() => keepInPlace(before, now))
+    else if (!before) {
+      // A new list starts at the top, even if the old one scrolled on while it loaded.
+      untrack(() => {
+        if (viewport.scrollTop !== 0) viewport.scrollTop = 0
+        scrollTop = 0
+        scrolledPast = 0
+      })
+    }
   })
+
+  type Layout = { items: Article[]; offsets: Float64Array }
+
+  function keepInPlace(before: Layout, now: Layout) {
+    // Where the list is now, which a scroll may have changed before its event came. Unless
+    // the browser just clamped a list that got shorter: that position is in the new rows.
+    const live = Math.max(0, viewport.scrollTop)
+    const clamped = live < scrollTop && live >= viewport.scrollHeight - viewport.clientHeight - 1
+    const top = clamped ? scrollTop : live
+    const [was, o] = [before.offsets, now.offsets]
+    // That scroll passed rows of the old list, before its event could mark them.
+    if (!clamped) pass(before.items, was, live)
+    const selected = before.items.findIndex((a) => a.id === store.articleId)
+    const shown = selected !== -1 && was[selected + 1] > top && was[selected] < top + height
+    // At the very top, the list stays there, so new articles show.
+    const next =
+      top < 1 && !shown ? 0 : ((shown ? place(selected, true) : null) ?? place(rowAt(was, top), false))
+    if (next !== null && Math.abs(next - live) >= 0.5) {
+      settling = true
+      viewport.scrollTop = next
+      requestAnimationFrame(() => (settling = false))
+    }
+    scrollTop = Math.max(0, viewport.scrollTop)
+    // The rows above changed, but none scrolled out.
+    scrolledPast = rowAt(o, scrollTop)
+
+    /** Where to scroll so row `anchor` keeps its place, or `null` if it's gone. The top
+     * row stays as far into it as before, in proportion, so it stays the top row. */
+    function place(anchor: number, exact: boolean): number | null {
+      const id = before.items[anchor]?.id
+      const at = now.items === before.items ? anchor : now.items.findIndex((a) => a.id === id)
+      if (id === undefined || at === -1) return null
+      const into = top - was[anchor]
+      return exact ? o[at] + into : o[at] + (into / (was[anchor + 1] - was[anchor])) * (o[at + 1] - o[at])
+    }
+  }
 
   // With markReadOnScroll, rows that leave the top of the list while scrolling down are
   // marked read, once a frame. Scrolling up marks none.
@@ -225,9 +267,16 @@
   function onScroll() {
     // Elastic overscroll can go above the top.
     const top = Math.max(0, viewport.scrollTop)
-    const past = rowAt(offsets, top)
+    pass(items, offsets, top)
+    scrollTop = top
+  }
+
+  /** Notes the rows of `list` (laid out at `o`) that the top of the list at `y` has
+   * passed since the last scroll, and marks them read with markReadOnScroll. */
+  function pass(list: Article[], o: Float64Array, y: number) {
+    const past = rowAt(o, y)
     if (store.settings.markReadOnScroll && past > scrolledPast) {
-      for (let i = scrolledPast; i < past; i++) passed.push(items[i].id)
+      for (let i = scrolledPast; i < past; i++) passed.push(list[i].id)
       if (passed.length > 0 && frame === 0)
         frame = requestAnimationFrame(() => {
           frame = 0
@@ -237,9 +286,20 @@
         })
     }
     scrolledPast = past
-    scrollTop = top
   }
 </script>
+
+<!-- Decorative: the headline says what the article is. -->
+{#snippet thumbnail(article: Article)}
+  <!-- Gone from the cache meanwhile, as after an account switch: no empty frame. -->
+  <img
+    class="thumb {thumbnails}"
+    src={thumbnailUrl(store.activeId ?? '', article.id)}
+    alt=""
+    decoding="async"
+    onerror={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = 'hidden')}
+  />
+{/snippet}
 
 <svelte:window
   onkeydown={onWindowKeydown}
@@ -317,6 +377,7 @@
           {#if selectedIndex !== -1}
             <div
               class="highlight"
+              class:settling
               style:height="{offsets[selectedIndex + 1] - offsets[selectedIndex]}px"
               style:transform="translateY({offsets[selectedIndex]}px)"
             ></div>
@@ -334,14 +395,22 @@
                 store.open(article.id)
               }}
             >
-              <span class="meta">
-                <span class="feed">{store.feed(article.feedId)?.title}</span>
-                {#if store.starred.has(article.id)}
-                  <Star size={11} class="star" fill="currentColor" strokeWidth={0} />
+              {#if article.thumbnail && (thumbnails === 'small' || thumbnails === 'medium')}
+                {@render thumbnail(article)}
+              {/if}
+              <span class="text">
+                <span class="meta">
+                  <span class="feed">{store.feed(article.feedId)?.title}</span>
+                  {#if store.starred.has(article.id)}
+                    <Star size={11} class="star" fill="currentColor" strokeWidth={0} />
+                  {/if}
+                  <time>{formatTime(article.published)}</time>
+                </span>
+                <span class="title">{article.title}</span>
+                {#if article.thumbnail && thumbnails === 'large'}
+                  {@render thumbnail(article)}
                 {/if}
-                <time>{formatTime(article.published)}</time>
               </span>
-              <span class="title">{article.title}</span>
             </button>
           {/each}
         </div>
@@ -466,10 +535,47 @@
     right: 0;
     top: 0;
     display: flex;
-    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
     padding: 11px 20px 0;
     text-align: left;
     transition: color 120ms ease-out;
+  }
+
+  .text {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* Cropped to fill a fixed box, so rows never change height. The hairline keeps a light
+     image from melting into a light list. */
+  .thumb {
+    flex: none;
+    object-fit: cover;
+    border-radius: 6px;
+    outline: 1px solid var(--separator);
+    outline-offset: -1px;
+  }
+
+  .thumb.small {
+    width: 40px;
+    height: 40px;
+    margin-top: 2px;
+  }
+
+  .thumb.medium {
+    width: 64px;
+    height: 64px;
+    margin-top: 2px;
+  }
+
+  /* LARGE_THUMBNAIL in the script. */
+  .thumb.large {
+    width: 100%;
+    height: 150px;
+    margin-top: 8px;
   }
 
   .row:hover {
@@ -485,6 +591,10 @@
     transition:
       transform 120ms ease-out,
       height 120ms ease-out;
+  }
+
+  .highlight.settling {
+    transition: none;
   }
 
   .active .highlight {

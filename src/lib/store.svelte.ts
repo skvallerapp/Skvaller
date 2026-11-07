@@ -110,7 +110,7 @@ class Store {
           this.#loadLibrary().catch((e) => console.error('Loading the feeds failed', e))
       })
       await api.onThumbnailsChanged((accountId) => {
-        if (accountId === this.activeId && this.signedIn)
+        if (accountId === this.activeId && this.signedIn && this.settings.thumbnailSize !== 'none')
           this.#loadList(this.#keepListed).catch((e) => console.error('Loading the thumbnails failed', e))
       })
       await api.onAccountsChanged((session) =>

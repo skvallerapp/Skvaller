@@ -347,7 +347,8 @@ impl Db {
                 conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
                 if v > 0 {
                     // A cache from before release, when the schema changed without
-                    // migrations: start over. Sync accounts fill it again from the server.
+                    // migrations: start over. Sync accounts fill it again from the server,
+                    // the local account from its feeds' backup.
                     conn.set_db_config(DbConfig::SQLITE_DBCONFIG_RESET_DATABASE, true)?;
                     conn.execute_batch("VACUUM")?;
                     conn.set_db_config(DbConfig::SQLITE_DBCONFIG_RESET_DATABASE, false)?;

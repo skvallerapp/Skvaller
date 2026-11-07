@@ -130,6 +130,8 @@ export interface Settings {
   markReadOnScroll: boolean
   /** The unread count of every account on the app icon, where the system shows one. */
   unreadBadge: boolean
+  /** How large the article list shows thumbnails. */
+  thumbnailSize: 'none' | 'small' | 'medium' | 'large'
 }
 
 export type Theme = 'system' | 'light' | 'dark' | 'espresso'
