@@ -3,9 +3,11 @@
   import PanelLeft from '@lucide/svelte/icons/panel-left'
   import Star from '@lucide/svelte/icons/star'
   import { tick, untrack } from 'svelte'
+  import { fontStacks } from './fonts'
   import { formatTime } from './format'
   import { activePane, focus, layout, toggleSidebar } from './layout.svelte'
   import { thumbnailUrl } from './api'
+  import { lineCount } from './lines.svelte'
   import { animate } from './motion'
   import { dragRegion, macWindow } from './platform'
   import { store } from './store.svelte'
@@ -13,10 +15,21 @@
   import { viewInfo } from './views'
 
   // Row heights come from the data, never from measuring the DOM, so the list stays
-  // virtualized and cheap at 5,000+ rows. Room for a headline of three lines.
-  const ROW_HEIGHT = 87
-  // A row's side padding, which a Large thumbnail spans between. Keep in step with `.row`.
-  const ROW_PADDING = 20
+  // virtualized and cheap at 5,000+ rows: the headline's lines are counted from canvas
+  // measurements. Keep these in step with the styles below.
+  /** A row's padding, above and below, and at the sides. */
+  const PAD_Y = 11
+  const PAD_X = 20
+  const META_LINE = 16
+  const TITLE_LINE = 19
+  const TITLE_LINES = 3
+  /** The space between a Small or Medium thumbnail and the text. */
+  const GAP = 12
+  /** Small and Medium thumbnail sizes. They have a 2 px margin above and below. */
+  const THUMB = { small: 40, medium: 64 } as const
+  const THUMB_MARGIN = 2
+  /** The space above a Large thumbnail. */
+  const LARGE_GAP = 8
   const OVERSCAN = 6
 
   let viewport: HTMLDivElement
@@ -27,12 +40,23 @@
   const items = $derived(store.visible)
   const thumbnails = $derived(store.settings.thumbnailSize)
   /** A Large thumbnail is 16:9 at the row's width, so its height follows the list's width. */
-  const largeHeight = $derived(Math.round((Math.max(0, width - 2 * ROW_PADDING) * 9) / 16))
-  // A row with a Large thumbnail has 8 px above the image and 2 px below it.
+  const largeHeight = $derived(Math.round((Math.max(0, width - 2 * PAD_X) * 9) / 16))
+  // Read headlines are lighter, but are measured bold, so marking an article read never
+  // changes its row's height.
+  const titleFont = $derived(`600 14.5px ${fontStacks[store.settings.uiFont]}`)
   const rowHeight = $derived.by(() => {
-    if (thumbnails !== 'large') return () => ROW_HEIGHT
-    const large = ROW_HEIGHT + largeHeight + 10
-    return (a: Article) => (a.thumbnail ? large : ROW_HEIGHT)
+    const full = width - 2 * PAD_X
+    const besideThumb = thumbnails === 'small' || thumbnails === 'medium'
+    const thumb = besideThumb ? THUMB[thumbnails] + 2 * THUMB_MARGIN : 0
+    const font = titleFont
+    return (a: Article) => {
+      const beside = besideThumb && a.thumbnail
+      const lines = lineCount(a.title, font, beside ? full - THUMB[thumbnails] - GAP : full, TITLE_LINES)
+      let content = META_LINE + lines * TITLE_LINE
+      if (beside) content = Math.max(content, thumb)
+      else if (thumbnails === 'large' && a.thumbnail) content += LARGE_GAP + largeHeight
+      return 2 * PAD_Y + content
+    }
   })
   /** Where each row starts, plus where the last one ends. */
   const offsets = $derived.by(() => {
@@ -543,7 +567,7 @@
     display: flex;
     align-items: flex-start;
     gap: 12px;
-    padding: 11px 20px 0;
+    padding: 11px 20px;
     text-align: left;
     transition: color 120ms ease-out;
   }
@@ -568,13 +592,13 @@
   .thumb.small {
     width: 40px;
     height: 40px;
-    margin-top: 2px;
+    margin-block: 2px;
   }
 
   .thumb.medium {
     width: 64px;
     height: 64px;
-    margin-top: 2px;
+    margin-block: 2px;
   }
 
   /* Its height is set from the script, 16:9 at this width. */
@@ -632,6 +656,7 @@
     align-items: center;
     gap: 6px;
     font-size: 12px;
+    line-height: 16px;
     font-weight: 400;
     text-transform: uppercase;
     color: var(--text-3);
@@ -657,7 +682,7 @@
     overflow: hidden;
     font-size: 14.5px;
     font-weight: 600;
-    line-height: 1.3;
+    line-height: 19px;
   }
 
   .row:not(.unread) .title {
