@@ -15,21 +15,25 @@
   // Row heights come from the data, never from measuring the DOM, so the list stays
   // virtualized and cheap at 5,000+ rows. Room for a headline of three lines.
   const ROW_HEIGHT = 87
-  // A Large thumbnail's height, and the row that has one: 8 px above the image and 2 px
-  // below it. Keep in step with `.thumb.large` below.
-  const LARGE_THUMBNAIL = 150
-  const LARGE_ROW_HEIGHT = ROW_HEIGHT + LARGE_THUMBNAIL + 10
+  // A row's side padding, which a Large thumbnail spans between. Keep in step with `.row`.
+  const ROW_PADDING = 20
   const OVERSCAN = 6
 
   let viewport: HTMLDivElement
   let scrollTop = $state(0)
   let height = $state(0)
+  let width = $state(0)
 
   const items = $derived(store.visible)
   const thumbnails = $derived(store.settings.thumbnailSize)
-  const rowHeight = $derived(
-    thumbnails === 'large' ? (a: Article) => (a.thumbnail ? LARGE_ROW_HEIGHT : ROW_HEIGHT) : () => ROW_HEIGHT,
-  )
+  /** A Large thumbnail is 16:9 at the row's width, so its height follows the list's width. */
+  const largeHeight = $derived(Math.round((Math.max(0, width - 2 * ROW_PADDING) * 9) / 16))
+  // A row with a Large thumbnail has 8 px above the image and 2 px below it.
+  const rowHeight = $derived.by(() => {
+    if (thumbnails !== 'large') return () => ROW_HEIGHT
+    const large = ROW_HEIGHT + largeHeight + 10
+    return (a: Article) => (a.thumbnail ? large : ROW_HEIGHT)
+  })
   /** Where each row starts, plus where the last one ends. */
   const offsets = $derived.by(() => {
     const o = new Float64Array(items.length + 1)
@@ -294,6 +298,7 @@
   <!-- Gone from the cache meanwhile, as after an account switch: no empty frame. -->
   <img
     class="thumb {thumbnails}"
+    style:height={thumbnails === 'large' ? `${largeHeight}px` : null}
     src={thumbnailUrl(store.activeId ?? '', article.id)}
     alt=""
     decoding="async"
@@ -365,6 +370,7 @@
       tabindex="-1"
       bind:this={viewport}
       bind:clientHeight={height}
+      bind:clientWidth={width}
       onscroll={onScroll}
     >
       {#if items.length === 0}
@@ -571,10 +577,9 @@
     margin-top: 2px;
   }
 
-  /* LARGE_THUMBNAIL in the script. */
+  /* Its height is set from the script, 16:9 at this width. */
   .thumb.large {
     width: 100%;
-    height: 150px;
     margin-top: 8px;
   }
 
