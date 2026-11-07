@@ -81,7 +81,7 @@ export class Overscroll {
   #mouse = false
   /** The size of the last wheel event. */
   #wheelSize = 0
-  /** How many wheel events since the last larger one shrank smoothly. */
+  /** How many wheel events in a row shrank smoothly. An equal one doesn't end the run. */
   #shrinking = 0
   /** How many wheel events in a row were larger than the one before. */
   #growing = 0
@@ -89,8 +89,7 @@ export class Overscroll {
   #coasting = false
   /** This momentum already bounced the list off an edge, or sprang it back. */
   #bounced = false
-  /** The pull of smoothly shrinking events since the last larger one: momentum, once it
-   * shows as such. */
+  /** The pull of that run: momentum, once it shows as such. */
   #coasted = 0
   #touchY: number | null = null
   /** This touch was kept from scrolling the list, so it scrolls it here instead. */
@@ -218,55 +217,52 @@ export class Overscroll {
   #onWheel = (e: WheelEvent) => {
     // A pinch zooms.
     if (e.ctrlKey || e.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) return
-    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return
     // A pause in the events starts a new gesture. A mouse's starts with a whole notch, a
     // trackpad's small; later trackpad events can look like notches too.
-    if (e.timeStamp - this.#wheelAt > WHEEL_IDLE) {
-      this.#wheelBegan()
+    const began = e.timeStamp - this.#wheelAt > WHEEL_IDLE
+    if (began) {
+      this.#began()
       const notches = (e as WheelEvent & { wheelDeltaY?: number }).wheelDeltaY
       this.#mouse = !!notches && notches % NOTCH === 0
     }
     this.#wheelAt = e.timeStamp
     if (this.#mouse) return
+    if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) {
+      // Chromium lets a gesture keep the list from scrolling only if its first event did.
+      // The list doesn't scroll sideways, so keeping it from that costs nothing.
+      if (began && e.cancelable && this.#blocking) e.preventDefault()
+      return
+    }
     this.#leftTop()
     const size = Math.abs(e.deltaY)
-    /** This event may be momentum's: smoothly smaller than the last. */
     const shrank = size < this.#wheelSize && size >= this.#wheelSize * SMOOTH
-    if (size > this.#wheelSize) {
+    const same = size === this.#wheelSize
+    /** This event may be momentum's: it goes on a run of smoothly shrinking ones. */
+    const momentum = shrank || (same && this.#shrinking > 0)
+    if (shrank) this.#shrinking++
+    else if (!same) {
       this.#shrinking = 0
-      this.#growing++
       this.#coasted = 0
-    } else {
-      this.#growing = 0
-      if (shrank) this.#shrinking++
-      else if (size < this.#wheelSize) {
-        this.#shrinking = 0
-        this.#coasted = 0
-      }
     }
+    this.#growing = size > this.#wheelSize ? this.#growing + 1 : 0
     this.#wheelSize = size
     if (this.#shrinking >= COASTING && !this.#coasting) {
       this.#coasting = true
-      // The momentum before it showed as such doesn't count towards a refresh. The stretch
-      // drops by as much, so the indicator shows armed only if letting go refreshes.
-      if (this.#pull !== 0 && this.#el) {
-        const pull = this.#pull - this.#coasted
-        this.#pull = Math.sign(pull) === Math.sign(this.#pull) ? pull : 0
-        if (animate()) this.offset = stretch(this.#pull, this.#el.clientHeight)
-      }
+      // The momentum before it showed as such doesn't count towards a refresh.
+      this.#pull -= this.#coasted
     }
     // The fingers are back, as a new gesture.
-    if (this.#coasting && this.#growing >= HAND_BACK) this.#wheelBegan()
+    if (this.#coasting && this.#growing >= HAND_BACK) this.#began()
     if (this.#coasting) {
       // While it refreshes, the list stays held: momentum may scroll it, but neither
       // bounces nor releases it.
       if (this.refreshing) return
-      if (this.#pull !== 0 || (this.#frame !== 0 && this.#atEdge(this.offset))) {
+      if (this.#pull !== 0 || (this.offset !== 0 && this.#atEdge(this.offset))) {
         // The fingers lifted: a stretched list springs back at once, as it does natively,
         // and the momentum neither stretches it nor scrolls it.
         e.preventDefault()
         this.#bounced = true
-        if (this.#pull !== 0) this.#release()
+        if (this.#frame === 0) this.#release()
       } else if (!this.#bounced && this.#atEdge(-e.deltaY) && animate()) {
         // Momentum reached an edge: it bounces the list off it.
         this.#bounced = true
@@ -280,25 +276,22 @@ export class Overscroll {
     if (!e.cancelable || !this.#blocking) return this.#updateListeners()
     const pull = -Math.sign(e.deltaY) * Math.min(size, WHEEL_MAX) * WHEEL_PULL
     if (!this.#take(pull)) return
-    if (shrank) this.#coasted += pull
+    if (momentum) this.#coasted += pull
     e.preventDefault()
     clearTimeout(this.#idle)
     this.#idle = window.setTimeout(this.#release, WHEEL_IDLE)
   }
 
-  #wheelBegan() {
-    this.#began()
+  /** A gesture begins: a touch, or the wheel after a pause or with the fingers back. */
+  #began() {
+    this.fromTop = this.#atEdge(1)
+    this.#spent = false
     this.#wheelSize = 0
     this.#shrinking = 0
     this.#growing = 0
     this.#coasting = false
     this.#bounced = false
     this.#coasted = 0
-  }
-
-  #began() {
-    this.fromTop = this.#atEdge(1)
-    this.#spent = false
   }
 
   /** A gesture that scrolled the list away from the top can't refresh. */
@@ -335,8 +328,7 @@ export class Overscroll {
     if (e.touches.length > 0) return
     this.#touchY = null
     this.#touchOwned = false
-    if (this.#pull !== 0 || this.offset !== 0) this.#release()
-    else this.#updateListeners()
+    this.#release()
   }
 
   /** The system took the touch over, as for a gesture of its own: no refresh. */
