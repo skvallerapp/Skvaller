@@ -63,16 +63,43 @@ function measure(piece: string) {
   return w
 }
 
+// Text without spaces, as in Chinese and Japanese, wraps between any two characters,
+// except before closing punctuation and small kana, or after opening punctuation.
+const cjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u3000-\u303f\uff00-\uffef]/u
+const noStart = /[、。，．,.：；:;？！?!）)」』】〕〉》”’ー…‥ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶ・%％]/
+const noEnd = /[（(「『【〔〈《“‘]/
+
+/** Whether a line may break between characters `a` and `b`. */
+function breaks(a: string, b: string) {
+  if (a === '-') return b !== '-'
+  return (cjk.test(a) || cjk.test(b)) && !noStart.test(b) && !noEnd.test(a)
+}
+
 function piecesOf(text: string) {
   let p = texts.get(text)
   if (p) return p
   const w: number[] = []
   const spaced: number[] = []
+  const push = (piece: string, space: boolean) => {
+    w.push(measure(piece))
+    spaced.push(space ? 1 : 0)
+  }
   for (const word of text.split(/\s+/)) {
-    for (const [i, piece] of (word.match(/[^-]*-+|[^-]+/g) ?? []).entries()) {
-      w.push(measure(piece))
-      spaced.push(i === 0 && w.length > 1 ? 1 : 0)
+    if (word === '') continue
+    // A word's first piece follows a space, unless it starts the text.
+    let space = w.length > 0
+    let piece = ''
+    let prev = ''
+    for (const c of word) {
+      if (piece !== '' && breaks(prev, c)) {
+        push(piece, space)
+        space = false
+        piece = ''
+      }
+      piece += c
+      prev = c
     }
+    push(piece, space)
   }
   p = { widths: Float64Array.from(w), spaced: Uint8Array.from(spaced) }
   texts.set(text, p)
@@ -101,8 +128,8 @@ export function lineCount(text: string, f: string, width: number, max: number): 
       x = 0
     }
     x += x > 0 ? gap + w : w
-    // A piece wider than the line: text without spaces, as in Chinese or Japanese, breaks
-    // between characters.
+    // A piece wider than the line, such as a long URL: CSS doesn't break it, but counting
+    // the lines it would take is the safe side.
     while (x > room && room > 0) {
       if (++lines > max) return max
       x -= room
