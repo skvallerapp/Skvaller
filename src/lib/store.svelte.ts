@@ -191,6 +191,19 @@ class Store {
     if (this.activeId) await api.syncNow(this.activeId).catch((e) => console.error('Syncing failed', e))
   }
 
+  /** Waiting for the active account to stop syncing. */
+  #whenIdle: (() => void)[] = []
+
+  /** Resolves once the active account isn't syncing, or another account is shown. */
+  idle(): Promise<void> {
+    if (!this.status.syncing) return Promise.resolve()
+    return new Promise((resolve) => this.#whenIdle.push(resolve))
+  }
+
+  #idled() {
+    for (const resolve of this.#whenIdle.splice(0)) resolve()
+  }
+
   feed(id: string): Feed | undefined {
     return this.#feedById.get(id)
   }
@@ -500,6 +513,7 @@ class Store {
     this.read.clear()
     this.starred.clear()
     this.status = { ...idleStatus }
+    this.#idled()
     // Marks not saved yet belong to the account that goes; their write named it.
     this.#saveRead()
   }
@@ -508,6 +522,7 @@ class Store {
     this.#statuses.set(status.accountId, status)
     if (status.accountId !== this.activeId) return
     this.status = status
+    if (!status.syncing) this.#idled()
     if (status.unauthorized) this.signedIn = false
     else if (this.signedIn && !status.syncing && !status.error) {
       // The sidebar's feeds can change without the articles, as icons do. The list,
