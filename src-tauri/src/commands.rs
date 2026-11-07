@@ -395,6 +395,12 @@ impl AppState {
         lock(&self.config).clone()
     }
 
+    /// The accounts, in order, and the active one's ID.
+    pub fn accounts_for_menu(&self) -> (Vec<Account>, Option<String>) {
+        let config = lock(&self.config);
+        (config.accounts.clone(), config.active.clone())
+    }
+
     pub fn theme(&self) -> Theme {
         lock(&self.config).settings.theme
     }
@@ -671,6 +677,7 @@ async fn emit_session(app: &AppHandle) {
     match current_session(&app.state::<AppState>()).await {
         Ok(session) => {
             let _ = app.emit(ACCOUNTS_EVENT, session);
+            crate::menu::rebuild_accounts(app);
         }
         Err(e) => tracing::event!(
             name: "session.read.failure",
@@ -860,6 +867,7 @@ pub async fn set_active_account(
     }
     let session = current_session(&state).await?;
     let _ = app.emit(ACCOUNTS_EVENT, session.clone());
+    crate::menu::rebuild_accounts(&app);
     Ok(session)
 }
 

@@ -10,23 +10,22 @@ mod badge;
 mod commands;
 mod config;
 mod logging;
+mod menu;
 mod sync_gate;
 
-use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
 use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Manager, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
 use tracing::Level;
 
-const SETTINGS_MENU_ITEM: &str = "settings";
-
 fn main() {
     let builder = tauri::Builder::default();
-    // macOS has an app menu, so Settings is there too, with ⌘,. Windows and Linux have no
-    // menu bar; they open Settings from the sidebar button and Ctrl+, only.
+    // macOS has a menu bar, so Settings is there too, with ⌘,, and the accounts, with ⌘1
+    // to ⌘9. Windows and Linux have none; they open Settings from the sidebar button and
+    // Ctrl+, and switch accounts with Alt+1 to Alt+9, which the UI handles.
     #[cfg(target_os = "macos")]
-    let builder = builder.menu(menu);
+    let builder = builder.menu(menu::build);
     builder
         // First, so a second launch exits before it sets anything up. Two instances would
         // save over each other's config.json and sync the same caches.
@@ -45,12 +44,7 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_dialog::init())
-        .on_menu_event(|app, event| {
-            // Not while the startup error shows: Settings' commands need the state.
-            if event.id() == SETTINGS_MENU_ITEM && app.try_state::<commands::AppState>().is_some() {
-                let _ = commands::show_settings_window(app);
-            }
-        })
+        .on_menu_event(|app, event| menu::on_event(app, &event))
         // Settings has no use without the main window, and no way to bring it back.
         .on_window_event(|window, event| {
             if window.label() == "main"
@@ -109,6 +103,7 @@ fn start(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let state = commands::AppState::load(app)?;
     app.set_theme(state.theme().native());
     app.manage(state);
+    menu::rebuild_accounts(app);
     // Before the sync, so a run that ends in the startup error doesn't sync first.
     create_main_window(app).map_err(|e| format!("Opening the main window failed: {e}"))?;
     show_config_notice(app);
@@ -183,26 +178,6 @@ fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
         })
         .build()?;
     Ok(())
-}
-
-/// The default menu, with Settings… after About in the app menu.
-#[cfg_attr(
-    not(target_os = "macos"),
-    expect(dead_code, reason = "only macOS has an app menu")
-)]
-fn menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-    let menu = Menu::default(app)?;
-    if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.first() {
-        let settings = MenuItem::with_id(
-            app,
-            SETTINGS_MENU_ITEM,
-            "Settings…",
-            true,
-            Some("CmdOrCtrl+,"),
-        )?;
-        app_menu.insert_items(&[&settings, &PredefinedMenuItem::separator(app)?], 2)?;
-    }
-    Ok(menu)
 }
 
 #[cfg(test)]

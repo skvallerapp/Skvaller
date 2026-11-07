@@ -144,10 +144,19 @@ class Store {
     return this.activeId ?? ''
   }
 
+  /** The account a switch is on its way to. */
+  #switchingTo: string | null = null
+
   /** Shows another account. */
   async switchAccount(id: string) {
-    if (id === this.activeId) return
-    await this.#applySession(await api.setActiveAccount(id))
+    // Back to the shown account while a switch is on its way: that switch is undone.
+    if (id === (this.#switchingTo ?? this.activeId)) return
+    this.#switchingTo = id
+    try {
+      await this.#applySession(await api.setActiveAccount(id))
+    } finally {
+      if (this.#switchingTo === id) this.#switchingTo = null
+    }
   }
 
   /** Takes in the accounts, from the start, a sign-in or any window's change. Another

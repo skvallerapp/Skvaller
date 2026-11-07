@@ -9,8 +9,8 @@
   import Sidebar from './lib/Sidebar.svelte'
   import AccountSwitcher from './lib/AccountSwitcher.svelte'
   import AddAccount from './lib/AddAccount.svelte'
-  import { isMac } from './lib/platform'
-  import { arrowKeys, bindings, keyName } from './lib/shortcuts'
+  import { isMac, macWindow } from './lib/platform'
+  import { accountIndex, arrowKeys, bindings, keyName } from './lib/shortcuts'
   import { store } from './lib/store.svelte'
   import type { ShortcutAction } from './lib/types'
 
@@ -94,6 +94,15 @@
     if (!isMac && e.ctrlKey && !e.shiftKey && !e.altKey && e.key === ',') {
       e.preventDefault()
       void openSettings()
+      return
+    }
+    // Also on the sign-in screen, to leave an account whose token was rejected. The macOS
+    // app's Accounts menu has these keys.
+    const index = macWindow ? null : accountIndex(e, isMac)
+    const id = index === null ? undefined : store.accounts[index]?.id
+    if (id) {
+      e.preventDefault()
+      if (!e.repeat) void store.switchAccount(id).catch((err) => console.error('Switching accounts failed', err))
       return
     }
     if (!store.signedIn || ownsKey(e)) return
