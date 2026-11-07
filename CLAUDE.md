@@ -31,8 +31,3 @@ can be connected at once.
   read or star change.
 - **Reference platforms.** macOS sets the bar for polish. Linux (WebKitGTK)
   sets the bar for performance. The article list must scroll smoothly with 5,000+ items.
-
-## Out of scope
-
-Do not add these: mobile apps, a unified timeline (accounts are switched, never merged),
-plugins, AI features. Other sync backends are planned for "Later".
