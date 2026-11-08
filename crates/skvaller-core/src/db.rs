@@ -205,13 +205,13 @@ pub(crate) struct ThumbnailWanted {
     pub url: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Folder {
     pub id: String,
     pub title: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Feed {
     pub id: String,
@@ -250,7 +250,7 @@ pub(crate) struct NewFeed<'a> {
 }
 
 /// An article without its HTML, for the article list.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArticleSummary {
     /// The item ID: decimal, or hex for IDs longer than 64 bits. Not a number, as it can
@@ -270,13 +270,13 @@ pub struct ArticleSummary {
 
 /// Which articles to list: those in `view` from `scope`. Serialized like the UI's
 /// `Selection` type.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct Selection {
     pub view: View,
     pub scope: Scope,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum View {
     Unread,
@@ -284,7 +284,7 @@ pub enum View {
     All,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Scope {
     All,
@@ -292,7 +292,7 @@ pub enum Scope {
     Feed { id: String },
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Counts {
     /// Unread articles per feed ID. Feeds without any are left out.
@@ -306,6 +306,13 @@ pub struct Db {
     /// A second connection for the UI's reads, so they don't wait behind a sync's
     /// writes. WAL lets it read while the other one writes. In-memory caches have none.
     reader: Option<Mutex<Connection>>,
+}
+
+/// Says whether the cache is on disk; the connections have nothing worth showing.
+impl std::fmt::Debug for Db {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Db").field("on_disk", &self.reader.is_some()).finish_non_exhaustive()
+    }
 }
 
 impl Db {

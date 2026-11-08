@@ -31,6 +31,7 @@ and Svelte, is kept on the [`tauri`](../../tree/tauri) branch.
 Requires [Rust](https://rustup.rs).
 
 ```sh
+cargo run --release -p skvaller   # run the app
 cargo test --workspace
 ```
 

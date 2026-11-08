@@ -1,0 +1,42 @@
+[package]
+name = "skvaller"
+description = "Desktop RSS reader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["rss", "feed-reader"]
+categories = ["gui"]
+publish = false
+
+[features]
+default = ["hybrid"]
+# Renderers: the GPU hybrid one by default; the CPU one for comparison.
+hybrid = ["dioxus-native/vello-hybrid"]
+cpu = ["dioxus-native/vello-cpu-pixels"]
+# Prints each frame's time, for measuring scrolling.
+log-frame-times = ["dioxus-native/log-frame-times"]
+
+[dependencies]
+dioxus-native = { workspace = true, features = [
+    "accessibility",
+    "complex-scripts",
+    "floats",
+    "html",
+    "net",
+    "prelude",
+    "svg",
+    "system-fonts",
+] }
+mimalloc.workspace = true
+serde_json.workspace = true
+skvaller-app.workspace = true
+skvaller-core.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["fmt", "std"] }
+
+[lints]
+workspace = true

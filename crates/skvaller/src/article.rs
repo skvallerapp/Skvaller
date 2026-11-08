@@ -1,0 +1,144 @@
+//! The reader's document for one article: Skvaller's header over the article's HTML.
+//!
+//! The document goes into an `<iframe srcdoc>`, a document of its own, so the article's
+//! styles can't reach the app and the app's can't reach the article.
+
+// Rust guideline compliant 2026-10-09
+
+use skvaller_app::Theme;
+use skvaller_core::{ArticleSummary, Feed, ready_article};
+
+const FRAME_CSS: &str = include_str!("frame.css");
+
+/// The whole reader document for `article`, with `html` as its untrusted body.
+pub fn document(article: &ArticleSummary, feed: Option<&Feed>, html: &str, theme: Theme) -> String {
+    let theme = theme_name(theme);
+    let date = escape(&format_date(article.published));
+    let title = linked(&article.title, Some(&article.url));
+    let author = escape(&article.author);
+    let source = feed.map_or_else(String::new, |f| linked(&f.title, f.site_url.as_deref()));
+    let body = ready_article(html, &article.url);
+    format!(
+        "<!doctype html><html data-theme=\"{theme}\"><head><meta charset=\"utf-8\">\
+         <style>{FRAME_CSS}</style></head><body><article><header>\
+         <div class=\"date\">{date}</div><h1>{title}</h1>\
+         <div class=\"source\">{author}<br>{source}</div></header>{body}</article></body></html>"
+    )
+}
+
+/// The theme's name, as the CSS selects it in `data-theme`.
+pub fn theme_name(theme: Theme) -> &'static str {
+    match theme {
+        Theme::System => "system",
+        Theme::Light => "light",
+        Theme::Dark => "dark",
+        Theme::Espresso => "espresso",
+    }
+}
+
+/// Escaped text, as a link when there is a URL. The link opens in the browser, as the
+/// article's own links do.
+fn linked(text: &str, url: Option<&str>) -> String {
+    match url.filter(|u| !u.is_empty()) {
+        Some(url) => format!(
+            "<a href=\"{}\" target=\"_blank\">{}</a>",
+            escape(url),
+            escape(text)
+        ),
+        None => escape(text),
+    }
+}
+
+/// `text` safe to put in HTML text and in quoted attributes.
+pub fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+const MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// A Unix time in milliseconds as `8 November 2026, 06:27 UTC`.
+///
+/// UTC until the app formats dates the system's way, as the Tauri version did.
+pub fn format_date(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
+    let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let (year, month, day) = civil(days);
+    let month = usize::try_from(month - 1).map_or("", |m| MONTHS[m]);
+    format!(
+        "{day} {month} {year}, {:02}:{:02} UTC",
+        rest / 3600,
+        rest % 3600 / 60
+    )
+}
+
+/// The year, month (1–12) and day of a count of days since 1970-01-01, in the
+/// proleptic Gregorian calendar. Howard Hinnant's `civil_from_days`.
+fn civil(days: i64) -> (i64, i64, i64) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    (year, month, day)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dates_read_as_a_person_writes_them() {
+        assert_eq!(format_date(0), "1 January 1970, 00:00 UTC");
+        assert_eq!(format_date(1_794_115_671_000), "8 November 2026, 05:27 UTC");
+        assert_eq!(format_date(951_782_400_000), "29 February 2000, 00:00 UTC");
+    }
+
+    #[test]
+    fn the_header_is_escaped_and_the_body_readied() {
+        let article = ArticleSummary {
+            id: "1".into(),
+            feed_id: "f".into(),
+            title: "<b>Bold</b>".into(),
+            author: "A & B".into(),
+            url: "https://example.com/a".into(),
+            published: 0,
+            read: false,
+            starred: false,
+            thumbnail: false,
+        };
+        let doc = document(&article, None, "<img src=\"/i.png\">", Theme::Dark);
+        assert!(doc.contains("&lt;b&gt;Bold&lt;/b&gt;"));
+        assert!(doc.contains("A &amp; B"));
+        assert!(doc.contains("<a href=\"https://example.com/a\" target=\"_blank\">"));
+        assert!(doc.contains("src=\"https://example.com/i.png\""));
+        assert!(doc.contains("data-theme=\"dark\""));
+    }
+}

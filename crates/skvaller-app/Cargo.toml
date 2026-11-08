@@ -1,0 +1,27 @@
+[package]
+name = "skvaller-app"
+description = "Accounts, settings and background sync for Skvaller, without a UI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["rss", "feed-reader"]
+categories = ["gui"]
+
+[dependencies]
+dirs.workspace = true
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json.workspace = true
+skvaller-core.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3.24.0"
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

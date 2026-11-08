@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/skvaller-core"]
+members = ["crates/skvaller", "crates/skvaller-app", "crates/skvaller-core"]
 resolver = "3"
 
 [workspace.package]
@@ -8,3 +8,64 @@ edition = "2024"
 rust-version = "1.90"
 license = "GPL-3.0-only"
 repository = "https://github.com/skvallerapp/Skvaller"
+
+[workspace.dependencies]
+skvaller-app = { path = "crates/skvaller-app", version = "0.1.0" }
+skvaller-core = { path = "crates/skvaller-core", version = "0.1.0" }
+
+# Blitz and Dioxus Native move fast and aren't on crates.io in this form: pinned to one
+# commit, the one the Mac and Steam Deck tests ran against.
+dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "136089ce", default-features = false }
+
+dirs = "6.0.0"
+mimalloc = "0.1.48"
+serde = { version = "1.0.229", default-features = false }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", default-features = false }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false }
+
+# The guideline set (M-STATIC-VERIFICATION). skvaller-core opts in with TASK-7.
+[workspace.lints.rust]
+ambiguous_negative_literals = "warn"
+missing_debug_implementations = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+[workspace.lints.clippy]
+cargo = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+allow_attributes_without_reason = "warn"
+as_pointer_underscore = "warn"
+assertions_on_result_states = "warn"
+clone_on_ref_ptr = "warn"
+deref_by_slicing = "warn"
+disallowed_script_idents = "warn"
+empty_drop = "warn"
+empty_enum_variants_with_brackets = "warn"
+empty_structs_with_brackets = "warn"
+fn_to_numeric_cast_any = "warn"
+if_then_some_else_none = "warn"
+map_err_ignore = "warn"
+redundant_type_annotations = "warn"
+renamed_function_params = "warn"
+semicolon_outside_block = "warn"
+undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+unneeded_field_pattern = "warn"
+unused_result_ok = "warn"
+too_long_first_doc_paragraph = "warn"
+# May cause issues with structured logging otherwise.
+literal_string_with_formatting_args = "allow"
+# Dependencies we don't control pull in several versions of the same crates.
+multiple_crate_versions = "allow"

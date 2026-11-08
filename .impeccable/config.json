@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "inter",
+        "createdAt": "2026-11-08T18:48:52.404Z",
+        "reason": "Existing project choice: Inter is the default UI and headline font in Skvaller's settings (Font::Inter in skvaller-app config, carried over from the Tauri version); the native port keeps the same design"
+      }
+    ]
+  }
+}

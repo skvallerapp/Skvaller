@@ -39,6 +39,13 @@ pub struct Client {
     token: String,
 }
 
+/// Shows the server, never the token.
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client").field("base", &self.base).finish_non_exhaustive()
+    }
+}
+
 impl Client {
     /// Signs in with `ClientLogin`. `base` is the API URL: the server's address for
     /// Miniflux and The Old Reader, `https://rss.example.com/api/greader.php` for
@@ -471,6 +478,18 @@ impl Item {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn debug_output_leaves_out_the_token() {
+        let client = super::Client {
+            http: reqwest::Client::new(),
+            base: "https://rss.example.com".into(),
+            token: "secret-token-123".into(),
+        };
+        let shown = format!("{client:?}");
+        assert!(shown.contains("rss.example.com"));
+        assert!(!shown.contains("secret-token-123"));
+    }
+
     use super::*;
 
     fn parsed(id: &str) -> Option<String> {
