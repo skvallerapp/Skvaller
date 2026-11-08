@@ -1,6 +1,7 @@
 // A stand-in for the Tauri commands, so the UI runs in a plain browser during
 // `bun run dev`. It is loaded only in development and outside Tauri (see api.ts).
 import { defaultSettings } from './defaults'
+import { SETTINGS_KEY, mockSettings } from './mockSettings'
 import type { Account, Article, Feed, Folder, Library, Selection, Session, Settings, SyncStatus } from './types'
 
 const allFolders: Folder[] = [
@@ -116,7 +117,6 @@ export async function listen(event: string, handler: Handler): Promise<() => voi
   return () => handlers.get(event)!.delete(handler)
 }
 
-const SETTINGS_KEY = 'skvaller.mock.settings'
 /** `{ accounts, active }`, as config.json has them. Missing: one FreshRSS account. */
 const ACCOUNTS_KEY = 'skvaller.mock.accounts'
 const PANE_KEY = 'skvaller.mock.settingsPane'
@@ -174,14 +174,7 @@ function session(): Session {
     activeId: active,
     signedIn: active !== null,
     status: active ? { ...statusOf(active) } : { accountId: '', syncing: false, lastSync: null, error: null, unauthorized: false, changed: false, cacheBroken: false },
-    settings: settings(),
-  }
-}
-function settings(): Settings {
-  try {
-    return { ...defaultSettings, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') }
-  } catch {
-    return { ...defaultSettings }
+    settings: mockSettings(),
   }
 }
 

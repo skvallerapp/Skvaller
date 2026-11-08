@@ -4,11 +4,16 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { t } from './i18n.svelte'
+import { mockSettings } from './mockSettings'
 import { inTauri } from './platform'
+import { palette } from './theme'
 import type { AccountChange, Article, Library, Selection, Session, Settings, SyncStatus } from './types'
 
 // Outside Tauri (a plain browser during `bun run dev`), use mock data instead.
 const mock = import.meta.env.DEV && !inTauri ? import('./mock') : null
+// As theme.js does in the app, the page gets its theme before the settings load. Here,
+// not in mock.ts: that loads too late.
+if (mock) document.documentElement.dataset.theme = palette(mockSettings().theme)
 
 const call = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
   mock ? mock.then((m) => m.invoke<T>(cmd, args)) : invoke<T>(cmd, args)
