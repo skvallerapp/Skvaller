@@ -19,27 +19,20 @@ service it targets.
 
 ## Tech stack
 
-- [Tauri 2](https://tauri.app) app shell
+Skvaller is being rebuilt in Rust from end to end. The first version, built with Tauri 2
+and Svelte, is kept on the [`tauri`](../../tree/tauri) branch.
+
 - Rust core (`skvaller-core`): sync, storage and API client, with no UI code
-- Svelte 5 + TypeScript UI
+- [Dioxus Native](https://github.com/DioxusLabs/blitz) UI (planned)
 - SQLite local cache
 
 ## Development
 
-Requires [Rust](https://rustup.rs), [Bun](https://bun.sh) and the
-[Tauri system dependencies](https://v2.tauri.app/start/prerequisites/).
+Requires [Rust](https://rustup.rs).
 
 ```sh
-bun install
-bun run tauri dev      # run the app
-cargo test --workspace # Rust tests
-bun run check          # type-check the UI
+cargo test --workspace
 ```
-
-## Translations
-
-Skvaller is in English for now. To translate it into your language, see
-[CONTRIBUTING.md](CONTRIBUTING.md#translations).
 
 ## License
 

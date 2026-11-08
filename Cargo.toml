@@ -1,5 +1,5 @@
 [workspace]
-members = ["src-tauri", "crates/skvaller-core"]
+members = ["crates/skvaller-core"]
 resolver = "3"
 
 [workspace.package]

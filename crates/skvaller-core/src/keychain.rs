@@ -10,7 +10,8 @@ use keyring::{Entry, Error as KeyringError};
 
 use crate::Result;
 
-/// The app's bundle identifier. A test in src-tauri checks it against tauri.conf.json.
+/// The app's bundle identifier. Keep it unchanged: tokens saved by earlier versions are
+/// stored under it.
 pub const KEYCHAIN_SERVICE: &str = "io.github.skvallerapp.Skvaller";
 
 /// `account` identifies the sign-in, such as `"carl@https://rss.example.com/api/greader.php"`.
