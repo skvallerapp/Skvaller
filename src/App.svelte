@@ -17,7 +17,11 @@
 
   onMount(() => void store.init())
 
-  $effect(() => styleRoot(store.settings))
+  // Not the defaults before the settings load: they would undo the theme theme.js gave
+  // the page, and nothing shows until then anyway.
+  $effect(() => {
+    if (store.ready) styleRoot(store.settings)
+  })
 
   let resizing = $state(false)
 
