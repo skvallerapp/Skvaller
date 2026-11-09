@@ -15,7 +15,7 @@ skvaller-core = { path = "crates/skvaller-core", version = "0.1.0" }
 
 # Blitz and Dioxus Native move fast and aren't on crates.io in this form: pinned to one
 # commit, the one the Mac and Steam Deck tests ran against.
-dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "136089ce", default-features = false }
+dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "e4c2c9be", default-features = false }
 
 dirs = "6.0.0"
 mimalloc = "0.1.48"
