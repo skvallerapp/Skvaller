@@ -392,3 +392,68 @@ button {
 .reader .empty {
   margin: auto;
 }
+
+/* Account switcher */
+
+.switcher {
+  position: relative;
+}
+
+.menu {
+  position: absolute;
+  top: 32px;
+  left: 0;
+  z-index: 10;
+  width: 220px;
+  padding: 5px;
+  border: 1px solid var(--separator);
+  border-radius: 10px;
+  background: var(--reader-bg);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px 0 4px;
+  border-radius: 6px;
+  color: var(--text);
+}
+
+.menu-item.highlighted {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.menu-item .check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 18px;
+}
+
+.menu-item .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.menu-item .count,
+.menu-item .shortcut {
+  flex: none;
+  color: var(--text-3);
+}
+
+.menu-item .shortcut {
+  margin-left: 4px;
+}
+
+.menu-item.highlighted .count,
+.menu-item.highlighted .shortcut {
+  color: inherit;
+}

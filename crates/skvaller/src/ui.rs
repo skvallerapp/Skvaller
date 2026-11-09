@@ -68,6 +68,10 @@ struct Reading {
     mark_generation: Signal<u64>,
     /// The open article's frame, which "read on" scrolls.
     frame: Signal<Option<Rc<MountedData>>>,
+    /// The shown account's sync status.
+    status: Signal<Option<SyncStatus>>,
+    /// The account menu, when open: the index of its highlighted account.
+    menu: Signal<Option<usize>>,
 }
 
 impl Reading {
@@ -277,18 +281,71 @@ impl Reading {
         }
     }
 
-    fn on_key(mut self, app: &Arc<App>, keys: &HashMap<String, Action>, e: &KeyboardData) {
+    /// Shows the account, keeping the view: its feeds, articles and status.
+    fn switch_account(mut self, app: &App, id: &str) {
+        self.menu.set(None);
+        if self.account.peek().as_deref() == Some(id) {
+            return;
+        }
+        if let Err(e) = app.set_active(id) {
+            tracing::error!("switching to account {id} failed: {e}");
+            return;
+        }
+        let view = self.selection.peek().view;
+        self.select(Selection {
+            view,
+            scope: Scope::All,
+        });
+        self.read.write().clear();
+        self.starred.write().clear();
+        self.status.set(app.status(id).ok());
+        self.account.set(Some(id.to_owned()));
+    }
+
+    /// Up and Down move in the open account menu, Enter picks, Escape closes.
+    fn on_menu_key(mut self, app: &App, key: &Key, at: usize) {
+        let count = app.accounts().len();
+        match key {
+            Key::Named(NamedKey::ArrowDown) => self.menu.set(Some((at + 1) % count)),
+            Key::Named(NamedKey::ArrowUp) => self.menu.set(Some((at + count - 1) % count)),
+            Key::Named(NamedKey::Enter) => {
+                if let Some(account) = app.accounts().get(at) {
+                    self.switch_account(app, &account.id);
+                }
+            }
+            Key::Named(NamedKey::Escape | NamedKey::Tab) => self.menu.set(None),
+            _ => {}
+        }
+    }
+
+    /// Acts on a key pressed anywhere in the window. Returns whether it did, so the key
+    /// doesn't reach the article too.
+    fn on_key(mut self, app: &Arc<App>, keys: &HashMap<String, Action>, e: &KeyboardData) -> bool {
         let key = e.key();
+        if let Some(index) = account_index(&e.code().to_string(), e.modifiers()) {
+            if !e.is_auto_repeating()
+                && let Some(account) = app.accounts().get(index)
+            {
+                self.switch_account(app, &account.id);
+            }
+            return true;
+        }
+        // Copied out: a borrow held into the block would make setting the menu panic.
+        let menu = *self.menu.peek();
+        if let Some(at) = menu {
+            self.on_menu_key(app, &key, at);
+            return true;
+        }
         if *self.confirming.peek() {
             match key {
                 Key::Named(NamedKey::Escape) => self.confirming.set(false),
                 Key::Named(NamedKey::Enter) => self.mark_all_read(app),
                 _ => {}
             }
-            return;
+            return true;
         }
         let Some(name) = key_name(&key, &e.code().to_string(), e.modifiers()) else {
-            return;
+            return false;
         };
         let repeat = e.is_auto_repeating();
         if ARROWS.contains(&name.as_str()) {
@@ -310,13 +367,13 @@ impl Reading {
                 }
                 _ => {}
             }
-            return;
+            return true;
         }
         let Some(&action) = keys.get(&name) else {
-            return;
+            return false;
         };
         if repeat && !action.repeats() {
-            return;
+            return true;
         }
         match action {
             Action::Next | Action::Previous => {
@@ -333,7 +390,23 @@ impl Reading {
             Action::Sync => self.sync(app),
             Action::MarkAllRead => self.request_mark_all(app),
         }
+        true
     }
+}
+
+/// The account a key switches to, by index: ⌘1 to ⌘9 on macOS, Alt+1 to Alt+9
+/// elsewhere. Goes by the key's place, not its character, which depends on the layout.
+fn account_index(code: &str, mods: Modifiers) -> Option<usize> {
+    let modifier = if cfg!(target_os = "macos") {
+        Modifiers::META
+    } else {
+        Modifiers::ALT
+    };
+    if mods != modifier {
+        return None;
+    }
+    let digit = code.strip_prefix("Digit")?.parse::<usize>().ok()?;
+    (1..=9).contains(&digit).then(|| digit - 1)
 }
 
 /// The window's root component.
@@ -404,7 +477,7 @@ pub fn Root() -> Element {
             list
         }
     });
-    let reading = use_context_provider(|| Reading {
+    let mut reading = use_context_provider(|| Reading {
         account,
         selection,
         article,
@@ -418,6 +491,8 @@ pub fn Root() -> Element {
         confirming: Signal::new(false),
         mark_generation: Signal::new(0),
         frame: Signal::new(None),
+        status,
+        menu: Signal::new(None),
     });
     let keys = use_hook(|| Rc::new(bindings(&app.settings().shortcuts)));
     let theme = article::theme_name(app.settings().theme);
@@ -438,14 +513,17 @@ pub fn Root() -> Element {
                 }
             },
             onkeydown: move |e: Event<KeyboardData>| {
-                let before = (reading.confirming)();
-                reading.on_key(&app, &keys, &e.data());
-                // Keys the app acted on don't reach the article too.
-                if before || key_name(&e.data().key(), &e.data().code().to_string(), e.data().modifiers()).is_some_and(|k| ARROWS.contains(&k.as_str()) || keys.contains_key(&k)) {
+                if reading.on_key(&app, &keys, &e.data()) {
                     e.prevent_default();
                 }
             },
-            Sidebar { status }
+            // A click outside the account menu closes it; the menu's own don't get here.
+            onclick: move |_| {
+                if reading.menu.peek().is_some() {
+                    reading.menu.set(None);
+                }
+            },
+            Sidebar {}
             ArticleList {}
             Reader {}
         }
@@ -483,7 +561,8 @@ fn sidebar_scopes(lib: &Library) -> Vec<Scope> {
 }
 
 #[component]
-fn Sidebar(status: Signal<Option<SyncStatus>>) -> Element {
+fn Sidebar() -> Element {
+    let app = use_context::<Arc<App>>();
     let mut reading = use_context::<Reading>();
     let lib = (reading.library)();
     let unread_total: i64 = lib.counts.unread_by_feed.values().sum();
@@ -502,7 +581,7 @@ fn Sidebar(status: Signal<Option<SyncStatus>>) -> Element {
         View::Unread | View::All => lib.counts.unread_by_feed.get(id).copied().unwrap_or(0),
         View::Starred => lib.counts.starred_by_feed.get(id).copied().unwrap_or(0),
     };
-    let status_line = match status() {
+    let status_line = match (reading.status)() {
         Some(s) if s.syncing => (t("sidebar.syncing"), false),
         Some(SyncStatus { error: Some(e), .. }) => {
             (format!("{}: {e}", t("sidebar.syncFailed")), true)
@@ -521,7 +600,11 @@ fn Sidebar(status: Signal<Option<SyncStatus>>) -> Element {
 
     rsx! {
         nav { class, aria_label: t("sidebar.label"),
-            div { class: "toolbar" }
+            div { class: "toolbar",
+                if app.accounts().len() > 1 {
+                    AccountSwitcher {}
+                }
+            }
             div { class: "feeds",
                 for (view , label , count) in views {
                     div {
@@ -559,6 +642,82 @@ fn Sidebar(status: Signal<Option<SyncStatus>>) -> Element {
                 }
             }
             div { class: if status_line.1 { "status error" } else { "status" }, "{status_line.0}" }
+        }
+    }
+}
+
+/// The account menu's button, and the menu while open: each account with its unread
+/// count and shortcut, the shown one checked.
+#[component]
+fn AccountSwitcher() -> Element {
+    let app = use_context::<Arc<App>>();
+    let mut reading = use_context::<Reading>();
+    let menu = (reading.menu)();
+    let active = (reading.account)();
+    // Changes made here show in the shown account's count at once.
+    (reading.counts)();
+    let accounts = app.accounts();
+    let menu_app = Arc::clone(&app);
+    let shortcut_key = if cfg!(target_os = "macos") {
+        "⌘".to_owned()
+    } else {
+        format!("{}+", t("keys.alt"))
+    };
+
+    rsx! {
+        div { class: "switcher",
+            button {
+                class: "icon-button",
+                aria_label: t("accounts.switch"),
+                title: t("accounts.switch"),
+                "aria-haspopup": "menu",
+                "aria-expanded": "{menu.is_some()}",
+                onclick: move |e| {
+                    // The window closes the menu on any click that reaches it.
+                    e.stop_propagation();
+                    let at = reading.account.peek().as_ref().and_then(|id| app.accounts().iter().position(|a| &a.id == id));
+                    reading.menu.set(if reading.menu.peek().is_some() { None } else { Some(at.unwrap_or(0)) });
+                },
+                // Lucide's rss.
+                svg { width: "18", height: "18", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
+                    path { d: "M4 11a9 9 0 0 1 9 9" }
+                    path { d: "M4 4a16 16 0 0 1 16 16" }
+                    circle { cx: "5", cy: "19", r: "1" }
+                }
+            }
+            if let Some(at) = menu {
+                div { class: "menu", role: "menu", aria_label: t("accounts.menu"),
+                    onclick: move |e| e.stop_propagation(),
+                    for (i , account) in accounts.into_iter().enumerate() {
+                        {
+                            let app = Arc::clone(&menu_app);
+                            let checked = active.as_deref() == Some(account.id.as_str());
+                            let count = app.unread_total(&account.id).unwrap_or(0);
+                            let id = account.id.clone();
+                            rsx! {
+                                div {
+                                    key: "{account.id}",
+                                    class: if i == at { "menu-item highlighted" } else { "menu-item" },
+                                    role: "menuitemradio",
+                                    "aria-checked": "{checked}",
+                                    onmouseenter: move |_| reading.menu.set(Some(i)),
+                                    onclick: move |_| reading.switch_account(&app, &id),
+                                    span { class: "check",
+                                        if checked {
+                                            svg { width: "14", height: "14", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2.5", stroke_linecap: "round", stroke_linejoin: "round",
+                                                path { d: "M20 6 9 17l-5-5" }
+                                            }
+                                        }
+                                    }
+                                    span { class: "name", "{account.description}" }
+                                    if count > 0 { span { class: "count", "{count}" } }
+                                    if i < 9 { span { class: "shortcut", "{shortcut_key}{i + 1}" } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -895,6 +1054,21 @@ mod tests {
         assert_eq!((first, last), (992, 1019));
         assert_eq!(visible_rows(434_913.0, 870.0, 5_000), (4_991, 5_000));
         assert_eq!(visible_rows(0.0, 870.0, 3), (0, 3));
+    }
+
+    #[test]
+    fn account_shortcuts_go_by_the_digit_key_with_the_platform_modifier() {
+        let (mods, other) = if cfg!(target_os = "macos") {
+            (Modifiers::META, Modifiers::ALT)
+        } else {
+            (Modifiers::ALT, Modifiers::META)
+        };
+        assert_eq!(account_index("Digit1", mods), Some(0));
+        assert_eq!(account_index("Digit9", mods), Some(8));
+        assert_eq!(account_index("Digit0", mods), None);
+        assert_eq!(account_index("KeyA", mods), None);
+        assert_eq!(account_index("Digit1", other), None);
+        assert_eq!(account_index("Digit1", mods | Modifiers::SHIFT), None);
     }
 
     #[test]

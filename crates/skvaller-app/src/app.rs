@@ -141,6 +141,7 @@ impl Runtime {
 #[derive(Debug)]
 pub struct App {
     pub(crate) accounts_dir: PathBuf,
+    config_path: PathBuf,
     pub(crate) config: Mutex<Config>,
     pub(crate) runtimes: HashMap<String, Arc<Runtime>>,
     /// Accounts whose cache didn't open, and why.
@@ -282,6 +283,7 @@ impl App {
         }
         Ok(Self {
             accounts_dir,
+            config_path,
             config: Mutex::new(config),
             runtimes,
             broken,
@@ -306,6 +308,30 @@ impl App {
     #[must_use]
     pub fn active(&self) -> Option<String> {
         lock(&self.config).active.clone()
+    }
+
+    /// Makes the account the one the main window shows, saved for the next start.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoAccount`] or [`Error::Broken`] for an account without a cache, and
+    /// [`Error::Io`] when config.json can't be saved.
+    pub fn set_active(&self, account_id: &str) -> Result<()> {
+        self.runtime(account_id)?;
+        let mut config = lock(&self.config);
+        config.active = Some(account_id.to_owned());
+        config
+            .save(&self.config_path)
+            .map_err(io("Saving", &self.config_path))
+    }
+
+    /// The account's unread articles, for the account switcher.
+    ///
+    /// # Errors
+    ///
+    /// As [`App::library`].
+    pub fn unread_total(&self, account_id: &str) -> Result<i64> {
+        Ok(self.runtime(account_id)?.db.unread_total()?)
     }
 
     /// The settings shared by all accounts.
@@ -687,6 +713,24 @@ mod tests {
         assert_eq!(app.active(), Some(accounts[0].id.clone()));
         assert_eq!(app.library(&accounts[0].id).unwrap().feeds.len(), 1);
         assert!(matches!(app.library("9"), Err(Error::NoAccount)));
+    }
+
+    #[test]
+    fn the_active_account_is_saved_for_the_next_start() {
+        let (_tmp, dirs) = dirs();
+        std::fs::create_dir_all(&dirs.config).unwrap();
+        let raw = br#"{ "accounts": [{ "id": "1", "description": "A", "kind": "local" },
+                                     { "id": "2", "description": "B", "kind": "local" }],
+                        "active": "1" }"#;
+        std::fs::write(dirs.config_file(), raw).unwrap();
+        let app = App::load(&dirs).unwrap();
+
+        app.set_active("2").unwrap();
+
+        assert_eq!(app.active().as_deref(), Some("2"));
+        assert_eq!(App::load(&dirs).unwrap().active().as_deref(), Some("2"));
+        assert!(matches!(app.set_active("9"), Err(Error::NoAccount)));
+        assert_eq!(app.unread_total("2").unwrap(), 0);
     }
 
     #[test]
