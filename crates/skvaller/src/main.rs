@@ -9,6 +9,7 @@
 
 mod article;
 mod i18n;
+mod shortcuts;
 mod ui;
 
 use std::process::ExitCode;

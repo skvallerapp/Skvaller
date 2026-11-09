@@ -25,6 +25,7 @@ thiserror = "2.0.21"
 tokio = { version = "1.54.1", default-features = false }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false }
+webbrowser = "1.2.6"
 
 # The guideline set (M-STATIC-VERIFICATION). skvaller-core opts in with TASK-7.
 [workspace.lints.rust]

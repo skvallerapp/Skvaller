@@ -347,6 +347,26 @@ impl App {
         Ok(self.runtime(account_id)?.db.article_html(article_id)?)
     }
 
+    /// Marks articles read or unread in the cache. The next sync sends the change, and
+    /// a sync never undoes it before then.
+    ///
+    /// # Errors
+    ///
+    /// As [`App::library`].
+    pub fn set_read(&self, account_id: &str, ids: &[String], read: bool) -> Result<()> {
+        Ok(self.runtime(account_id)?.db.set_read(ids, read)?)
+    }
+
+    /// Stars or unstars articles in the cache, sent on the next sync as
+    /// [`App::set_read`]'s changes are.
+    ///
+    /// # Errors
+    ///
+    /// As [`App::library`].
+    pub fn set_starred(&self, account_id: &str, ids: &[String], starred: bool) -> Result<()> {
+        Ok(self.runtime(account_id)?.db.set_starred(ids, starred)?)
+    }
+
     /// The account's sync status now.
     ///
     /// # Errors
@@ -667,5 +687,34 @@ mod tests {
         assert_eq!(app.active(), Some(accounts[0].id.clone()));
         assert_eq!(app.library(&accounts[0].id).unwrap().feeds.len(), 1);
         assert!(matches!(app.library("9"), Err(Error::NoAccount)));
+    }
+
+    #[test]
+    fn read_and_starred_changes_reach_the_cache_and_its_counts() {
+        let (_tmp, dirs) = dirs();
+        seed_local(&dirs, 3).unwrap();
+        let app = App::load(&dirs).unwrap();
+        let id = app.active().unwrap();
+        let all = skvaller_core::Selection {
+            view: skvaller_core::View::All,
+            scope: skvaller_core::Scope::All,
+        };
+        let first = vec![app.articles(&id, &all).unwrap()[0].id.clone()];
+        let unread = |app: &App| -> i64 {
+            app.library(&id)
+                .unwrap()
+                .counts
+                .unread_by_feed
+                .values()
+                .sum()
+        };
+        assert_eq!(unread(&app), 3);
+
+        app.set_read(&id, &first, true).unwrap();
+        app.set_starred(&id, &first, true).unwrap();
+
+        assert_eq!(unread(&app), 2);
+        let article = &app.articles(&id, &all).unwrap()[0];
+        assert!(article.read && article.starred);
     }
 }
