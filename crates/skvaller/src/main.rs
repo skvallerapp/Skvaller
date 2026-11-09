@@ -8,6 +8,7 @@
 #![cfg_attr(all(not(test), target_os = "windows"), windows_subsystem = "windows")]
 
 mod article;
+mod dates;
 mod i18n;
 mod shortcuts;
 mod ui;

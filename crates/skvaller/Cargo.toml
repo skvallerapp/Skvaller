@@ -31,10 +31,15 @@ dioxus-native = { workspace = true, features = [
     "svg",
     "system-fonts",
 ] }
+icu_calendar.workspace = true
+icu_datetime.workspace = true
+icu_locale.workspace = true
+jiff.workspace = true
 mimalloc.workspace = true
 serde_json.workspace = true
 skvaller-app.workspace = true
 skvaller-core.workspace = true
+sys-locale.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "std"] }

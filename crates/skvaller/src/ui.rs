@@ -16,6 +16,7 @@ use skvaller_core::{ArticleSummary, Scope, Selection, View};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::article;
+use crate::dates::Dates;
 use crate::i18n::{t, t_count};
 use crate::shortcuts::{ARROWS, Action, bindings, key_name};
 
@@ -495,6 +496,10 @@ pub fn Root() -> Element {
         menu: Signal::new(None),
     });
     let keys = use_hook(|| Rc::new(bindings(&app.settings().shortcuts)));
+    use_context_provider(|| {
+        let settings = app.settings();
+        Rc::new(Dates::system(settings.clock, settings.date_format))
+    });
     let theme = article::theme_name(app.settings().theme);
 
     rsx! {
@@ -563,6 +568,7 @@ fn sidebar_scopes(lib: &Library) -> Vec<Scope> {
 #[component]
 fn Sidebar() -> Element {
     let app = use_context::<Arc<App>>();
+    let dates = use_context::<Rc<Dates>>();
     let mut reading = use_context::<Reading>();
     let lib = (reading.library)();
     let unread_total: i64 = lib.counts.unread_by_feed.values().sum();
@@ -589,7 +595,7 @@ fn Sidebar() -> Element {
         Some(SyncStatus {
             last_sync: Some(ms),
             ..
-        }) => (article::format_date(ms), false),
+        }) => (dates.synced(ms), false),
         _ => (t("sidebar.notSynced"), false),
     };
     let class = if (reading.pane)() == Pane::Sidebar {
@@ -807,6 +813,7 @@ fn ArticleList() -> Element {
 #[component]
 fn Viewport() -> Element {
     let app = use_context::<Arc<App>>();
+    let dates = use_context::<Rc<Dates>>();
     let mut reading = use_context::<Reading>();
     let mut top = use_signal(|| 0.0_f64);
     let mut height = use_signal(|| INITIAL_VIEWPORT);
@@ -910,7 +917,7 @@ fn Viewport() -> Element {
                                             path { d: STAR_PATH }
                                         }
                                     }
-                                    span { {short_date(a.published)} }
+                                    span { {dates.list(a.published)} }
                                 }
                                 div { class: "title", "{a.title}" }
                             }
@@ -930,6 +937,7 @@ fn Reader() -> Element {
     let app = use_context::<Arc<App>>();
     let mut reading = use_context::<Reading>();
     let theme = app.settings().theme;
+    let dates = use_context::<Rc<Dates>>();
     let doc = use_memo({
         let app = Arc::clone(&app);
         move || {
@@ -938,7 +946,8 @@ fn Reader() -> Element {
                 (reading.account)().and_then(|id| app.article_html(&id, &a.id).ok().flatten())?;
             let lib = reading.library.peek();
             let feed = lib.feeds.iter().find(|f| f.id == a.feed_id);
-            Some(article::document(&a, feed, &html, theme))
+            let date = dates.full(a.published);
+            Some(article::document(&a, feed, &html, &date, theme))
         }
     });
     let open = (reading.article)();
@@ -1035,12 +1044,6 @@ fn row_offset(i: usize) -> f64 {
     #[expect(clippy::cast_precision_loss, reason = "row counts are far below 2^53")]
     let i = i as f64;
     i * ROW_HEIGHT
-}
-
-/// The date part of [`article::format_date`], for the list.
-fn short_date(ms: i64) -> String {
-    let full = article::format_date(ms);
-    full.split(',').next().unwrap_or_default().to_owned()
 }
 
 #[cfg(test)]
