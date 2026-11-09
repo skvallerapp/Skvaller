@@ -541,7 +541,10 @@ fn Sidebar(status: Signal<Option<SyncStatus>>) -> Element {
                             div {
                                 key: "folder-{folder.id}",
                                 class: if current.scope == scope { "item selected" } else { "item" },
-                                onclick: move |_| select(Selection { view: reading.selection.peek().view, scope: scope.clone() }),
+                                onclick: move |_| {
+                                    let view = reading.selection.peek().view;
+                                    select(Selection { view, scope: scope.clone() });
+                                },
                                 span { class: "name", "{folder.title}" }
                                 if count > 0 { span { class: "count", "{count}" } }
                             }
