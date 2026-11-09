@@ -426,6 +426,10 @@ pub fn import_local(dirs: &Dirs, opml: &str) -> Result<ImportReport> {
 
 /// Adds `count` synthetic articles to the local account, adding that account if there is
 /// none: a way to test the article list at 5,000+ items. Returns how many were stored.
+///
+/// # Errors
+///
+/// As [`App::load`], and [`Error::Core`] when the articles can't be stored.
 pub fn seed_local(dirs: &Dirs, count: usize) -> Result<usize> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

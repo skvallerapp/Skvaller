@@ -43,7 +43,7 @@ fn run() -> Result<(), String> {
             let count = args.next().ok_or("--seed-test needs a number")?;
             let count: usize = count
                 .parse()
-                .map_err(|_| format!("{count} is not a number"))?;
+                .map_err(|e| format!("{count} is not a number: {e}"))?;
             let stored = seed_local(&dirs, count).map_err(|e| e.to_string())?;
             eprintln!("seeded {stored} test articles");
         } else if flag == "--import-opml" {

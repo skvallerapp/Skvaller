@@ -4,10 +4,12 @@ use crate::db::{ArticleRow, Db, NewFeed};
 use crate::error::Result;
 
 const FEEDS: usize = 20;
-const HOUR_MS: i64 = 3_600_000;
+/// Time between two test articles.
+const SPACING_MS: i64 = 15 * 60 * 1000;
 
-/// Adds `feeds` test feeds to a local account's cache, and `articles` articles spread
-/// over them, newest first an hour apart. Safe to run again: it adds more.
+/// Adds 20 test feeds to a local account's cache, and `articles` articles spread over
+/// them, the newest at `now_ms` and each next one 15 minutes older. Returns how many
+/// were stored. Safe to run again: each run adds feeds and articles of its own.
 ///
 /// # Errors
 ///
@@ -40,7 +42,7 @@ pub fn seed_articles(db: &Db, articles: usize, now_ms: i64) -> Result<usize> {
                     title: format!("Test article {} with a headline of ordinary length", i + 1),
                     author: format!("Author {}", i % 7),
                     url: format!("https://seed-{run}-{n}.invalid/{i}"),
-                    published: now_ms - i64::try_from(i).unwrap_or(0) * HOUR_MS / 4,
+                    published: now_ms - i64::try_from(i).unwrap_or(0) * SPACING_MS,
                     read: false,
                     starred: false,
                     html: format!(
