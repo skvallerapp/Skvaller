@@ -14,8 +14,9 @@ skvaller-app = { path = "crates/skvaller-app", version = "0.1.0" }
 skvaller-core = { path = "crates/skvaller-core", version = "0.1.0" }
 
 # Blitz and Dioxus Native move fast and aren't on crates.io in this form: pinned to one
-# commit. The Mac and Steam Deck tests ran against e4c2c9be; this adds upstream PR #1213 and glyph caching, so emoji don't panic Vello GPU.
-dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "a3d656aa", default-features = false }
+# commit. The Mac and Steam Deck tests ran against e4c2c9be; since then: upstream PR #1213,
+# glyph caching so emoji don't panic Vello GPU, and scrolling an iframe through MountedData.
+dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "4c1c2da2", default-features = false }
 
 dirs = "6.0.0"
 mimalloc = "0.1.48"

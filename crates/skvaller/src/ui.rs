@@ -66,6 +66,8 @@ struct Reading {
     confirming: Signal<bool>,
     /// Bumped by every open and read change, so a delayed mark knows it is stale.
     mark_generation: Signal<u64>,
+    /// The open article's frame, which "read on" scrolls.
+    frame: Signal<Option<Rc<MountedData>>>,
 }
 
 impl Reading {
@@ -130,6 +132,44 @@ impl Reading {
         if let Some(next) = next {
             self.open(app, next);
         }
+    }
+
+    /// Scrolls the article on (1) or back (-1) by most of a page. At its end, reading on
+    /// opens the next article; with none open, the first.
+    fn read_on(self, app: &Arc<App>, direction: f64) {
+        let frame = self.frame.peek().clone();
+        let Some(frame) = frame.filter(|_| self.article.peek().is_some()) else {
+            if direction > 0.0 {
+                self.step(app, 1);
+            }
+            return;
+        };
+        let (app, animate) = (Arc::clone(app), app.settings().animations);
+        spawn(async move {
+            let (Ok(offset), Ok(range), Ok(rect)) = (
+                frame.get_scroll_offset().await,
+                frame.get_scroll_size().await,
+                frame.get_client_rect().await,
+            ) else {
+                return;
+            };
+            if direction > 0.0 && offset.y >= range.height - 1.0 {
+                self.step(&app, 1);
+                return;
+            }
+            let to = dioxus_html::geometry::PixelsVector2D::new(
+                offset.x,
+                offset.y + direction * rect.height() * 0.9,
+            );
+            let behavior = if animate {
+                ScrollBehavior::Smooth
+            } else {
+                ScrollBehavior::Instant
+            };
+            if let Err(e) = frame.scroll(to, behavior).await {
+                tracing::warn!("scrolling the article failed: {e}");
+            }
+        });
     }
 
     fn set_read(mut self, app: &App, ids: &[String], read: bool) {
@@ -283,9 +323,10 @@ impl Reading {
                 self.pane.set(Pane::List);
                 self.step(app, if action == Action::Next { 1 } else { -1 });
             }
-            // Scrolling the article comes with reading the frame's scroll position.
-            Action::ReadOn if self.article.peek().is_none() => self.step(app, 1),
-            Action::ReadOn | Action::ReadBack | Action::ToggleReaderView => {}
+            Action::ReadOn => self.read_on(app, 1.0),
+            Action::ReadBack => self.read_on(app, -1.0),
+            // Reader View comes with a later milestone.
+            Action::ToggleReaderView => {}
             Action::ToggleRead => self.toggle_read(app),
             Action::ToggleStar => self.toggle_starred(app),
             Action::OpenInBrowser => self.open_in_browser(),
@@ -376,6 +417,7 @@ pub fn Root() -> Element {
         pane: Signal::new(Pane::List),
         confirming: Signal::new(false),
         mark_generation: Signal::new(0),
+        frame: Signal::new(None),
     });
     let keys = use_hook(|| Rc::new(bindings(&app.settings().shortcuts)));
     let theme = article::theme_name(app.settings().theme);
@@ -724,7 +766,7 @@ const STAR_PATH: &str = "M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123
 #[component]
 fn Reader() -> Element {
     let app = use_context::<Arc<App>>();
-    let reading = use_context::<Reading>();
+    let mut reading = use_context::<Reading>();
     let theme = app.settings().theme;
     let doc = use_memo({
         let app = Arc::clone(&app);
@@ -747,7 +789,14 @@ fn Reader() -> Element {
                 }
             }
             match doc() {
-                Some(doc) => rsx! { iframe { key: "{doc.len()}", title: "", "srcdoc": doc } },
+                Some(doc) => rsx! {
+                    iframe {
+                        key: "{doc.len()}",
+                        title: "",
+                        "srcdoc": doc,
+                        onmounted: move |e: MountedEvent| reading.frame.set(Some(e.data())),
+                    }
+                },
                 None => rsx! { p { class: "empty", {t("reader.empty")} } },
             }
         }
