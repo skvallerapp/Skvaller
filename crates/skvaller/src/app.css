@@ -82,7 +82,8 @@ body {
   display: flex;
   /* The window's height: Dioxus mounts the app in an element of its own, without one. */
   height: 100vh;
-  font: 500 13px 'Inter', system-ui, 'Segoe UI', 'Noto Sans', sans-serif;
+  /* --ui-font is the uiFont setting's stack, set on the element. */
+  font: 500 13px var(--ui-font);
   color: var(--text);
   background: var(--reader-bg);
 }

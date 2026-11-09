@@ -3,28 +3,35 @@
 //! The document goes into an `<iframe srcdoc>`, a document of its own, so the article's
 //! styles can't reach the app and the app's can't reach the article.
 
-use skvaller_app::Theme;
+use skvaller_app::{Settings, Theme};
 use skvaller_core::{ArticleSummary, Feed, ready_article};
+
+use crate::fonts;
 
 const FRAME_CSS: &str = include_str!("frame.css");
 
 /// The whole reader document for `article`, with `html` as its untrusted body and
-/// `date` as its header shows it.
+/// `date` as its header shows it, in the settings' theme and fonts.
 pub fn document(
     article: &ArticleSummary,
     feed: Option<&Feed>,
     html: &str,
     date: &str,
-    theme: Theme,
+    settings: &Settings,
 ) -> String {
-    let theme = theme_name(theme);
+    let theme = theme_name(settings.theme);
+    let fonts = format!(
+        "--article-font: {}; --headline-font: {}",
+        fonts::stack(settings.article_font),
+        fonts::stack(settings.headline_font)
+    );
     let date = escape(date);
     let title = linked(&article.title, Some(&article.url));
     let author = escape(&article.author);
     let source = feed.map_or_else(String::new, |f| linked(&f.title, f.site_url.as_deref()));
     let body = ready_article(html, &article.url);
     format!(
-        "<!doctype html><html data-theme=\"{theme}\"><head><meta charset=\"utf-8\">\
+        "<!doctype html><html data-theme=\"{theme}\" style=\"{fonts}\"><head><meta charset=\"utf-8\">\
          <style>{FRAME_CSS}</style></head><body><article><header>\
          <div class=\"date\">{date}</div><h1>{title}</h1>\
          <div class=\"source\">{author}<br>{source}</div></header>{body}</article></body></html>"
@@ -87,11 +94,16 @@ mod tests {
             starred: false,
             thumbnail: false,
         };
-        let doc = document(&article, None, "<img src=\"/i.png\">", "today", Theme::Dark);
+        let settings = Settings {
+            theme: Theme::Dark,
+            ..Settings::default()
+        };
+        let doc = document(&article, None, "<img src=\"/i.png\">", "today", &settings);
         assert!(doc.contains("&lt;b&gt;Bold&lt;/b&gt;"));
         assert!(doc.contains("A &amp; B"));
         assert!(doc.contains("<a href=\"https://example.com/a\" target=\"_blank\">"));
         assert!(doc.contains("src=\"https://example.com/i.png\""));
         assert!(doc.contains("data-theme=\"dark\""));
+        assert!(doc.contains("--article-font: 'Literata'"));
     }
 }

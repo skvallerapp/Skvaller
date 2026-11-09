@@ -17,6 +17,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::article;
 use crate::dates::Dates;
+use crate::fonts;
 use crate::i18n::{t, t_count};
 use crate::shortcuts::{ARROWS, Action, bindings, key_name};
 
@@ -501,6 +502,7 @@ pub fn Root() -> Element {
         Rc::new(Dates::system(settings.clock, settings.date_format))
     });
     let theme = article::theme_name(app.settings().theme);
+    let ui_font = format!("--ui-font: {}", fonts::stack(app.settings().ui_font));
 
     rsx! {
         style { {APP_CSS} }
@@ -510,6 +512,7 @@ pub fn Root() -> Element {
         div {
             class: "root",
             "data-theme": theme,
+            style: ui_font,
             tabindex: "-1",
             onmounted: move |e: MountedEvent| async move {
                 // Without focus the app hears no keys, but works otherwise.
@@ -936,7 +939,7 @@ const STAR_PATH: &str = "M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123
 fn Reader() -> Element {
     let app = use_context::<Arc<App>>();
     let mut reading = use_context::<Reading>();
-    let theme = app.settings().theme;
+    let settings = app.settings();
     let dates = use_context::<Rc<Dates>>();
     let doc = use_memo({
         let app = Arc::clone(&app);
@@ -947,7 +950,7 @@ fn Reader() -> Element {
             let lib = reading.library.peek();
             let feed = lib.feeds.iter().find(|f| f.id == a.feed_id);
             let date = dates.full(a.published);
-            Some(article::document(&a, feed, &html, &date, theme))
+            Some(article::document(&a, feed, &html, &date, &settings))
         }
     });
     let open = (reading.article)();

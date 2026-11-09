@@ -9,6 +9,7 @@
 
 mod article;
 mod dates;
+mod fonts;
 mod i18n;
 mod shortcuts;
 mod ui;
@@ -81,7 +82,10 @@ fn run() -> Result<(), String> {
     dioxus_native::launch_cfg(
         ui::Root,
         vec![Box::new(move || Box::new(Arc::clone(&context)))],
-        vec![Box::new(Config::default()), Box::new(window)],
+        vec![
+            Box::new(Config::default().with_font_ctx(fonts::font_context())),
+            Box::new(window),
+        ],
     );
     drop(runtime);
     Ok(())

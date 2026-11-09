@@ -1,5 +1,6 @@
 /* The article's own document: app.css doesn't reach it, nor its CSS the app. The colors
-   are app.css's (--bg is --reader-bg), and must stay the same. */
+   are app.css's (--bg is --reader-bg), and must stay the same. --article-font and
+   --headline-font are the settings' stacks, set on the root element. */
 :root { color-scheme: light; --bg: #fafaf9; --text: #2e2e2d; --text-2: #61605f; --text-3: #676665; --rule: rgb(0 0 0 / .1); --link: #9a5136; }
 @media (prefers-color-scheme: dark) {
   :root[data-theme='system'] { color-scheme: dark; --bg: #202022; --text: #ececee; --text-2: #a0a0a6; --text-3: #97979d; --rule: rgb(255 255 255 / .1); --link: #8aa4c8; }
@@ -8,10 +9,10 @@
 :root[data-theme='espresso'] { color-scheme: dark; --bg: #2d211e; --text: #e0dedd; --text-2: #c1bdbc; --text-3: #9e928d; --rule: rgb(255 236 224 / .12); --link: #cfa080; }
 html { background: var(--bg); }
 body { margin: 0; padding: 36px 40px 64px; color: var(--text);
-  font: 16px/1.65 'Literata', Georgia, 'Noto Serif', serif; }
+  font: 16px/1.65 var(--article-font); }
 article { max-width: 38em; margin: 0 auto; }
 header { margin-bottom: 32px; }
-header, h1, h2, h3, h4, h5, h6 { font-family: 'Inter', system-ui, 'Segoe UI', 'Noto Sans', sans-serif; }
+header, h1, h2, h3, h4, h5, h6 { font-family: var(--headline-font); }
 .date, .source { font-size: 12px; font-weight: 600; line-height: 1.3; text-transform: uppercase; color: var(--text-3); }
 h1 { margin: 2px 0 6px; font-size: 36px; line-height: 1.12; font-weight: 800; letter-spacing: -0.015em; }
 article h2, article h3, article h4, article h5, article h6 {
