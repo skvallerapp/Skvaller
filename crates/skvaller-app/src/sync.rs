@@ -1,7 +1,8 @@
 //! The background sync of each account, on its schedule.
 //!
 //! Each account syncs on start and then as its [`SyncSchedule`] says, one sync at a
-//! time. Every change of status is sent to [`App::subscribe`] listeners; a status with
+//! time, and after the computer wakes when the account asks for that or the sleep held
+//! its schedule up. Every change of status is sent to [`App::subscribe`] listeners; a status with
 //! `changed` set means the cached articles changed and lists need loading again.
 
 use std::sync::Arc;
@@ -13,7 +14,7 @@ use tokio::time::{Instant, sleep_until};
 use tracing::Level;
 
 use crate::app::{App, Runtime, lock};
-use crate::config::{AccountKind, SyncSchedule};
+use crate::config::{Account, AccountKind, SyncSchedule};
 use crate::gate::Outcome;
 
 /// An account's sync, as the UI shows it.
@@ -43,7 +44,11 @@ pub struct SyncStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ran {
     Synced,
-    Failed,
+    /// `retry`: worth trying again soon, as anything but a rejected sign-in or a damaged
+    /// cache may be the network.
+    Failed {
+        retry: bool,
+    },
     /// Another sync of the account was running.
     Busy,
     /// Signed out or removed.
@@ -61,6 +66,26 @@ impl App {
             let (app, rt) = (Arc::clone(self), Arc::clone(rt));
             tokio::spawn(async move { app.sync_loop(&rt).await });
         }
+        let app = Arc::clone(self);
+        tokio::spawn(async move { app.watch_for_wake().await });
+    }
+
+    /// Tells every account's background sync when the computer wakes, as no system
+    /// event says so on every platform. A timer doesn't run while the computer sleeps;
+    /// the wall clock does.
+    async fn watch_for_wake(&self) {
+        let mut before = SystemTime::now();
+        loop {
+            tokio::time::sleep(WAKE_CHECK).await;
+            let now = SystemTime::now();
+            if slept(before, now, WAKE_CHECK) {
+                for rt in self.runtimes.values() {
+                    rt.woke.store(true, Ordering::Relaxed);
+                    rt.wake.notify_one();
+                }
+            }
+            before = now;
+        }
     }
 
     /// Syncs the account now, unless it is syncing already.
@@ -76,22 +101,30 @@ impl App {
     }
 
     /// On start, then every so many minutes after the last automatic sync, by the
-    /// wall clock so a sleep doesn't push it back.
+    /// wall clock so a sleep doesn't push it back, and after waking as [`after_wake`]
+    /// says. Ends when the account is gone.
     async fn sync_loop(&self, rt: &Runtime) {
-        let mut last: Option<SystemTime> = None;
+        let mut history = History::default();
         while let Some(account) = self.account(&rt.id) {
-            let due = match (account.sync, last) {
-                (SyncSchedule::Manual, _) | (SyncSchedule::OnStart, Some(_)) => break,
-                (_, None) => Instant::now(),
-                (SyncSchedule::Every(minutes), Some(last)) => {
-                    let since = SystemTime::now().duration_since(last).unwrap_or_default();
-                    let every = Duration::from_secs(u64::from(minutes) * 60);
-                    Instant::now() + every.saturating_sub(since)
+            if rt.woke.swap(false, Ordering::Relaxed) {
+                history.wake_sync = after_wake(&account, &history, SystemTime::now());
+            }
+            let wait = async {
+                match due(account.sync, &history, SystemTime::now()) {
+                    Some(due) => sleep_until(Instant::now() + due).await,
+                    None => std::future::pending().await,
                 }
             };
-            sleep_until(due).await;
-            if self.run_sync(rt).await != Ran::Busy {
-                last = Some(SystemTime::now());
+            tokio::select! {
+                () = wait => {
+                    let ran = self.run_sync(rt).await;
+                    // Another sync running: a sync after waking waits for its turn.
+                    if ran == Ran::Busy && history.wake_sync.is_some() {
+                        continue;
+                    }
+                    history.ran(ran, SystemTime::now());
+                }
+                () = rt.wake.notified() => {}
             }
         }
     }
@@ -164,10 +197,11 @@ impl App {
             changed,
             ..rt.status()
         });
-        if result.is_ok() {
-            Ran::Synced
-        } else {
-            Ran::Failed
+        match result {
+            Ok(()) => Ran::Synced,
+            Err(e) => Ran::Failed {
+                retry: !matches!(e, CoreError::Unauthorized) && !e.is_corrupt(),
+            },
         }
     }
 
@@ -211,4 +245,199 @@ fn now_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+}
+
+/// How often the clock is checked for a sleep.
+const WAKE_CHECK: Duration = Duration::from_secs(30);
+/// More time than this past a check's wait means the computer slept. Large, so a
+/// stalled process, as under App Nap, or a clock set forward isn't taken for a sleep;
+/// a sleep shorter than this needs no sync anyway.
+const WAKE_SLACK: Duration = Duration::from_secs(5 * 60);
+/// The network takes a moment to come back after a wake.
+const WAKE_DELAY: Duration = Duration::from_secs(15);
+/// Retries of a sync after waking that failed, likely before the network was back.
+const WAKE_RETRIES: u32 = 2;
+
+/// Whether the wall clock moved on so much more than a wait of `waited` that the
+/// computer must have slept.
+fn slept(before: SystemTime, now: SystemTime, waited: Duration) -> bool {
+    now.duration_since(before)
+        .is_ok_and(|passed| passed > waited + WAKE_SLACK)
+}
+
+/// A sync after waking that is still due.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WakeSync {
+    retries: u32,
+    /// The account's sync on wake asked for it, rather than a schedule the sleep held up.
+    asked: bool,
+}
+
+/// What a background sync remembers of its account's syncs.
+#[derive(Clone, Copy, Debug, Default)]
+struct History {
+    /// The last automatic sync, and the last that worked.
+    last: Option<SystemTime>,
+    last_ok: Option<SystemTime>,
+    wake_sync: Option<WakeSync>,
+}
+
+impl History {
+    fn ran(&mut self, ran: Ran, now: SystemTime) {
+        self.last = Some(now);
+        self.wake_sync = match ran {
+            Ran::Synced => {
+                self.last_ok = Some(now);
+                None
+            }
+            // Likely the network, not back yet after waking: again in a moment.
+            Ran::Failed { retry: true } => self.wake_sync.and_then(|w| {
+                Some(WakeSync {
+                    retries: w.retries.checked_sub(1)?,
+                    ..w
+                })
+            }),
+            Ran::Failed { retry: false } | Ran::Busy | Ran::Skipped => None,
+        };
+    }
+}
+
+/// The sync to make after waking, if any: when the account's sync on wake asks for it
+/// and none worked lately, or when the sleep held up the schedule, or its own sync ran
+/// on waking and failed, before the network was back.
+fn after_wake(account: &Account, history: &History, now: SystemTime) -> Option<WakeSync> {
+    let ago = |t: SystemTime| now.duration_since(t).unwrap_or_default();
+    let overdue = match (account.sync, history.last) {
+        (SyncSchedule::Every(minutes), Some(last)) => {
+            ago(last) >= Duration::from_secs(u64::from(minutes) * 60)
+        }
+        _ => false,
+    };
+    let synced_lately = history.last_ok.is_some_and(|t| ago(t) < WAKE_SLACK);
+    let failed_lately =
+        history.last.is_some_and(|t| ago(t) < WAKE_SLACK) && history.last != history.last_ok;
+    let asked = account.sync_on_wake && !synced_lately;
+    (asked || overdue || failed_lately).then_some(WakeSync {
+        retries: WAKE_RETRIES,
+        asked,
+    })
+}
+
+/// How long until the next sync, or `None` when none is due until something changes.
+fn due(schedule: SyncSchedule, history: &History, now: SystemTime) -> Option<Duration> {
+    if history.wake_sync.is_some() {
+        return Some(WAKE_DELAY);
+    }
+    match (schedule, history.last) {
+        (SyncSchedule::Manual, _) | (SyncSchedule::OnStart, Some(_)) => None,
+        (_, None) => Some(Duration::ZERO),
+        (SyncSchedule::Every(minutes), Some(last)) => {
+            let since = now.duration_since(last).unwrap_or_default();
+            Some(Duration::from_secs(u64::from(minutes) * 60).saturating_sub(since))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MINUTE: Duration = Duration::from_secs(60);
+
+    fn account(sync: SyncSchedule, sync_on_wake: bool) -> Account {
+        Account {
+            id: "1".into(),
+            description: String::new(),
+            kind: AccountKind::Local,
+            sync,
+            keep_read_days: 30,
+            keep_unread_days: 180,
+            sync_on_wake,
+        }
+    }
+
+    fn history(last: Option<Duration>, last_ok: Option<Duration>, now: SystemTime) -> History {
+        History {
+            last: last.map(|ago| now - ago),
+            last_ok: last_ok.map(|ago| now - ago),
+            wake_sync: None,
+        }
+    }
+
+    #[test]
+    fn only_a_gap_well_past_the_wait_is_a_sleep() {
+        let before = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        assert!(!slept(before, before + WAKE_CHECK + MINUTE, WAKE_CHECK));
+        assert!(slept(before, before + WAKE_CHECK + 6 * MINUTE, WAKE_CHECK));
+        // A clock set back is not a sleep.
+        assert!(!slept(before, before - MINUTE, WAKE_CHECK));
+    }
+
+    #[test]
+    fn waking_syncs_when_asked_or_when_the_schedule_fell_behind() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let hour_ago = Some(60 * MINUTE);
+        let wake = |a: &Account, h: &History| after_wake(a, h, now);
+
+        let asked = account(SyncSchedule::Manual, true);
+        assert_eq!(
+            wake(&asked, &history(hour_ago, hour_ago, now)),
+            Some(WakeSync {
+                retries: WAKE_RETRIES,
+                asked: true
+            })
+        );
+        // Synced a moment ago: no need.
+        let moment = Some(MINUTE);
+        assert_eq!(wake(&asked, &history(moment, moment, now)), None);
+
+        let every_15 = account(SyncSchedule::Every(15), false);
+        assert!(wake(&every_15, &history(hour_ago, hour_ago, now)).is_some());
+        assert_eq!(wake(&every_15, &history(moment, moment, now)), None);
+        // The schedule's own sync ran on waking and failed.
+        assert!(wake(&every_15, &history(moment, hour_ago, now)).is_some());
+
+        assert_eq!(
+            wake(
+                &account(SyncSchedule::Manual, false),
+                &history(hour_ago, hour_ago, now)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_failed_sync_after_waking_retries_twice_then_gives_up() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let mut h = History {
+            wake_sync: Some(WakeSync {
+                retries: WAKE_RETRIES,
+                asked: true,
+            }),
+            ..History::default()
+        };
+        assert_eq!(due(SyncSchedule::Manual, &h, now), Some(WAKE_DELAY));
+        h.ran(Ran::Failed { retry: true }, now);
+        h.ran(Ran::Failed { retry: true }, now);
+        assert!(h.wake_sync.is_some());
+        h.ran(Ran::Failed { retry: true }, now);
+        assert_eq!(h.wake_sync, None);
+        assert_eq!(due(SyncSchedule::Manual, &h, now), None);
+    }
+
+    #[test]
+    fn the_schedule_counts_from_the_last_automatic_sync() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let fresh = History::default();
+        assert_eq!(
+            due(SyncSchedule::OnStart, &fresh, now),
+            Some(Duration::ZERO)
+        );
+        let ten_ago = history(Some(10 * MINUTE), Some(10 * MINUTE), now);
+        assert_eq!(
+            due(SyncSchedule::Every(15), &ten_ago, now),
+            Some(5 * MINUTE)
+        );
+        assert_eq!(due(SyncSchedule::OnStart, &ten_ago, now), None);
+    }
 }

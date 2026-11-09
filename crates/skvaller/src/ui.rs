@@ -590,11 +590,17 @@ fn Sidebar() -> Element {
         View::Unread | View::All => lib.counts.unread_by_feed.get(id).copied().unwrap_or(0),
         View::Starred => lib.counts.starred_by_feed.get(id).copied().unwrap_or(0),
     };
-    let status_line = match (reading.status)() {
+    let status = (reading.status)();
+    let syncing = status.as_ref().is_some_and(|s| s.syncing);
+    let error = status
+        .as_ref()
+        .and_then(|s| s.error.clone())
+        .unwrap_or_default();
+    let sync_app = Arc::clone(&app);
+    let status_line = match status {
         Some(s) if s.syncing => (t("sidebar.syncing"), false),
-        Some(SyncStatus { error: Some(e), .. }) => {
-            (format!("{}: {e}", t("sidebar.syncFailed")), true)
-        }
+        // The reason shows on hover, as in the Tauri version.
+        Some(SyncStatus { error: Some(_), .. }) => (t("sidebar.syncFailed"), true),
         Some(SyncStatus {
             last_sync: Some(ms),
             ..
@@ -612,6 +618,17 @@ fn Sidebar() -> Element {
             div { class: "toolbar",
                 if app.accounts().len() > 1 {
                     AccountSwitcher {}
+                }
+                button {
+                    class: if syncing { "icon-button sync syncing" } else { "icon-button sync" },
+                    aria_label: t("sidebar.sync"),
+                    title: t("sidebar.sync"),
+                    onclick: move |_| reading.sync(&sync_app),
+                    // Lucide's rotate-cw.
+                    svg { width: "18", height: "18", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
+                        path { d: "M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" }
+                        path { d: "M21 3v5h-5" }
+                    }
                 }
             }
             div { class: "feeds",
@@ -650,7 +667,11 @@ fn Sidebar() -> Element {
                     FeedItem { key: "{feed.id}", count: counts_for(current.view, &feed.id), feed, nested: false }
                 }
             }
-            div { class: if status_line.1 { "status error" } else { "status" }, "{status_line.0}" }
+            div {
+                class: if status_line.1 { "status error" } else { "status" },
+                title: error,
+                "{status_line.0}"
+            }
         }
     }
 }

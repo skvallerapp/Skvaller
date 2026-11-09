@@ -16,7 +16,7 @@ serde = { workspace = true, features = ["derive", "std"] }
 serde_json.workspace = true
 skvaller-core.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing.workspace = true
 
 [dev-dependencies]

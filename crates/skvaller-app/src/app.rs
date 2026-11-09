@@ -9,7 +9,7 @@ use skvaller_core::{
     ArticleSummary, Client, Counts, Db, Feed, Folder, ImportReport, Selection, export_opml,
     import_opml,
 };
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, broadcast};
 use tracing::Level;
 
 use crate::config::{
@@ -99,6 +99,10 @@ pub(crate) struct Runtime {
     /// A sync found the cache damaged.
     pub(crate) corrupt: AtomicBool,
     pub(crate) gate: Gate,
+    /// Wakes the background sync, to look again at whether a sync is due.
+    pub(crate) wake: Notify,
+    /// The computer woke from sleep since the background sync last looked.
+    pub(crate) woke: AtomicBool,
 }
 
 impl Runtime {
@@ -111,6 +115,8 @@ impl Runtime {
             last_error: Mutex::new(None),
             corrupt: AtomicBool::new(false),
             gate: Gate::default(),
+            wake: Notify::new(),
+            woke: AtomicBool::new(false),
         };
         // A local cache without feeds, as after a new version's cache started over,
         // gets them back from their backup before a sync backs up the empty list.

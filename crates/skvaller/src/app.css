@@ -396,16 +396,12 @@ button {
 
 /* Account switcher */
 
-.switcher {
-  position: relative;
-}
-
 .menu {
   position: absolute;
-  top: 32px;
-  left: 0;
+  top: 40px;
+  left: 8px;
+  right: 8px;
   z-index: 10;
-  width: 220px;
   padding: 5px;
   border: 1px solid var(--separator);
   border-radius: 10px;
@@ -457,4 +453,17 @@ button {
 .menu-item.highlighted .count,
 .menu-item.highlighted .shortcut {
   color: inherit;
+}
+
+/* The sidebar's toolbar: its buttons at the right, the account menu across it. */
+
+.sidebar .toolbar {
+  position: relative;
+  justify-content: flex-end;
+}
+
+/* Blitz doesn't run CSS animations yet: a dimmed icon shows the sync, as the Tauri
+   version's does with animations off. */
+.sync.syncing svg {
+  opacity: 0.5;
 }
