@@ -4,8 +4,6 @@
 //! per plural form, `<key>_one` and `<key>_other` in English. Placeholders are `{name}`.
 //! Only English for now: the other languages come with the language setting.
 
-// Rust guideline compliant 2026-10-09
-
 use std::collections::HashMap;
 use std::sync::LazyLock;
 

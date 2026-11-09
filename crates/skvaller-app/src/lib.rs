@@ -8,8 +8,6 @@
 //! The file formats and folders are those of the Tauri version of Skvaller, so its
 //! accounts carry over.
 
-// Rust guideline compliant 2026-10-09
-
 mod app;
 mod config;
 mod error;

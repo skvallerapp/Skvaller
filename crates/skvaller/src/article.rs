@@ -3,8 +3,6 @@
 //! The document goes into an `<iframe srcdoc>`, a document of its own, so the article's
 //! styles can't reach the app and the app's can't reach the article.
 
-// Rust guideline compliant 2026-10-09
-
 use skvaller_app::Theme;
 use skvaller_core::{ArticleSummary, Feed, ready_article};
 

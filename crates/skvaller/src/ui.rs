@@ -4,8 +4,6 @@
 //! for the network. A sync that changes the cache bumps a revision, which reloads the
 //! sidebar and the list.
 
-// Rust guideline compliant 2026-10-09
-
 use std::sync::Arc;
 
 use dioxus_native::prelude::*;

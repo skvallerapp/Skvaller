@@ -5,8 +5,6 @@
 //! articles onto a machine without accounts. `--seed-test` adds that many synthetic
 //! articles instead, to test the list at 5,000+ items.
 
-// Rust guideline compliant 2026-10-09
-
 #![cfg_attr(all(not(test), target_os = "windows"), windows_subsystem = "windows")]
 
 mod article;

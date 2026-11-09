@@ -4,8 +4,6 @@
 //! time. Every change of status is sent to [`App::subscribe`] listeners; a status with
 //! `changed` set means the cached articles changed and lists need loading again.
 
-// Rust guideline compliant 2026-10-09
-
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

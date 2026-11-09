@@ -6,8 +6,6 @@
 //! else from the first images in the article's HTML. Only articles new to the cache get
 //! one.
 
-// Rust guideline compliant 2026-10-09
-
 use std::io::Cursor;
 use std::sync::Arc;
 use std::time::Duration;

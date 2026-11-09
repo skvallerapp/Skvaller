@@ -1,7 +1,5 @@
 //! The accounts and their caches, as the app runs.
 
-// Rust guideline compliant 2026-10-09
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

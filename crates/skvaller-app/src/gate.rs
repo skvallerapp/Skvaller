@@ -3,8 +3,6 @@
 //! A second sync asked for while one runs, such as a scheduled one during a manual one,
 //! doesn't queue: it reports [`Outcome::Busy`] and the caller decides what to do.
 
-// Rust guideline compliant 2026-10-09
-
 use tokio::sync::Mutex;
 
 /// Runs one piece of work at a time; others asked for meanwhile don't start.

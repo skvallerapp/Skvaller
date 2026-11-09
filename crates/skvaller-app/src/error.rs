@@ -1,7 +1,5 @@
 //! The errors of starting the app and reading its accounts.
 
-// Rust guideline compliant 2026-10-09
-
 use std::path::PathBuf;
 
 /// Why starting the app, or reading an account, failed.
