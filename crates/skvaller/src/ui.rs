@@ -80,7 +80,19 @@ pub fn Root() -> Element {
 
     rsx! {
         style { {APP_CSS} }
-        div { class: "root", "data-theme": theme,
+        // Focusable, and focused from the start: a key press goes to the focused element,
+        // and a click keeps focus on the nearest focusable ancestor, so every key the
+        // window gets passes through here. -1 keeps the root out of the Tab order.
+        div {
+            class: "root",
+            "data-theme": theme,
+            tabindex: "-1",
+            onmounted: move |e: MountedEvent| async move {
+                // Without focus the app hears no keys, but works otherwise.
+                if let Err(err) = e.data().set_focus(true).await {
+                    tracing::warn!("focusing the window's root failed: {err}");
+                }
+            },
             Sidebar { library, selection, status, article }
             ArticleList { account, selection, revision, article, library }
             Reader { account, article, library }
