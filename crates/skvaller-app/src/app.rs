@@ -423,6 +423,20 @@ impl App {
 ///
 /// As [`App::load`], and [`Error::Core`] when the OPML can't be read or stored.
 pub fn import_local(dirs: &Dirs, opml: &str) -> Result<ImportReport> {
+    Ok(import_opml(&local_db(dirs)?, opml)?)
+}
+
+/// Adds `count` synthetic articles to the local account, adding that account if there is
+/// none: a way to test the article list at 5,000+ items. Returns how many were stored.
+pub fn seed_local(dirs: &Dirs, count: usize) -> Result<usize> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0));
+    Ok(skvaller_core::seed_articles(&local_db(dirs)?, count, now)?)
+}
+
+/// Opens the local account's cache, making the account active, or adding it first.
+fn local_db(dirs: &Dirs) -> Result<Db> {
     let app = App::load(dirs)?;
     let config_path = dirs.config_file();
     let mut config = lock(&app.config).clone();
@@ -449,8 +463,7 @@ pub fn import_local(dirs: &Dirs, opml: &str) -> Result<ImportReport> {
     config
         .save(&config_path)
         .map_err(io("Saving", &config_path))?;
-    let db = Db::open(db_path(&app.accounts_dir, &id))?;
-    Ok(import_opml(&db, opml)?)
+    Ok(Db::open(db_path(&app.accounts_dir, &id))?)
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

@@ -221,9 +221,6 @@ fn ArticleList(
             .and_then(|id| app.articles(&id, &selection).ok())
             .unwrap_or_default()
     });
-    let mut top = use_signal(|| 0.0_f64);
-    let mut height = use_signal(|| INITIAL_VIEWPORT);
-
     let list = articles.read();
     let unread = list.iter().filter(|a| !a.read).count();
     let heading = if unread == 0 {
@@ -231,6 +228,31 @@ fn ArticleList(
     } else {
         t_count("list.unread", i64::try_from(unread).unwrap_or(i64::MAX))
     };
+    // A new list starts at the top: the viewport is keyed on what it lists, so a new
+    // selection gets a new viewport, with its own scroll state.
+    let key = format!("{:?}", selection.read());
+
+    rsx! {
+        section { class: "list", aria_label: t("list.label"),
+            div { class: "toolbar", h1 { "{heading}" } }
+            for key in std::iter::once(key) {
+                Viewport { key: "{key}", articles, article, library }
+            }
+        }
+    }
+}
+
+/// The scrolling rows. Only the visible ones, and some either side, are in the document.
+#[component]
+fn Viewport(
+    articles: Memo<Vec<ArticleSummary>>,
+    article: Signal<Option<ArticleSummary>>,
+    library: Memo<Library>,
+) -> Element {
+    let mut top = use_signal(|| 0.0_f64);
+    let mut height = use_signal(|| INITIAL_VIEWPORT);
+
+    let list = articles.read();
     let (first, last) = visible_rows(top(), height(), list.len());
     let total = row_offset(list.len());
     let selected = article.read().as_ref().map(|a| a.id.clone());
@@ -242,52 +264,49 @@ fn ArticleList(
             .map(|f| f.title.clone())
             .unwrap_or_default()
     };
-    // A new list starts at the top: a new viewport, keyed on what it lists.
-    let key = format!("{:?}", selection.read());
 
     rsx! {
-        section { class: "list", aria_label: t("list.label"),
-            div { class: "toolbar", h1 { "{heading}" } }
-            // A list of one, keyed on what it lists: a new selection gets a new viewport,
-            // scrolled to the top.
-            for key in std::iter::once(key) {
-            div {
-                key: "{key}",
-                class: "viewport",
-                onscroll: move |e: Event<ScrollData>| {
-                    top.set(e.data().scroll_top());
-                    height.set(f64::from(e.data().client_height()));
-                },
-                if list.is_empty() {
-                    p { class: "empty", {t("list.noUnread")} }
+        div {
+            class: "viewport",
+            onscroll: move |e: Event<ScrollData>| {
+                // Setting a signal re-renders even to the same value; a scroll event
+                // that follows every layout would loop.
+                let (t, h) = (e.data().scroll_top(), f64::from(e.data().client_height()));
+                if (*top.peek() - t).abs() >= 1.0 {
+                    top.set(t);
                 }
-                div { class: "spacer", style: "height: {total}px",
-                    for (i , a) in list.iter().enumerate().take(last).skip(first) {
-                        {
-                            let summary = a.clone();
-                            let class = match (selected.as_deref() == Some(a.id.as_str()), a.read) {
-                                (true, true) => "row read selected",
-                                (true, false) => "row selected",
-                                (false, true) => "row read",
-                                (false, false) => "row",
-                            };
-                            rsx! {
-                                div {
-                                    key: "{a.id}",
-                                    class,
-                                    style: "top: {row_offset(i)}px; height: {ROW_HEIGHT}px",
-                                    onclick: move |_| article.set(Some(summary.clone())),
-                                    div { class: "meta",
-                                        span { class: "feed", {feed_title(&a.feed_id)} }
-                                        span { {short_date(a.published)} }
-                                    }
-                                    div { class: "title", "{a.title}" }
+                if (*height.peek() - h).abs() >= 1.0 {
+                    height.set(h);
+                }
+            },
+            if list.is_empty() {
+                p { class: "empty", {t("list.noUnread")} }
+            }
+            div { class: "spacer", style: "height: {total}px",
+                for (i , a) in list.iter().enumerate().take(last).skip(first) {
+                    {
+                        let summary = a.clone();
+                        let class = match (selected.as_deref() == Some(a.id.as_str()), a.read) {
+                            (true, true) => "row read selected",
+                            (true, false) => "row selected",
+                            (false, true) => "row read",
+                            (false, false) => "row",
+                        };
+                        rsx! {
+                            div {
+                                key: "{a.id}",
+                                class,
+                                style: "top: {row_offset(i)}px; height: {ROW_HEIGHT}px",
+                                onclick: move |_| article.set(Some(summary.clone())),
+                                div { class: "meta",
+                                    span { class: "feed", {feed_title(&a.feed_id)} }
+                                    span { {short_date(a.published)} }
                                 }
+                                div { class: "title", "{a.title}" }
                             }
                         }
                     }
                 }
-            }
             }
         }
     }

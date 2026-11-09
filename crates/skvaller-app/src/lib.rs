@@ -17,7 +17,7 @@ mod gate;
 mod sync;
 
 #[doc(inline)]
-pub use app::{App, Dirs, Library, Notice, import_local};
+pub use app::{App, Dirs, Library, Notice, import_local, seed_local};
 #[doc(inline)]
 pub use config::{
     Account, AccountKind, Clock, Config, DateFormat, Font, MarkReadOn, Settings, SortSubscriptions,

@@ -27,6 +27,7 @@ dioxus-native = { workspace = true, features = [
     "html",
     "net",
     "prelude",
+    "scrollbars",
     "svg",
     "system-fonts",
 ] }

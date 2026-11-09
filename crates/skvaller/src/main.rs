@@ -1,8 +1,9 @@
 //! Skvaller, the desktop RSS reader: the native window.
 //!
-//! Usage: `skvaller [--import-opml <file>]`. The flag adds the file's feeds to the local
+//! Usage: `skvaller [--import-opml <file> | --seed-test <count>]`. The flag adds the file's feeds to the local
 //! account, adding that account if there is none, then starts as usual: a way to get
-//! articles onto a machine without accounts.
+//! articles onto a machine without accounts. `--seed-test` adds that many synthetic
+//! articles instead, to test the list at 5,000+ items.
 
 // Rust guideline compliant 2026-10-09
 
@@ -17,7 +18,7 @@ use std::sync::Arc;
 
 use dioxus_native::{Config, LogicalSize, WindowAttributes};
 use mimalloc::MiMalloc;
-use skvaller_app::{App, Dirs, import_local};
+use skvaller_app::{App, Dirs, import_local, seed_local};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -40,16 +41,24 @@ fn run() -> Result<(), String> {
     let dirs = Dirs::system().map_err(|e| e.to_string())?;
     let mut args = std::env::args().skip(1);
     if let Some(flag) = args.next() {
-        if flag != "--import-opml" {
+        if flag == "--seed-test" {
+            let count = args.next().ok_or("--seed-test needs a number")?;
+            let count: usize = count
+                .parse()
+                .map_err(|_| format!("{count} is not a number"))?;
+            let stored = seed_local(&dirs, count).map_err(|e| e.to_string())?;
+            eprintln!("seeded {stored} test articles");
+        } else if flag == "--import-opml" {
+            let path = args.next().ok_or("--import-opml needs a file")?;
+            let opml = std::fs::read_to_string(&path)
+                .map_err(|e| format!("reading {path} failed: {e}"))?;
+            let report = import_local(&dirs, &opml).map_err(|e| e.to_string())?;
+            eprintln!("imported from {path}: {report:?}");
+        } else {
             return Err(format!(
-                "unknown argument {flag}; the only one is --import-opml <file>"
+                "unknown argument {flag}; use --import-opml <file> or --seed-test <count>"
             ));
         }
-        let path = args.next().ok_or("--import-opml needs a file")?;
-        let opml =
-            std::fs::read_to_string(&path).map_err(|e| format!("reading {path} failed: {e}"))?;
-        let report = import_local(&dirs, &opml).map_err(|e| e.to_string())?;
-        eprintln!("imported from {path}: {report:?}");
     }
 
     let app = Arc::new(App::load(&dirs).map_err(|e| e.to_string())?);
