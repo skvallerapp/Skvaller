@@ -74,7 +74,9 @@ fn resource(url: &str, base: Option<&Url>) -> String {
     let url = url.trim();
     let absolute = absolute(url, base).map_or_else(|| url.to_owned(), String::from);
     match absolute.get(..7) {
-        Some(scheme) if scheme.eq_ignore_ascii_case("http://") => format!("https://{}", &absolute[7..]),
+        Some(scheme) if scheme.eq_ignore_ascii_case("http://") => {
+            format!("https://{}", &absolute[7..])
+        }
         _ => absolute,
     }
 }
@@ -100,7 +102,11 @@ fn ready_srcset(srcset: &str, base: Option<&Url>) -> String {
             rest = &after[stop..];
         }
         let url = resource(url, base);
-        candidates.push(if descriptors.is_empty() { url } else { format!("{url} {descriptors}") });
+        candidates.push(if descriptors.is_empty() {
+            url
+        } else {
+            format!("{url} {descriptors}")
+        });
     }
     candidates.join(", ")
 }
@@ -117,7 +123,10 @@ mod tests {
             r##"<p><a href="/about">a</a> <a href="#fn1" target="_top">1</a> <a href="http://[bad">b</a></p>"##,
             BASE,
         );
-        assert!(html.contains(r#"href="https://example.com/about" target="_blank""#), "{html}");
+        assert!(
+            html.contains(r#"href="https://example.com/about" target="_blank""#),
+            "{html}"
+        );
         assert!(html.contains(r##"<a href="#fn1">1</a>"##), "{html}");
         assert!(html.contains("<a>b</a>"), "{html}");
     }
@@ -128,9 +137,14 @@ mod tests {
             r#"<img src="img/a.png" srcset="http://cdn.example/a.png 2x, b.png 640w"><video src="http://v.example/v.mp4" autoplay></video>"#,
             BASE,
         );
-        assert!(html.contains(r#"src="https://example.com/posts/img/a.png""#), "{html}");
         assert!(
-            html.contains(r#"srcset="https://cdn.example/a.png 2x, https://example.com/posts/b.png 640w""#),
+            html.contains(r#"src="https://example.com/posts/img/a.png""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"srcset="https://cdn.example/a.png 2x, https://example.com/posts/b.png 640w""#
+            ),
             "{html}"
         );
         assert!(html.contains(r#"src="https://v.example/v.mp4""#), "{html}");
