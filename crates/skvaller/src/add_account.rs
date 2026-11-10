@@ -275,10 +275,14 @@ fn SignIn(
             }
         });
     });
-    // Keys typed in a field are the form's: Enter signs in, Escape goes back.
+    // Keys typed in a field are the form's: Enter signs in, Escape goes back. With a
+    // modifier, as the app's own shortcuts, they are the window's too.
     let on_key = move |e: Event<KeyboardData>| {
         let key = e.key();
-        if key == Key::Named(NamedKey::Escape) && back.is_none() {
+        let shortcut = e
+            .modifiers()
+            .intersects(Modifiers::CONTROL | Modifiers::META | Modifiers::ALT);
+        if shortcut || (key == Key::Named(NamedKey::Escape) && back.is_none()) {
             return;
         }
         e.stop_propagation();
