@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use skvaller_core::{
     ArticleSummary, Client, Counts, Db, Feed, Folder, ImportReport, Selection, export_opml,
@@ -99,7 +99,9 @@ pub(crate) struct Runtime {
     /// A sync found the cache damaged.
     pub(crate) corrupt: AtomicBool,
     pub(crate) gate: Gate,
-    /// Wakes the background sync, to look again at whether a sync is due.
+    /// Wakes the background sync, to look again at whether a sync is due. Only a wake
+    /// from sleep sends it today; a change of the account's schedule will need to as
+    /// well, or a Manual schedule's loop never looks again.
     pub(crate) wake: Notify,
     /// The computer woke from sleep since the background sync last looked.
     pub(crate) woke: AtomicBool,
@@ -154,6 +156,8 @@ pub struct App {
     broken: HashMap<String, String>,
     notice: Option<Notice>,
     pub(crate) events: broadcast::Sender<SyncStatus>,
+    /// The runtime [`App::start_sync`] ran on, where every sync runs, away from the UI.
+    pub(crate) sync_runtime: OnceLock<tokio::runtime::Handle>,
 }
 
 /// How many sync reports wait for a slow listener before it misses the oldest. A
@@ -295,6 +299,7 @@ impl App {
             broken,
             notice,
             events: broadcast::channel(EVENT_BACKLOG).0,
+            sync_runtime: OnceLock::new(),
         })
     }
 

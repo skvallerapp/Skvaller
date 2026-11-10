@@ -1,5 +1,7 @@
-//! The bundled fonts, and the font stacks the `uiFont`, `headlineFont` and
-//! `articleFont` settings pick from, as the Tauri version's `fonts.ts` has them.
+//! The bundled fonts and the CSS font stacks the font settings pick from.
+//!
+//! The stacks are the Tauri version's `fonts.ts`, for the `uiFont`, `headlineFont` and
+//! `articleFont` settings.
 //!
 //! The bundled fonts are the variable versions from Google Fonts, under the SIL Open Font
 //! License (`fonts/*/OFL.txt`). They cover at least Latin, Cyrillic and Vietnamese;
@@ -8,7 +10,7 @@
 use std::sync::Arc;
 
 use dioxus_native::FontContext;
-use parley::fontique::{Blob, Collection, CollectionOptions, SourceCache};
+use parley::fontique::Blob;
 use skvaller_app::Font;
 
 const BUNDLED: [&[u8]; 8] = [
@@ -22,15 +24,9 @@ const BUNDLED: [&[u8]; 8] = [
     include_bytes!("../fonts/literata/Literata-Italic-Variable.ttf"),
 ];
 
-/// The system's fonts with the bundled ones added. Article frames share it.
+/// The system's fonts with the bundled ones added. Article frames get a copy.
 pub fn font_context() -> FontContext {
-    let mut ctx = FontContext {
-        source_cache: SourceCache::new_shared(),
-        collection: Collection::new(CollectionOptions {
-            shared: false,
-            system_fonts: true,
-        }),
-    };
+    let mut ctx = FontContext::new();
     for data in BUNDLED {
         ctx.collection
             .register_fonts(Blob::new(Arc::new(data) as _), None);
@@ -39,7 +35,8 @@ pub fn font_context() -> FontContext {
 }
 
 const SANS: &str = "system-ui, 'Segoe UI', 'Noto Sans', sans-serif";
-/// `ui-serif` is New York on macOS, which doesn't expose it by name.
+/// `ui-serif` is New York in a browser on macOS, but Blitz doesn't know it yet: Georgia
+/// stands in.
 const SERIF: &str = "ui-serif, Georgia, 'Noto Serif', serif";
 
 /// The CSS font stack for `font`.

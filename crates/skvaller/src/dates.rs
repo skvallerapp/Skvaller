@@ -4,15 +4,19 @@
 //! The settings can pick the clock (24 or 12 hours) and the order of day and month.
 //! Month and weekday names follow the region either way.
 
-use icu_datetime::DateTimeFormatter;
+use std::fmt;
+use std::ops::Range;
+
 use icu_datetime::fieldsets;
 use icu_datetime::input::{Date, DateTime, Time};
-use icu_locale::Locale;
-use icu_locale::preferences::extensions::unicode::keywords::HourCycle;
+use icu_datetime::preferences::{CalendarAlgorithm, HourCycle};
+use icu_datetime::{DateTimeFormatter, parts};
+use icu_locale_core::Locale;
 use jiff::Timestamp;
 use jiff::civil;
 use jiff::tz::TimeZone;
 use skvaller_app::{Clock, DateFormat};
+use writeable::{Part, PartsWrite, Writeable};
 
 use crate::i18n::t;
 
@@ -23,31 +27,27 @@ pub struct Dates {
     order: DateFormat,
     /// Hour and minute.
     time: DateTimeFormatter<fieldsets::T>,
-    /// "12 Oct": day and month.
+    /// "9 Nov": day and month.
     day: DateTimeFormatter<fieldsets::MD>,
-    /// "12 Oct 2026".
+    /// "9 Nov 2026".
     day_in_year: DateTimeFormatter<fieldsets::YMD>,
-    /// "12 October 2026".
+    /// "9 November 2026".
     long_day: DateTimeFormatter<fieldsets::YMD>,
-    /// "Monday 12 October 2026, 20:34".
+    /// "Monday, 9 November 2026 at 20:34".
     full: DateTimeFormatter<fieldsets::YMDET>,
-    /// The month's name alone, short and long, for a chosen order.
-    month: DateTimeFormatter<fieldsets::M>,
-    long_month: DateTimeFormatter<fieldsets::M>,
     weekday: DateTimeFormatter<fieldsets::E>,
 }
 
 impl Dates {
     /// Formats for the system's region and time zone, with the settings' clock and order.
     pub fn system(clock: Clock, order: DateFormat) -> Self {
-        let locale = sys_locale::get_locale()
-            .and_then(|tag| parse_locale(&tag))
-            .unwrap_or(icu_locale::locale!("en"));
+        let locale = system_locale_tags()
+            .find_map(|tag| parse_locale(&tag))
+            .unwrap_or(icu_locale_core::locale!("en"));
         Self::new(&locale, TimeZone::system(), clock, order)
     }
 
     /// Formats for `locale` in `zone`.
-    ///
     pub fn new(locale: &Locale, zone: TimeZone, clock: Clock, order: DateFormat) -> Self {
         let mut prefs = icu_datetime::DateTimeFormatterPreferences::from(locale);
         prefs.hour_cycle = match clock {
@@ -55,6 +55,11 @@ impl Dates {
             Clock::H24 => Some(HourCycle::H23),
             Clock::H12 => Some(HourCycle::H12),
         };
+        // A chosen order puts the parts together here, with the year and day of the
+        // Gregorian calendar, the only one the order makes sense in.
+        if order != DateFormat::System {
+            prefs.calendar_algorithm = Some(CalendarAlgorithm::Gregory);
+        }
         // The compiled data covers every locale, falling back to a parent locale's.
         macro_rules! formatter {
             ($field_set:expr) => {
@@ -70,19 +75,17 @@ impl Dates {
             day_in_year: formatter!(fieldsets::YMD::medium()),
             long_day: formatter!(fieldsets::YMD::long()),
             full: formatter!(fieldsets::YMDE::long().with_time_hm()),
-            month: formatter!(fieldsets::M::medium()),
-            long_month: formatter!(fieldsets::M::long()),
             weekday: formatter!(fieldsets::E::long()),
         }
     }
 
     fn local(&self, ms: i64) -> civil::DateTime {
         let at = Timestamp::from_millisecond(ms).unwrap_or(Timestamp::UNIX_EPOCH);
-        at.to_zoned(self.zone.clone()).datetime()
+        self.zone.to_datetime(at)
     }
 
     fn now(&self) -> civil::DateTime {
-        Timestamp::now().to_zoned(self.zone.clone()).datetime()
+        self.zone.to_datetime(Timestamp::now())
     }
 
     /// For the article list: the time for today, a short date otherwise.
@@ -120,7 +123,7 @@ impl Dates {
     }
 
     /// For the article's header: weekday, date and time, such as
-    /// "Monday 12 October 2026, 20:34".
+    /// "Monday, 9 November 2026 at 20:34".
     pub fn full(&self, ms: i64) -> String {
         let d = self.local(ms);
         if self.order == DateFormat::System {
@@ -144,32 +147,117 @@ impl Dates {
         self.date(d, false, d.year() != now.year())
     }
 
-    /// The date in the settings' order: "12 Oct 2026", "Oct 12, 2026" or "2026-10-12",
-    /// with the month's long name when `long`. ISO always has the year.
+    /// The date in the settings' order: "9 Nov 2026", "Nov 9, 2026" or "2026-11-09",
+    /// with the month's long name when `long`. ISO always has the year. A region that
+    /// names months by number gets its own format instead.
     fn date(&self, d: civil::DateTime, long: bool, with_year: bool) -> String {
         let input = icu(d);
-        let (day, month, year) = (d.day(), d.month(), d.year());
-        match self.order {
-            DateFormat::Iso => format!("{year:04}-{month:02}-{day:02}"),
-            DateFormat::System if long => self.long_day.format(&input).to_string(),
-            DateFormat::System if with_year => self.day_in_year.format(&input).to_string(),
-            DateFormat::System => self.day.format(&input).to_string(),
-            DateFormat::DayMonth | DateFormat::MonthDay => {
-                let name = if long { &self.long_month } else { &self.month };
-                let name = name.format(&input).to_string();
-                let day_month = if self.order == DateFormat::DayMonth {
-                    format!("{day} {name}")
-                } else {
-                    format!("{name} {day}")
-                };
-                match (with_year, self.order) {
-                    (false, _) => day_month,
-                    (true, DateFormat::DayMonth) => format!("{day_month} {year}"),
-                    (true, _) => format!("{day_month}, {year}"),
-                }
-            }
+        if self.order == DateFormat::Iso {
+            return format!("{:04}-{:02}-{:02}", d.year(), d.month(), d.day());
+        }
+        let named = match self.order {
+            DateFormat::System => None,
+            _ => self.named_parts(&input, long),
+        };
+        let Some(parts) = named else {
+            let f = if long {
+                &self.long_day
+            } else if with_year {
+                &self.day_in_year
+            } else {
+                return self.day.format(&input).to_string();
+            };
+            return f.format(&input).to_string();
+        };
+        let (day, month, year) = (
+            parts.get(parts::DAY),
+            parts.get(parts::MONTH),
+            parts.get(parts::YEAR),
+        );
+        let day_month = if self.order == DateFormat::DayMonth {
+            format!("{day} {month}")
+        } else {
+            format!("{month} {day}")
+        };
+        match (with_year, self.order) {
+            (false, _) => day_month,
+            (true, DateFormat::DayMonth) => format!("{day_month} {year}"),
+            (true, _) => format!("{day_month}, {year}"),
         }
     }
+
+    /// The date's parts, with the month as a name, in the form a date uses: short when
+    /// the region has one, long when only that is a name (Finnish, Czech). `None` when
+    /// the region names months by number (Japanese, Chinese).
+    fn named_parts(&self, input: &DateTime<icu_calendar::Iso>, long: bool) -> Option<Parts> {
+        let formatters = if long {
+            vec![&self.long_day]
+        } else {
+            vec![&self.day_in_year, &self.long_day]
+        };
+        formatters.into_iter().find_map(|f| {
+            let mut parts = Parts::default();
+            f.format(input).write_to_parts(&mut parts).ok()?;
+            parts
+                .get(parts::MONTH)
+                .chars()
+                .any(char::is_alphabetic)
+                .then_some(parts)
+        })
+    }
+}
+
+/// A formatted text with the spans of its parts, as `Intl`'s `formatToParts` gives them.
+#[derive(Debug, Default)]
+struct Parts {
+    text: String,
+    spans: Vec<(Part, Range<usize>)>,
+}
+
+impl Parts {
+    /// The text of `part`, empty without one.
+    fn get(&self, part: Part) -> &str {
+        self.spans
+            .iter()
+            .find(|(p, _)| *p == part)
+            .map_or("", |(_, span)| &self.text[span.clone()])
+    }
+}
+
+impl fmt::Write for Parts {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.text.push_str(s);
+        Ok(())
+    }
+}
+
+impl PartsWrite for Parts {
+    type SubPartsWrite = Self;
+
+    fn with_part(
+        &mut self,
+        part: Part,
+        mut f: impl FnMut(&mut Self) -> fmt::Result,
+    ) -> fmt::Result {
+        let start = self.text.len();
+        f(self)?;
+        self.spans.push((part, start..self.text.len()));
+        Ok(())
+    }
+}
+
+/// The system's locale tags, the first that parses winning. On Unix the time format's
+/// own variables come first: the UI language, which sys-locale reads, may differ.
+fn system_locale_tags() -> impl Iterator<Item = String> {
+    let time = if cfg!(all(unix, not(target_os = "macos"))) {
+        ["LC_ALL", "LC_TIME"]
+            .into_iter()
+            .filter_map(|var| std::env::var(var).ok())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    time.into_iter().chain(sys_locale::get_locale())
 }
 
 /// A system locale tag as a locale: `sv_SE.UTF-8` (POSIX) as well as `sv-SE`.
@@ -256,6 +344,29 @@ mod tests {
         assert_eq!(uk.full(MS), "Monday, 9 November 2026 at 20:34");
         let ordered = dates("en-GB", Clock::System, DateFormat::MonthDay);
         assert_eq!(ordered.full(MS), "Monday, November 9, 2026, 20:34");
+    }
+
+    #[test]
+    fn a_chosen_order_takes_the_month_as_dates_have_it() {
+        // Czech and Russian name the month differently inside a date.
+        let cs = dates("cs-CZ", Clock::System, DateFormat::DayMonth);
+        assert_eq!(cs.date(cs.local(MS), true, true), "9 listopadu 2026");
+        let ru = dates("ru-RU", Clock::System, DateFormat::DayMonth);
+        assert!(ru.date(ru.local(MS), true, false).contains("ноября"));
+        // Japanese names months by number: its own format.
+        let ja = dates("ja-JP", Clock::System, DateFormat::MonthDay);
+        assert_eq!(
+            ja.date(ja.local(MS), false, true),
+            dates("ja-JP", Clock::System, DateFormat::System).date(ja.local(MS), false, true)
+        );
+    }
+
+    #[test]
+    fn a_chosen_order_keeps_to_the_gregorian_calendar() {
+        // Persian's own calendar would give another month and year.
+        let fa = dates("fa-IR", Clock::System, DateFormat::DayMonth);
+        let date = fa.date(fa.local(MS), true, true);
+        assert!(date.contains("نوامبر"), "{date}");
     }
 
     #[test]

@@ -2,8 +2,9 @@
 //!
 //! Each account syncs on start and then as its [`SyncSchedule`] says, one sync at a
 //! time, and after the computer wakes when the account asks for that or the sleep held
-//! its schedule up. Every change of status is sent to [`App::subscribe`] listeners; a status with
-//! `changed` set means the cached articles changed and lists need loading again.
+//! its schedule up. Every change of status is sent to [`App::subscribe`] listeners; a
+//! status with `changed` set means the cached articles changed and lists need loading
+//! again.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -62,6 +63,7 @@ impl App {
     ///
     /// When called outside a Tokio runtime.
     pub fn start_sync(self: &Arc<Self>) {
+        let _ = self.sync_runtime.set(tokio::runtime::Handle::current());
         for rt in self.runtimes.values() {
             let (app, rt) = (Arc::clone(self), Arc::clone(rt));
             tokio::spawn(async move { app.sync_loop(&rt).await });
@@ -88,15 +90,24 @@ impl App {
         }
     }
 
-    /// Syncs the account now, unless it is syncing already.
+    /// Starts a sync of the account now, unless it is syncing already, on the sync
+    /// runtime: parsing and storing a sync's feeds would hold up the UI's thread.
     ///
     /// # Errors
     ///
     /// [`crate::Error::NoAccount`] or [`crate::Error::Broken`] for an account without a
     /// cache. A failed sync is not an error here: its status says why.
-    pub async fn sync_now(&self, account_id: &str) -> crate::Result<()> {
+    ///
+    /// # Panics
+    ///
+    /// When [`App::start_sync`] hasn't run.
+    pub fn sync_now(self: &Arc<Self>, account_id: &str) -> crate::Result<()> {
         let rt = self.runtime(account_id)?;
-        self.run_sync(&rt).await;
+        let app = Arc::clone(self);
+        self.sync_runtime
+            .get()
+            .expect("start_sync runs before any sync")
+            .spawn(async move { app.run_sync(&rt).await });
         Ok(())
     }
 
@@ -265,21 +276,14 @@ fn slept(before: SystemTime, now: SystemTime, waited: Duration) -> bool {
         .is_ok_and(|passed| passed > waited + WAKE_SLACK)
 }
 
-/// A sync after waking that is still due.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct WakeSync {
-    retries: u32,
-    /// The account's sync on wake asked for it, rather than a schedule the sleep held up.
-    asked: bool,
-}
-
 /// What a background sync remembers of its account's syncs.
 #[derive(Clone, Copy, Debug, Default)]
 struct History {
     /// The last automatic sync, and the last that worked.
     last: Option<SystemTime>,
     last_ok: Option<SystemTime>,
-    wake_sync: Option<WakeSync>,
+    /// A sync after waking is due, with this many retries left if it fails.
+    wake_sync: Option<u32>,
 }
 
 impl History {
@@ -291,12 +295,7 @@ impl History {
                 None
             }
             // Likely the network, not back yet after waking: again in a moment.
-            Ran::Failed { retry: true } => self.wake_sync.and_then(|w| {
-                Some(WakeSync {
-                    retries: w.retries.checked_sub(1)?,
-                    ..w
-                })
-            }),
+            Ran::Failed { retry: true } => self.wake_sync.and_then(|r| r.checked_sub(1)),
             Ran::Failed { retry: false } | Ran::Busy | Ran::Skipped => None,
         };
     }
@@ -305,8 +304,9 @@ impl History {
 /// The sync to make after waking, if any: when the account's sync on wake asks for it
 /// and none worked lately, or when the sleep held up the schedule, or its own sync ran
 /// on waking and failed, before the network was back.
-fn after_wake(account: &Account, history: &History, now: SystemTime) -> Option<WakeSync> {
-    let ago = |t: SystemTime| now.duration_since(t).unwrap_or_default();
+fn after_wake(account: &Account, history: &History, now: SystemTime) -> Option<u32> {
+    // A time ahead of now, after the clock was set back, counts as long ago.
+    let ago = |t: SystemTime| now.duration_since(t).unwrap_or(Duration::MAX);
     let overdue = match (account.sync, history.last) {
         (SyncSchedule::Every(minutes), Some(last)) => {
             ago(last) >= Duration::from_secs(u64::from(minutes) * 60)
@@ -317,10 +317,7 @@ fn after_wake(account: &Account, history: &History, now: SystemTime) -> Option<W
     let failed_lately =
         history.last.is_some_and(|t| ago(t) < WAKE_SLACK) && history.last != history.last_ok;
     let asked = account.sync_on_wake && !synced_lately;
-    (asked || overdue || failed_lately).then_some(WakeSync {
-        retries: WAKE_RETRIES,
-        asked,
-    })
+    (asked || overdue || failed_lately).then_some(WAKE_RETRIES)
 }
 
 /// How long until the next sync, or `None` when none is due until something changes.
@@ -382,10 +379,7 @@ mod tests {
         let asked = account(SyncSchedule::Manual, true);
         assert_eq!(
             wake(&asked, &history(hour_ago, hour_ago, now)),
-            Some(WakeSync {
-                retries: WAKE_RETRIES,
-                asked: true
-            })
+            Some(WAKE_RETRIES)
         );
         // Synced a moment ago: no need.
         let moment = Some(MINUTE);
@@ -404,16 +398,21 @@ mod tests {
             ),
             None
         );
+
+        // A sync "in the future", from before the clock was set back, isn't recent.
+        let ahead = History {
+            last: Some(now + 60 * MINUTE),
+            last_ok: Some(now + 60 * MINUTE),
+            wake_sync: None,
+        };
+        assert!(wake(&asked, &ahead).is_some());
     }
 
     #[test]
     fn a_failed_sync_after_waking_retries_twice_then_gives_up() {
         let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
         let mut h = History {
-            wake_sync: Some(WakeSync {
-                retries: WAKE_RETRIES,
-                asked: true,
-            }),
+            wake_sync: Some(WAKE_RETRIES),
             ..History::default()
         };
         assert_eq!(due(SyncSchedule::Manual, &h, now), Some(WAKE_DELAY));

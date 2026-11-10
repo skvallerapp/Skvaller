@@ -5,7 +5,8 @@
 //! sidebar and the list. A change made here shows at once and is saved to the cache;
 //! the next sync sends it.
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,6 +39,21 @@ const INITIAL_VIEWPORT: f64 = 1600.0;
 /// How long an article is open before it is marked read, with [`MarkReadOn::Delay`].
 const MARK_READ_DELAY: Duration = Duration::from_secs(2);
 
+/// How much of the article's height reading on scrolls: a page, less some lines to keep
+/// the place, as in the Tauri version.
+const READ_ON_PAGE: f64 = 0.9;
+
+/// How near the end, in CSS pixels, counts as the end: scroll offsets can fall short of
+/// it by a rounded fraction.
+const END_SLACK: f64 = 1.0;
+
+/// The modifier of the account shortcuts, ⌘ on macOS and Alt elsewhere.
+const ACCOUNT_MODIFIER: Modifiers = if cfg!(target_os = "macos") {
+    Modifiers::META
+} else {
+    Modifiers::ALT
+};
+
 /// The column the arrow keys move in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Pane {
@@ -45,24 +61,55 @@ enum Pane {
     List,
 }
 
+/// The article list as loaded, numbered so changes made on top of it know which load
+/// they belong to.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Listed {
+    load: u64,
+    rows: Vec<ArticleSummary>,
+}
+
+/// Read and starred changes made here since the list loaded, kept on top of it, so an
+/// article marked read stays in the Unread list until the list loads again. A new load
+/// has them in its rows, from the cache, and starts these over.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Marks {
+    /// The [`Listed::load`] these are on top of.
+    load: u64,
+    read: HashMap<String, bool>,
+    starred: HashMap<String, bool>,
+}
+
+impl Marks {
+    /// `a` with these changes, if they are on top of `load`.
+    fn apply(&self, load: u64, a: &ArticleSummary) -> ArticleSummary {
+        let mut a = a.clone();
+        if self.load == load {
+            a.read = self.read.get(&a.id).copied().unwrap_or(a.read);
+            a.starred = self.starred.get(&a.id).copied().unwrap_or(a.starred);
+        }
+        a
+    }
+}
+
 /// What the window shows and what was changed here, shared by its parts.
-///
-/// Read and starred changes made here are kept on top of the list as loaded, so an
-/// article marked read stays in the Unread list until the list loads again.
 #[derive(Clone, Copy, PartialEq)]
 struct Reading {
     account: Signal<Option<String>>,
     selection: Signal<Selection>,
-    /// The open article.
+    /// The open article, as it was when opened: [`Reading::open_article`] has its flags
+    /// now.
     article: Signal<Option<ArticleSummary>>,
-    /// Bumped when the cache changed under the lists: they load again.
+    /// Bumped when the cache changed under the lists: they load again, keeping what was
+    /// read or unstarred here meanwhile.
     revision: Signal<u64>,
+    /// Bumped to load the list again without keeping those, as after marking all read.
+    cleared: Signal<u64>,
     /// Bumped when a change made here changed the counts.
     counts: Signal<u64>,
-    read: Signal<HashMap<String, bool>>,
-    starred: Signal<HashMap<String, bool>>,
+    marks: Signal<Marks>,
     library: Memo<Library>,
-    articles: Memo<Vec<ArticleSummary>>,
+    articles: Memo<Listed>,
     pane: Signal<Pane>,
     /// The mark-all-read question is open.
     confirming: Signal<bool>,
@@ -74,29 +121,99 @@ struct Reading {
     status: Signal<Option<SyncStatus>>,
     /// The account menu, when open: the index of its highlighted account.
     menu: Signal<Option<usize>>,
+    /// The window's root, which takes focus back when the focused element goes away.
+    root: Signal<Option<Rc<MountedData>>>,
 }
 
 impl Reading {
+    /// Whether `a`, a row of the list, is read, with the changes made here.
     fn is_read(&self, a: &ArticleSummary) -> bool {
-        self.read.read().get(&a.id).copied().unwrap_or(a.read)
+        let marks = self.marks.read();
+        let current = marks.load == self.articles.read().load;
+        current
+            .then(|| marks.read.get(&a.id).copied())
+            .flatten()
+            .unwrap_or(a.read)
     }
 
     fn is_starred(&self, a: &ArticleSummary) -> bool {
-        self.starred.read().get(&a.id).copied().unwrap_or(a.starred)
+        let marks = self.marks.read();
+        let current = marks.load == self.articles.read().load;
+        current
+            .then(|| marks.starred.get(&a.id).copied())
+            .flatten()
+            .unwrap_or(a.starred)
     }
 
     fn unread_count(&self) -> usize {
         self.articles
             .read()
+            .rows
             .iter()
             .filter(|a| !self.is_read(a))
             .count()
+    }
+
+    /// The open article as the list has it now, which a sync may have changed since it
+    /// opened. The list always has it.
+    fn open_article(&self) -> Option<ArticleSummary> {
+        let open = self.article.read().clone()?;
+        let list = self.articles.read();
+        Some(
+            list.rows
+                .iter()
+                .find(|a| a.id == open.id)
+                .cloned()
+                .unwrap_or(open),
+        )
+    }
+
+    /// Records changes made here on top of the list as loaded now.
+    fn mark(mut self, ids: &[String], read: Option<bool>, starred: Option<bool>) {
+        let load = self.articles.peek().load;
+        let mut marks = self.marks.write();
+        if marks.load != load {
+            *marks = Marks {
+                load,
+                ..Marks::default()
+            };
+        }
+        for id in ids {
+            if let Some(read) = read {
+                marks.read.insert(id.clone(), read);
+            }
+            if let Some(starred) = starred {
+                marks.starred.insert(id.clone(), starred);
+            }
+        }
     }
 
     fn select(mut self, selection: Selection) {
         self.selection.set(selection);
         self.article.set(None);
         self.confirming.set(false);
+        // A delayed mark of the article left is off.
+        self.mark_generation += 1;
+    }
+
+    /// Selects `scope` in the sidebar, keeping the view.
+    fn select_scope(mut self, scope: Scope) {
+        self.pane.set(Pane::Sidebar);
+        let view = self.selection.peek().view;
+        self.select(Selection { view, scope });
+    }
+
+    /// Gives focus back to the window's root, so keys still reach it after the focused
+    /// element, such as the article's frame, goes away.
+    fn refocus(self) {
+        let Some(root) = self.root.peek().clone() else {
+            return;
+        };
+        spawn(async move {
+            if let Err(e) = root.set_focus(true).await {
+                tracing::warn!("focusing the window's root failed: {e}");
+            }
+        });
     }
 
     /// Opens `a`, marking it read as the settings say.
@@ -104,7 +221,10 @@ impl Reading {
         let id = a.id.clone();
         let unread = !self.is_read(&a);
         self.article.set(Some(a));
+        self.confirming.set(false);
         self.mark_generation += 1;
+        // The old article's frame, if focused, goes away with it.
+        self.refocus();
         if !unread {
             return;
         }
@@ -128,10 +248,10 @@ impl Reading {
     fn step(self, app: &Arc<App>, delta: isize) {
         let list = self.articles.peek();
         let open = self.article.peek().as_ref().map(|a| a.id.clone());
-        let at = open.and_then(|id| list.iter().position(|a| a.id == id));
+        let at = open.and_then(|id| list.rows.iter().position(|a| a.id == id));
         let next = match at {
-            None => list.first(),
-            Some(i) => i.checked_add_signed(delta).and_then(|i| list.get(i)),
+            None => list.rows.first(),
+            Some(i) => i.checked_add_signed(delta).and_then(|i| list.rows.get(i)),
         }
         .cloned();
         drop(list);
@@ -140,32 +260,44 @@ impl Reading {
         }
     }
 
-    /// Scrolls the article on (1) or back (-1) by most of a page. At its end, reading on
-    /// opens the next article; with none open, the first.
-    fn read_on(self, app: &Arc<App>, direction: f64) {
+    /// Scrolls the article on or back by most of a page. At its end, reading on opens
+    /// the next article, unless the key is held: then it stops there. With none open, it
+    /// opens the first.
+    fn read_on(self, app: &Arc<App>, on: bool, held: bool) {
         let frame = self.frame.peek().clone();
         let Some(frame) = frame.filter(|_| self.article.peek().is_some()) else {
-            if direction > 0.0 {
+            if on {
                 self.step(app, 1);
             }
             return;
         };
         let (app, animate) = (Arc::clone(app), app.settings().animations);
         spawn(async move {
+            // `range` is the largest offset, as Blitz has it for a frame, not the
+            // document's height.
             let (Ok(offset), Ok(range), Ok(rect)) = (
                 frame.get_scroll_offset().await,
                 frame.get_scroll_size().await,
                 frame.get_client_rect().await,
             ) else {
+                // No frame, as for an article without a body: nothing to scroll.
+                if on && !held {
+                    self.step(&app, 1);
+                }
                 return;
             };
-            if direction > 0.0 && offset.y >= range.height - 1.0 {
-                self.step(&app, 1);
+            if on && offset.y >= range.height - END_SLACK {
+                // A frame just opened isn't laid out yet and looks scrolled to its end:
+                // holding the key would run through the articles.
+                if !held {
+                    self.step(&app, 1);
+                }
                 return;
             }
+            let page = rect.height() * READ_ON_PAGE;
             let to = dioxus_html::geometry::PixelsVector2D::new(
                 offset.x,
-                offset.y + direction * rect.height() * 0.9,
+                if on { offset.y + page } else { offset.y - page },
             );
             let behavior = if animate {
                 ScrollBehavior::Smooth
@@ -183,11 +315,7 @@ impl Reading {
             return;
         };
         self.mark_generation += 1;
-        let mut overlay = self.read.write();
-        for id in ids {
-            overlay.insert(id.clone(), read);
-        }
-        drop(overlay);
+        self.mark(ids, Some(read), None);
         if let Err(e) = app.set_read(&account, ids, read) {
             tracing::error!("saving a read change failed: {e}");
         }
@@ -195,18 +323,17 @@ impl Reading {
     }
 
     fn toggle_read(self, app: &App) {
-        if let Some(a) = self.article.peek().clone() {
+        if let Some(a) = self.open_article() {
             self.set_read(app, std::slice::from_ref(&a.id), !self.is_read(&a));
         }
     }
 
     fn toggle_starred(mut self, app: &App) {
-        let (Some(a), Some(account)) = (self.article.peek().clone(), self.account.peek().clone())
-        else {
+        let (Some(a), Some(account)) = (self.open_article(), self.account.peek().clone()) else {
             return;
         };
         let starred = !self.is_starred(&a);
-        self.starred.write().insert(a.id.clone(), starred);
+        self.mark(std::slice::from_ref(&a.id), None, Some(starred));
         if let Err(e) = app.set_starred(&account, &[a.id], starred) {
             tracing::error!("saving a star failed: {e}");
         }
@@ -228,18 +355,25 @@ impl Reading {
     /// Marks every article in the list read. The Unread list then empties at once,
     /// except for the article being read.
     fn mark_all_read(mut self, app: &App) {
-        self.confirming.set(false);
+        self.close_confirm();
         let ids: Vec<String> = self
             .articles
             .peek()
+            .rows
             .iter()
             .filter(|a| !self.is_read(a))
             .map(|a| a.id.clone())
             .collect();
         self.set_read(app, &ids, true);
         if self.selection.peek().view == View::Unread {
-            self.revision += 1;
+            self.cleared += 1;
         }
+    }
+
+    /// Closes the mark-all-read question; its focused button goes with it.
+    fn close_confirm(mut self) {
+        self.confirming.set(false);
+        self.refocus();
     }
 
     fn open_in_browser(self) {
@@ -258,11 +392,9 @@ impl Reading {
         let (Some(account), app) = (self.account.peek().clone(), Arc::clone(app)) else {
             return;
         };
-        spawn(async move {
-            if let Err(e) = app.sync_now(&account).await {
-                tracing::error!("syncing failed: {e}");
-            }
-        });
+        if let Err(e) = app.sync_now(&account) {
+            tracing::error!("syncing failed: {e}");
+        }
     }
 
     /// Moves the sidebar's selection to the next (1) or previous (-1) scope, keeping
@@ -276,10 +408,7 @@ impl Reading {
             .and_then(|i| i.checked_add_signed(delta))
             .and_then(|i| scopes.get(i));
         if let Some(scope) = next {
-            self.select(Selection {
-                view: current.view,
-                scope: scope.clone(),
-            });
+            self.select_scope(scope.clone());
         }
     }
 
@@ -289,17 +418,15 @@ impl Reading {
         if self.account.peek().as_deref() == Some(id) {
             return;
         }
+        // Only the next start misses a choice that wasn't saved.
         if let Err(e) = app.set_active(id) {
-            tracing::error!("switching to account {id} failed: {e}");
-            return;
+            tracing::error!("saving account {id} as the one shown failed: {e}");
         }
         let view = self.selection.peek().view;
         self.select(Selection {
             view,
             scope: Scope::All,
         });
-        self.read.write().clear();
-        self.starred.write().clear();
         self.status.set(app.status(id).ok());
         self.account.set(Some(id.to_owned()));
     }
@@ -323,8 +450,8 @@ impl Reading {
     /// Acts on a key pressed anywhere in the window. Returns whether it did, so the key
     /// doesn't reach the article too.
     fn on_key(mut self, app: &Arc<App>, keys: &HashMap<String, Action>, e: &KeyboardData) -> bool {
-        let key = e.key();
-        if let Some(index) = account_index(&e.code().to_string(), e.modifiers()) {
+        let (key, code) = (e.key(), e.code().to_string());
+        if let Some(index) = account_index(&code, e.modifiers()) {
             if !e.is_auto_repeating()
                 && let Some(account) = app.accounts().get(index)
             {
@@ -338,35 +465,40 @@ impl Reading {
             self.on_menu_key(app, &key, at);
             return true;
         }
+        // A sync may have emptied the list meanwhile: then the question is gone.
+        if *self.confirming.peek() && self.unread_count() == 0 {
+            self.close_confirm();
+        }
         if *self.confirming.peek() {
             match key {
-                Key::Named(NamedKey::Escape) => self.confirming.set(false),
+                Key::Named(NamedKey::Escape) => self.close_confirm(),
                 Key::Named(NamedKey::Enter) => self.mark_all_read(app),
                 _ => {}
             }
             return true;
         }
-        let Some(name) = key_name(&key, &e.code().to_string(), e.modifiers()) else {
+        let Some(name) = key_name(&key, &code, e.modifiers()) else {
             return false;
         };
         let repeat = e.is_auto_repeating();
         if ARROWS.contains(&name.as_str()) {
             let pane = *self.pane.peek();
-            match name.as_str() {
-                "ArrowLeft" => self.pane.set(Pane::Sidebar),
-                "ArrowRight" => {
+            let delta = match key {
+                Key::Named(NamedKey::ArrowDown) => 1,
+                Key::Named(NamedKey::ArrowUp) => -1,
+                _ => 0,
+            };
+            match key {
+                Key::Named(NamedKey::ArrowLeft) => self.pane.set(Pane::Sidebar),
+                Key::Named(NamedKey::ArrowRight) => {
                     self.pane.set(Pane::List);
                     if self.article.peek().is_none() {
                         self.step(app, 1);
                     }
                 }
                 // Each sidebar step loads a whole list: they don't repeat.
-                vertical if pane == Pane::Sidebar && !repeat => {
-                    self.step_sidebar(if vertical == "ArrowDown" { 1 } else { -1 });
-                }
-                vertical if pane == Pane::List => {
-                    self.step(app, if vertical == "ArrowDown" { 1 } else { -1 });
-                }
+                _ if pane == Pane::Sidebar && !repeat => self.step_sidebar(delta),
+                _ if pane == Pane::List => self.step(app, delta),
                 _ => {}
             }
             return true;
@@ -378,12 +510,16 @@ impl Reading {
             return true;
         }
         match action {
-            Action::Next | Action::Previous => {
+            Action::Next => {
                 self.pane.set(Pane::List);
-                self.step(app, if action == Action::Next { 1 } else { -1 });
+                self.step(app, 1);
             }
-            Action::ReadOn => self.read_on(app, 1.0),
-            Action::ReadBack => self.read_on(app, -1.0),
+            Action::Previous => {
+                self.pane.set(Pane::List);
+                self.step(app, -1);
+            }
+            Action::ReadOn => self.read_on(app, true, repeat),
+            Action::ReadBack => self.read_on(app, false, repeat),
             // Reader View comes with a later milestone.
             Action::ToggleReaderView => {}
             Action::ToggleRead => self.toggle_read(app),
@@ -399,12 +535,7 @@ impl Reading {
 /// The account a key switches to, by index: ⌘1 to ⌘9 on macOS, Alt+1 to Alt+9
 /// elsewhere. Goes by the key's place, not its character, which depends on the layout.
 fn account_index(code: &str, mods: Modifiers) -> Option<usize> {
-    let modifier = if cfg!(target_os = "macos") {
-        Modifiers::META
-    } else {
-        Modifiers::ALT
-    };
-    if mods != modifier {
+    if mods != ACCOUNT_MODIFIER {
         return None;
     }
     let digit = code.strip_prefix("Digit")?.parse::<usize>().ok()?;
@@ -422,7 +553,9 @@ pub fn Root() -> Element {
     });
     let article = use_signal(|| None::<ArticleSummary>);
     let mut revision = use_signal(|| 0_u64);
+    let cleared = use_signal(|| 0_u64);
     let counts = use_signal(|| 0_u64);
+    let marks = use_signal(Marks::default);
     let mut status = use_signal(|| account.peek().as_deref().and_then(|id| app.status(id).ok()));
 
     // Sync reports: the status for the sidebar, and a reload when articles changed.
@@ -461,22 +594,62 @@ pub fn Root() -> Element {
                 .unwrap_or_default()
         }
     });
+    // The last load, what it listed and what it was for: a sync's reload keeps rows.
+    let last = use_hook(|| Rc::new(RefCell::new((Listed::default(), None, 0_u64))));
     let articles = use_memo({
         let app = Arc::clone(&app);
         move || {
             revision();
-            let selection = selection();
-            let mut list = account()
-                .and_then(|id| app.articles(&id, &selection).ok())
+            let (selection, account, cleared) = (selection(), account(), cleared());
+            let mut rows = account
+                .as_ref()
+                .and_then(|id| app.articles(id, &selection).ok())
                 .unwrap_or_default();
-            // The open article stays listed, read or not, until another opens.
-            if let Some(open) = article.peek().clone()
-                && !list.iter().any(|a| a.id == open.id)
-            {
-                let at = list.partition_point(|a| a.published >= open.published);
-                list.insert(at, open);
+            let mut last = last.borrow_mut();
+            let (before, last_for, last_cleared) = &*last;
+            let marks = marks.peek();
+            let open = article.peek().as_ref().map(|a| a.id.clone());
+            let listed: HashSet<String> = rows.iter().map(|a| a.id.clone()).collect();
+            // The changes made here are in the cache, and so in the rows; those of rows
+            // the cache no longer lists here are only in the marks.
+            let same = last_for.as_ref() == Some(&(account.clone(), selection.clone()));
+            let keep = |a: &ArticleSummary| {
+                // The open article stays, read or not, until another opens.
+                if open.as_deref() == Some(a.id.as_str()) {
+                    return true;
+                }
+                // After a sync, the Unread view keeps what was read here since it opened,
+                // and the Starred view what was unstarred, so the list doesn't jump.
+                let a = marks.apply(before.load, a);
+                same && *last_cleared == cleared
+                    && match selection.view {
+                        View::Unread => a.read,
+                        View::Starred => !a.starred,
+                        View::All => false,
+                    }
+            };
+            let kept: Vec<ArticleSummary> = before
+                .rows
+                .iter()
+                .filter(|a| !listed.contains(&a.id) && keep(a))
+                .map(|a| marks.apply(before.load, a))
+                .collect();
+            // The open article from another list, as after a new selection.
+            let from_elsewhere = article
+                .peek()
+                .clone()
+                .filter(|a| !listed.contains(&a.id) && !kept.iter().any(|k| k.id == a.id));
+            if !kept.is_empty() || from_elsewhere.is_some() {
+                rows.extend(kept);
+                rows.extend(from_elsewhere.map(|a| marks.apply(before.load, &a)));
+                rows.sort_by_key(|a| std::cmp::Reverse(a.published));
             }
-            list
+            let listed = Listed {
+                load: before.load + 1,
+                rows,
+            };
+            *last = (listed.clone(), Some((account, selection)), cleared);
+            listed
         }
     });
     let mut reading = use_context_provider(|| Reading {
@@ -484,9 +657,9 @@ pub fn Root() -> Element {
         selection,
         article,
         revision,
+        cleared,
         counts,
-        read: Signal::new(HashMap::new()),
-        starred: Signal::new(HashMap::new()),
+        marks,
         library,
         articles,
         pane: Signal::new(Pane::List),
@@ -495,6 +668,7 @@ pub fn Root() -> Element {
         frame: Signal::new(None),
         status,
         menu: Signal::new(None),
+        root: Signal::new(None),
     });
     let keys = use_hook(|| Rc::new(bindings(&app.settings().shortcuts)));
     use_context_provider(|| {
@@ -514,21 +688,24 @@ pub fn Root() -> Element {
             "data-theme": theme,
             style: ui_font,
             tabindex: "-1",
-            onmounted: move |e: MountedEvent| async move {
+            onmounted: move |e: MountedEvent| {
                 // Without focus the app hears no keys, but works otherwise.
-                if let Err(err) = e.data().set_focus(true).await {
-                    tracing::warn!("focusing the window's root failed: {err}");
-                }
+                reading.root.set(Some(e.data()));
+                reading.refocus();
             },
             onkeydown: move |e: Event<KeyboardData>| {
                 if reading.on_key(&app, &keys, &e.data()) {
                     e.prevent_default();
                 }
             },
-            // A click outside the account menu closes it; the menu's own don't get here.
+            // A click outside the account menu or the mark-all-read question closes it;
+            // their own clicks don't get here.
             onclick: move |_| {
                 if reading.menu.peek().is_some() {
                     reading.menu.set(None);
+                }
+                if *reading.confirming.peek() {
+                    reading.confirming.set(false);
                 }
             },
             Sidebar {}
@@ -592,15 +769,13 @@ fn Sidebar() -> Element {
     };
     let status = (reading.status)();
     let syncing = status.as_ref().is_some_and(|s| s.syncing);
-    let error = status
-        .as_ref()
-        .and_then(|s| s.error.clone())
-        .unwrap_or_default();
     let sync_app = Arc::clone(&app);
     let status_line = match status {
         Some(s) if s.syncing => (t("sidebar.syncing"), false),
-        // The reason shows on hover, as in the Tauri version.
-        Some(SyncStatus { error: Some(_), .. }) => (t("sidebar.syncFailed"), true),
+        // The Tauri version shows the reason on hover, but Blitz shows no titles yet.
+        Some(SyncStatus { error: Some(e), .. }) => {
+            (format!("{}: {e}", t("sidebar.syncFailed")), true)
+        }
         Some(SyncStatus {
             last_sync: Some(ms),
             ..
@@ -612,6 +787,21 @@ fn Sidebar() -> Element {
     } else {
         "sidebar"
     };
+    let FeedsPane(mut feeds_pane) = use_context_provider(|| FeedsPane(Signal::new(None)));
+    // The views are at the top: one selected, as by the arrow keys, shows the top.
+    use_effect(move || {
+        if reading.selection.read().scope != Scope::All {
+            return;
+        }
+        if let Some(pane) = feeds_pane.peek().clone() {
+            spawn(async move {
+                let top = dioxus_html::geometry::PixelsVector2D::new(0.0, 0.0);
+                if let Err(e) = pane.scroll(top, ScrollBehavior::Instant).await {
+                    tracing::warn!("scrolling the sidebar failed: {e}");
+                }
+            });
+        }
+    });
 
     rsx! {
         nav { class, aria_label: t("sidebar.label"),
@@ -632,6 +822,7 @@ fn Sidebar() -> Element {
                 }
             }
             div { class: "feeds",
+                onmounted: move |e: MountedEvent| feeds_pane.set(Some(e.data())),
                 for (view , label , count) in views {
                     div {
                         class: if current.view == view && current.scope == Scope::All { "item selected" } else { "item" },
@@ -647,16 +838,7 @@ fn Sidebar() -> Element {
                         let count: i64 = feeds_in(&lib, Some(&folder.id)).iter().map(|f| counts_for(current.view, &f.id)).sum();
                         let feeds: Vec<_> = feeds_in(&lib, Some(&folder.id)).into_iter().cloned().collect();
                         rsx! {
-                            div {
-                                key: "folder-{folder.id}",
-                                class: if current.scope == scope { "item selected" } else { "item" },
-                                onclick: move |_| {
-                                    let view = reading.selection.peek().view;
-                                    select(Selection { view, scope: scope.clone() });
-                                },
-                                span { class: "name", "{folder.title}" }
-                                if count > 0 { span { class: "count", "{count}" } }
-                            }
+                            ScopeItem { key: "folder-{folder.id}", scope, title: folder.title.clone(), count, nested: false }
                             for feed in feeds {
                                 FeedItem { key: "{feed.id}", count: counts_for(current.view, &feed.id), feed, nested: true }
                             }
@@ -669,7 +851,6 @@ fn Sidebar() -> Element {
             }
             div {
                 class: if status_line.1 { "status error" } else { "status" },
-                title: error,
                 "{status_line.0}"
             }
         }
@@ -684,11 +865,11 @@ fn AccountSwitcher() -> Element {
     let mut reading = use_context::<Reading>();
     let menu = (reading.menu)();
     let active = (reading.account)();
-    // Changes made here show in the shown account's count at once.
-    (reading.counts)();
+    // The counts change with changes made here and with syncs, as the library does.
+    (reading.library)();
     let accounts = app.accounts();
     let menu_app = Arc::clone(&app);
-    let shortcut_key = if cfg!(target_os = "macos") {
+    let shortcut_key = if ACCOUNT_MODIFIER == Modifiers::META {
         "⌘".to_owned()
     } else {
         format!("{}+", t("keys.alt"))
@@ -716,7 +897,7 @@ fn AccountSwitcher() -> Element {
                 }
             }
             if let Some(at) = menu {
-                div { class: "menu", role: "menu", aria_label: t("accounts.menu"),
+                div { class: "menu popover", role: "menu", aria_label: t("accounts.menu"),
                     onclick: move |e| e.stop_propagation(),
                     for (i , account) in accounts.into_iter().enumerate() {
                         {
@@ -754,10 +935,21 @@ fn AccountSwitcher() -> Element {
 
 #[component]
 fn FeedItem(feed: skvaller_core::Feed, count: i64, nested: bool) -> Element {
-    let mut reading = use_context::<Reading>();
-    let scope = Scope::Feed {
-        id: feed.id.clone(),
-    };
+    let scope = Scope::Feed { id: feed.id };
+    rsx! {
+        ScopeItem { scope, title: feed.title, count, nested }
+    }
+}
+
+/// The sidebar's scrolling list of feeds, for its items to scroll themselves into.
+#[derive(Clone, Copy)]
+struct FeedsPane(Signal<Option<Rc<MountedData>>>);
+
+/// A folder or feed in the sidebar. Selected, as by the arrow keys, it scrolls into view.
+#[component]
+fn ScopeItem(scope: Scope, title: String, count: i64, nested: bool) -> Element {
+    let reading = use_context::<Reading>();
+    let mut mounted = use_signal(|| None::<Rc<MountedData>>);
     let selected = reading.selection.read().scope == scope;
     let class = match (selected, nested) {
         (true, true) => "item nested selected",
@@ -765,15 +957,49 @@ fn FeedItem(feed: skvaller_core::Feed, count: i64, nested: bool) -> Element {
         (false, true) => "item nested",
         (false, false) => "item",
     };
+    let FeedsPane(pane) = use_context::<FeedsPane>();
+    // After the render, when the item has its place. Blitz scrolls only the window into
+    // view, not the feeds' own scroll: done here.
+    use_effect({
+        let scope = scope.clone();
+        move || {
+            if reading.selection.read().scope != scope {
+                return;
+            }
+            let (Some(item), Some(pane)) = (mounted.peek().clone(), pane.peek().clone()) else {
+                return;
+            };
+            spawn(async move {
+                let (Ok(item), Ok(view), Ok(offset)) = (
+                    item.get_client_rect().await,
+                    pane.get_client_rect().await,
+                    pane.get_scroll_offset().await,
+                ) else {
+                    return;
+                };
+                // Blitz counts the pane's own scroll in its place too: undone here.
+                let top = view.min_y() + offset.y;
+                let bottom = top + view.height();
+                let by = if item.min_y() < top {
+                    item.min_y() - top
+                } else if item.max_y() > bottom {
+                    item.max_y() - bottom
+                } else {
+                    return;
+                };
+                let to = dioxus_html::geometry::PixelsVector2D::new(offset.x, offset.y + by);
+                if let Err(e) = pane.scroll(to, ScrollBehavior::Instant).await {
+                    tracing::warn!("scrolling the sidebar failed: {e}");
+                }
+            });
+        }
+    });
     rsx! {
         div {
             class,
-            onclick: move |_| {
-                reading.pane.set(Pane::Sidebar);
-                let view = reading.selection.peek().view;
-                reading.select(Selection { view, scope: scope.clone() });
-            },
-            span { class: "name", "{feed.title}" }
+            onmounted: move |e: MountedEvent| mounted.set(Some(e.data())),
+            onclick: move |_| reading.select_scope(scope.clone()),
+            span { class: "name", "{title}" }
             if count > 0 { span { class: "count", "{count}" } }
         }
     }
@@ -782,16 +1008,21 @@ fn FeedItem(feed: skvaller_core::Feed, count: i64, nested: bool) -> Element {
 #[component]
 fn ArticleList() -> Element {
     let app = use_context::<Arc<App>>();
-    let mut reading = use_context::<Reading>();
-    let unread = reading.unread_count();
+    let reading = use_context::<Reading>();
+    let unread = i64::try_from(reading.unread_count()).unwrap_or(i64::MAX);
     let heading = if unread == 0 {
         t("list.noUnread")
     } else {
-        t_count("list.unread", i64::try_from(unread).unwrap_or(i64::MAX))
+        t_count("list.unread", unread)
     };
     // A new list starts at the top: the viewport is keyed on what it lists, so a new
-    // selection gets a new viewport, with its own scroll state.
-    let key = format!("{:?}", reading.selection.read());
+    // selection or account gets a new viewport, with its own scroll state.
+    let key = format!(
+        "{:?}/{:?}",
+        reading.account.read(),
+        reading.selection.read()
+    );
+    let confirming = (reading.confirming)() && unread > 0;
     let class = if (reading.pane)() == Pane::List {
         "list active"
     } else {
@@ -804,10 +1035,14 @@ fn ArticleList() -> Element {
             div { class: "toolbar",
                 h1 { "{heading}" }
                 div { class: "mark-all",
+                    // The window closes the question on any click that reaches it.
+                    onclick: move |e| e.stop_propagation(),
                     button {
                         class: "icon-button",
                         aria_label: t("list.markAll"),
                         title: t("list.markAll"),
+                        "aria-haspopup": "dialog",
+                        "aria-expanded": "{confirming}",
                         disabled: unread == 0,
                         onclick: move |_| reading.request_mark_all(&app),
                         svg { width: "18", height: "18", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
@@ -815,11 +1050,11 @@ fn ArticleList() -> Element {
                             path { d: "m9 12 2 2 4-4" }
                         }
                     }
-                    if (reading.confirming)() {
-                        div { class: "confirm", role: "dialog",
-                            p { {t_count("list.markAllQuestion", i64::try_from(unread).unwrap_or(i64::MAX))} }
+                    if confirming {
+                        div { class: "confirm popover", role: "dialog", "aria-labelledby": "mark-all-question",
+                            p { id: "mark-all-question", {t_count("list.markAllQuestion", unread)} }
                             div { class: "actions",
-                                button { class: "button", onclick: move |_| reading.confirming.set(false), {t("common.cancel")} }
+                                button { class: "button", onclick: move |_| reading.close_confirm(), {t("common.cancel")} }
                                 button { class: "button primary", onclick: move |_| reading.mark_all_read(&confirm_app), {t("list.markAsRead")} }
                             }
                         }
@@ -849,7 +1084,7 @@ fn Viewport() -> Element {
         let Some(id) = reading.article.read().as_ref().map(|a| a.id.clone()) else {
             return;
         };
-        let Some(i) = reading.articles.peek().iter().position(|a| a.id == id) else {
+        let Some(i) = reading.articles.peek().rows.iter().position(|a| a.id == id) else {
             return;
         };
         let Some(el) = mounted.peek().clone() else {
@@ -882,7 +1117,8 @@ fn Viewport() -> Element {
         });
     });
 
-    let list = reading.articles.read();
+    let listed = reading.articles.read();
+    let list = &listed.rows;
     let (first, last) = visible_rows(top(), height(), list.len());
     let total = row_offset(list.len());
     let selected = reading.article.read().as_ref().map(|a| a.id.clone());
@@ -974,7 +1210,7 @@ fn Reader() -> Element {
             Some(article::document(&a, feed, &html, &date, &settings))
         }
     });
-    let open = (reading.article)();
+    let open = reading.open_article();
 
     rsx! {
         section { class: "reader", aria_label: t("reader.label"),
@@ -1005,13 +1241,23 @@ fn ReaderButtons(article: ArticleSummary) -> Element {
     let reading = use_context::<Reading>();
     let read = reading.is_read(&article);
     let starred = reading.is_starred(&article);
+    let read_label = if read {
+        t("reader.markUnread")
+    } else {
+        t("reader.markRead")
+    };
+    let star_label = if starred {
+        t("reader.unstar")
+    } else {
+        t("reader.addStar")
+    };
     let star_app = Arc::clone(&app);
     rsx! {
         div { class: "spacer" }
         button {
             class: if read { "icon-button" } else { "icon-button unread" },
-            aria_label: if read { t("reader.markUnread") } else { t("reader.markRead") },
-            title: if read { t("reader.markUnread") } else { t("reader.markRead") },
+            aria_label: read_label.clone(),
+            title: read_label,
             onclick: move |_| reading.toggle_read(&app),
             // The unread mark: filled while unread, outlined once read.
             svg { width: "18", height: "18", view_box: "0 0 24 24", fill: if read { "none" } else { "currentColor" }, stroke: "currentColor", stroke_width: "1.6",
@@ -1020,9 +1266,8 @@ fn ReaderButtons(article: ArticleSummary) -> Element {
         }
         button {
             class: if starred { "icon-button starred" } else { "icon-button" },
-            aria_label: if starred { t("reader.unstar") } else { t("reader.addStar") },
-            title: if starred { t("reader.unstar") } else { t("reader.addStar") },
-            "aria-pressed": "{starred}",
+            aria_label: star_label.clone(),
+            title: star_label,
             onclick: move |_| reading.toggle_starred(&star_app),
             svg { width: "18", height: "18", view_box: "0 0 24 24", fill: if starred { "currentColor" } else { "none" }, stroke: "currentColor", stroke_width: "2", stroke_linejoin: "round",
                 path { d: STAR_PATH }
