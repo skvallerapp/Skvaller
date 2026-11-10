@@ -209,6 +209,10 @@ impl App {
                 // Its background sync looks again, finds the account gone, and ends.
                 rt.wake.notify_one();
                 *lock(&rt.client) = None;
+                // Aborted between pages' writes, at an await: no write is cut short.
+                if let Some(task) = lock(&rt.prefetch).take() {
+                    task.abort();
+                }
             }
         }
         drop(rt);

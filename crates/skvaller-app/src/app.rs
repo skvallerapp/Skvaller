@@ -9,7 +9,7 @@ use std::sync::{
 
 use skvaller_core::{
     ArticleSummary, Client, Counts, Db, Feed, Folder, ImportReport, Selection, export_opml,
-    import_opml,
+    import_opml, load_full_text,
 };
 use tokio::sync::{Notify, broadcast, watch};
 use tracing::Level;
@@ -121,6 +121,8 @@ pub(crate) struct Runtime {
     pub(crate) wake: Notify,
     /// The computer woke from sleep since the background sync last looked.
     pub(crate) woke: AtomicBool,
+    /// The Reader View prefetch started after the last sync, while it may still run.
+    pub(crate) prefetch: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 impl Runtime {
@@ -135,6 +137,7 @@ impl Runtime {
             gate: Gate::default(),
             wake: Notify::new(),
             woke: AtomicBool::new(false),
+            prefetch: Mutex::new(None),
         };
         // A local cache without feeds, as after a new version's cache started over,
         // gets them back from their backup before a sync backs up the empty list.
@@ -481,6 +484,65 @@ impl App {
     /// As [`App::library`].
     pub fn article_html(&self, account_id: &str, article_id: &str) -> Result<Option<String>> {
         Ok(self.runtime(account_id)?.db.article_html(article_id)?)
+    }
+
+    /// The article's Reader View: the text of its web page, from the cache or else
+    /// fetched, on the sync runtime. Untrusted, as the feed's HTML is.
+    ///
+    /// `Ok(None)` when the page has nothing readable, or was given up on and `retry` is
+    /// false.
+    ///
+    /// # Errors
+    ///
+    /// As [`App::library`], and [`Error::Core`] when the page can't be fetched.
+    ///
+    /// # Panics
+    ///
+    /// When [`App::start_sync`] hasn't run.
+    pub async fn full_text(
+        &self,
+        account_id: &str,
+        article_id: &str,
+        retry: bool,
+    ) -> Result<Option<String>> {
+        let db = Arc::clone(&self.runtime(account_id)?.db);
+        let id = article_id.to_owned();
+        let fetch = self
+            .sync_runtime
+            .get()
+            .expect("start_sync runs before Reader View")
+            .spawn(async move { load_full_text(&db, &id, retry).await });
+        match fetch.await {
+            Ok(page) => Ok(page?),
+            Err(e) => {
+                // A panic is a bug, worth a log; a shutdown cancels it, and nothing
+                // waits for the page then. Either way the article has no Reader View.
+                if e.is_panic() {
+                    tracing::event!(
+                        name: "full_text.load.panic",
+                        Level::ERROR,
+                        article.id = %article_id,
+                        error.message = %e,
+                        "Reader View of article {{article.id}} panicked: {{error.message}}",
+                    );
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    /// Opens the feed's articles in Reader View from now on, or stops, and tells every
+    /// window.
+    ///
+    /// # Errors
+    ///
+    /// As [`App::library`].
+    pub fn set_feed_reader_view(&self, account_id: &str, feed_id: &str, on: bool) -> Result<()> {
+        self.runtime(account_id)?
+            .db
+            .set_feed_reader_view(feed_id, on)?;
+        self.announce();
+        Ok(())
     }
 
     /// Marks articles read or unread in the cache. The next sync sends the change, and

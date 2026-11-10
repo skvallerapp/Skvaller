@@ -41,6 +41,10 @@ const INITIAL_VIEWPORT: f64 = 1600.0;
 
 /// How long an article is open before it is marked read, with [`MarkReadOn::Delay`].
 const MARK_READ_DELAY: Duration = Duration::from_secs(2);
+/// How long an article of a Reader View feed waits for its text before showing the
+/// feed's content, as in the Tauri version. Long enough for the cache, which most
+/// pages come from after a sync's prefetch; short enough not to feel stuck.
+const READER_VIEW_HOLD: Duration = Duration::from_millis(400);
 
 /// How much of the article's height reading on scrolls: a page, less some lines to keep
 /// the place, as in the Tauri version.
@@ -102,6 +106,32 @@ impl Marks {
     }
 }
 
+/// The open article's Reader View, as the Tauri version's store keeps it.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ReaderView {
+    /// The account and article it is for.
+    article: Option<(String, String)>,
+    /// Asked for: the text shows instead of the feed's content once it is in.
+    on: bool,
+    /// The page's text, untrusted, once loaded.
+    html: Option<String>,
+    fetch: Fetch,
+    /// Bumped by every load and every new article: an older load's result is dropped.
+    request: u64,
+}
+
+/// Where loading the open article's Reader View stands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Fetch {
+    #[default]
+    Idle,
+    /// `awaiting`: just after the article opened, the frame waits for the text rather
+    /// than show the feed's content and swap.
+    Loading { awaiting: bool },
+    /// The last load failed while Reader View was on. Shown until the next try.
+    Failed,
+}
+
 /// What the window shows and what was changed here, shared by its parts.
 #[derive(Clone, Copy, PartialEq)]
 struct Reading {
@@ -133,6 +163,7 @@ struct Reading {
     menu: Signal<Option<usize>>,
     /// The window's root, which takes focus back when the focused element goes away.
     root: Signal<Option<Rc<MountedData>>>,
+    reader_view: Signal<ReaderView>,
 }
 
 impl Reading {
@@ -201,6 +232,9 @@ impl Reading {
     fn select(mut self, selection: Selection) {
         self.selection.set(selection);
         self.article.set(None);
+        // Reader View starts over, as in the Tauri version, and a load under way is
+        // dropped: reopening the article doesn't find it stuck loading.
+        self.reset_reader_view(None);
         self.confirming.set(false);
         // A delayed mark of the article left is off.
         self.mark_generation += 1;
@@ -230,6 +264,7 @@ impl Reading {
     fn open(mut self, app: &Arc<App>, a: ArticleSummary) {
         let id = a.id.clone();
         let unread = !self.is_read(&a);
+        self.follow_reader_view(app, &a);
         self.article.set(Some(a));
         self.confirming.set(false);
         self.mark_generation += 1;
@@ -255,6 +290,113 @@ impl Reading {
             }
             MarkReadOn::Manual => {}
         }
+    }
+
+    /// Starts Reader View afresh for `a`, about to open: on at once, waiting for the
+    /// text, when its feed always uses it. The same article again keeps its state.
+    fn follow_reader_view(self, app: &Arc<App>, a: &ArticleSummary) {
+        let Some(account) = self.account.peek().clone() else {
+            return;
+        };
+        let key = Some((account, a.id.clone()));
+        if self.reader_view.peek().article == key {
+            return;
+        }
+        self.reset_reader_view(key);
+        let always = !a.url.is_empty()
+            && self
+                .library
+                .peek()
+                .feeds
+                .iter()
+                .any(|f| f.id == a.feed_id && f.reader_view);
+        if always {
+            self.load_full_text(app, false, true);
+        }
+    }
+
+    /// Clears Reader View for `article`, or for none. Results of loads under way are
+    /// dropped.
+    fn reset_reader_view(mut self, article: Option<(String, String)>) {
+        let request = self.reader_view.peek().request + 1;
+        self.reader_view.set(ReaderView {
+            article,
+            request,
+            ..ReaderView::default()
+        });
+    }
+
+    /// Switches the open article between Reader View and the feed's content.
+    fn toggle_reader_view(mut self, app: &Arc<App>) {
+        if self
+            .article
+            .peek()
+            .as_ref()
+            .is_none_or(|a| a.url.is_empty())
+        {
+            return;
+        }
+        let load = {
+            let mut rv = self.reader_view.write();
+            rv.on = !rv.on;
+            rv.on && rv.html.is_none() && !matches!(rv.fetch, Fetch::Loading { .. })
+        };
+        if load {
+            self.load_full_text(app, true, false);
+        }
+    }
+
+    /// Loads the open article's Reader View in the background. A failure turns it off
+    /// and says so. `retry` fetches a page given up on; `hold` keeps the frame waiting
+    /// for a moment.
+    fn load_full_text(mut self, app: &Arc<App>, retry: bool, hold: bool) {
+        let (key, request) = {
+            let mut rv = self.reader_view.write();
+            rv.request += 1;
+            rv.on = true;
+            rv.fetch = Fetch::Loading { awaiting: hold };
+            (rv.article.clone(), rv.request)
+        };
+        let Some((account, id)) = key else {
+            return;
+        };
+        // Not the calling component's tasks: the toolbar button that started a load goes
+        // with the article, and the load must still finish or be dropped by `request`.
+        if hold {
+            dioxus_core::spawn_forever(async move {
+                tokio::time::sleep(READER_VIEW_HOLD).await;
+                // Copied out: a guard held into the block would make the write panic.
+                let now = {
+                    let rv = self.reader_view.peek();
+                    (rv.request, rv.fetch)
+                };
+                if now == (request, Fetch::Loading { awaiting: true }) {
+                    self.reader_view.write().fetch = Fetch::Loading { awaiting: false };
+                }
+            });
+        }
+        let app = Arc::clone(app);
+        dioxus_core::spawn_forever(async move {
+            let result = app.full_text(&account, &id, retry).await;
+            if self.reader_view.peek().request != request {
+                return;
+            }
+            let mut rv = self.reader_view.write();
+            rv.fetch = Fetch::Idle;
+            match result {
+                Ok(Some(html)) => rv.html = Some(html),
+                failed => {
+                    if let Err(e) = failed {
+                        tracing::warn!("Reader View of article {id} failed: {e}");
+                    }
+                    // Turned off meanwhile: nothing to say.
+                    if rv.on {
+                        rv.fetch = Fetch::Failed;
+                    }
+                    rv.on = false;
+                }
+            }
+        });
     }
 
     /// Opens the next (1) or previous (-1) article in the list; with none open, the first.
@@ -541,7 +683,7 @@ impl Reading {
             Action::ReadOn => self.read_on(app, true, repeat),
             Action::ReadBack => self.read_on(app, false, repeat),
             // Reader View comes with a later milestone.
-            Action::ToggleReaderView => {}
+            Action::ToggleReaderView => self.toggle_reader_view(app),
             Action::ToggleRead => self.toggle_read(app),
             Action::ToggleStar => self.toggle_starred(app),
             Action::OpenInBrowser => self.open_in_browser(),
@@ -609,11 +751,14 @@ pub fn Root() -> Element {
         }
     });
 
+    // Before the library, which follows it: Settings changes feeds' Reader View.
+    let live = use_live(&app);
     let library = use_memo({
         let app = Arc::clone(&app);
         move || {
             revision();
             counts();
+            (live.revision)();
             account()
                 .and_then(|id| app.library(&id).ok())
                 .unwrap_or_default()
@@ -694,9 +839,8 @@ pub fn Root() -> Element {
         status,
         menu: Signal::new(None),
         root: Signal::new(None),
+        reader_view: Signal::new(ReaderView::default()),
     });
-    // Hooks of its own: called here, not in the provider's closure.
-    let live = use_live(&app);
     use_context_provider(|| live);
     // The active account, as changed elsewhere: one added or removed in Settings.
     use_effect({
@@ -1302,12 +1446,21 @@ fn Reader() -> Element {
     // Only what the document shows remakes it: remade, the frame loads again, back at
     // the top.
     let look = use_memo(move || article::Look::from(&*live.settings.read()));
+    // The Reader View text to show, apart: its loading states don't remake the document.
+    let full_text = use_memo(move || {
+        let rv = reading.reader_view.read();
+        let key = Some(((reading.account)()?, (reading.article)()?.id));
+        rv.html.clone().filter(|_| rv.on && rv.article == key)
+    });
     let doc = use_memo({
         let app = Arc::clone(&app);
         move || {
             let a = (reading.article)()?;
-            let html =
-                (reading.account)().and_then(|id| app.article_html(&id, &a.id).ok().flatten())?;
+            let account = (reading.account)()?;
+            let html = match full_text() {
+                Some(html) => html,
+                None => app.article_html(&account, &a.id).ok().flatten()?,
+            };
             let lib = reading.library.peek();
             let feed = lib.feeds.iter().find(|f| f.id == a.feed_id);
             let date = live.dates.read().full(a.published);
@@ -1315,6 +1468,11 @@ fn Reader() -> Element {
         }
     });
     let open = reading.open_article();
+    // Reader View on its way, just after opening: no feed content to swap out yet.
+    let holding = {
+        let rv = reading.reader_view.read();
+        rv.on && rv.fetch == (Fetch::Loading { awaiting: true })
+    };
 
     rsx! {
         section { class: "reader", aria_label: t("reader.label"),
@@ -1324,9 +1482,11 @@ fn Reader() -> Element {
                 }
             }
             match doc() {
+                Some(_) if holding => rsx! {},
                 Some(doc) => rsx! {
                     iframe {
-                        key: "{doc.len()}",
+                        // Remade for new content, which then loads from the top.
+                        key: "{full_text.read().is_some()}-{doc.len()}",
                         title: "",
                         "srcdoc": doc,
                         onmounted: move |e: MountedEvent| reading.frame.set(Some(e.data())),
@@ -1356,8 +1516,27 @@ fn ReaderButtons(article: ArticleSummary) -> Element {
         t("reader.addStar")
     };
     let star_app = Arc::clone(&app);
+    let reader_app = Arc::clone(&app);
+    let (rv_on, rv_loading, rv_failed) = {
+        let rv = reading.reader_view.read();
+        (
+            rv.on,
+            rv.on && matches!(rv.fetch, Fetch::Loading { .. }),
+            rv.fetch == Fetch::Failed,
+        )
+    };
+    let rv_class = match (rv_on, rv_loading) {
+        (_, true) => "icon-button reader-view loading",
+        (true, false) => "icon-button reader-view",
+        (false, false) => "icon-button",
+    };
     rsx! {
-        div { class: "spacer" }
+        div { class: "spacer",
+            // Announced, and shown until the next try or article.
+            span { class: "notice", role: "status",
+                if rv_failed { {t("reader.unavailable")} }
+            }
+        }
         button {
             class: if read { "icon-button" } else { "icon-button unread" },
             aria_label: read_label.clone(),
@@ -1375,6 +1554,22 @@ fn ReaderButtons(article: ArticleSummary) -> Element {
             onclick: move |_| reading.toggle_starred(&star_app),
             svg { width: "18", height: "18", view_box: "0 0 24 24", fill: if starred { "currentColor" } else { "none" }, stroke: "currentColor", stroke_width: "2", stroke_linejoin: "round",
                 path { d: STAR_PATH }
+            }
+        }
+        button {
+            class: rv_class,
+            aria_label: t("reader.readerView"),
+            title: t("reader.readerView"),
+            "aria-pressed": "{rv_on}",
+            "aria-busy": "{rv_loading}",
+            disabled: article.url.is_empty(),
+            onclick: move |_| reading.toggle_reader_view(&reader_app),
+            // Lucide's square-text.
+            svg { width: "18", height: "18", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
+                rect { x: "3", y: "3", width: "18", height: "18", rx: "2" }
+                path { d: "M7 8h8" }
+                path { d: "M7 12h10" }
+                path { d: "M7 16h6" }
             }
         }
         button {

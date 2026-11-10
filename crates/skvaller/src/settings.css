@@ -338,3 +338,39 @@
 .settings .restore:disabled {
   opacity: 0.5;
 }
+
+/* A row that opens a page, as the account's Reader View row. */
+.settings .setting.link {
+  width: 100%;
+  text-align: left;
+  color: inherit;
+}
+
+.settings .setting.link:hover {
+  background: var(--active);
+}
+
+.settings .setting.link svg {
+  color: var(--text-3);
+}
+
+/* Back from a page to its account, over the page's title. */
+.settings .back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 0 4px -4px;
+  padding: 2px 6px 2px 2px;
+  border-radius: 6px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.settings .back:hover {
+  background: var(--hover);
+}
+
+.settings .intro {
+  margin: 0 0 10px;
+  color: var(--text-2);
+}

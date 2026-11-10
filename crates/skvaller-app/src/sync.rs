@@ -10,7 +10,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use skvaller_core::{Client, Error as CoreError, load_token, refresh_local, sync};
+use skvaller_core::{
+    Client, Error as CoreError, load_token, prefetch_full_text, refresh_local, sync,
+};
 use tokio::time::{Instant, sleep_until};
 use tracing::Level;
 
@@ -197,7 +199,12 @@ impl App {
             Some(self.finish(rt, &synced.map(drop), changed))
         };
         match rt.gate.run(work).await {
-            Outcome::Done(Some(ran)) => ran,
+            Outcome::Done(Some(ran)) => {
+                if ran == Ran::Synced {
+                    self.prefetch(rt);
+                }
+                ran
+            }
             Outcome::Done(None) => Ran::Skipped,
             Outcome::Busy => Ran::Busy,
         }
@@ -272,6 +279,34 @@ impl App {
         let client = Client::new(server, &token)?;
         *lock(&rt.client) = Some(client.clone());
         Ok(Some(client))
+    }
+}
+
+impl App {
+    /// Fetches Reader View pages of new articles in the background, which can take
+    /// minutes. Skipped while the last sync's prefetch still runs; removing the account
+    /// aborts it.
+    fn prefetch(&self, rt: &Runtime) {
+        let mut running = lock(&rt.prefetch);
+        // Removed meanwhile: its removal takes this lock only after taking it from
+        // the runtimes, so a prefetch started here is one it aborts.
+        if self.runtime(&rt.id).is_err() || running.as_ref().is_some_and(|task| !task.is_finished())
+        {
+            return;
+        }
+        let (db, id) = (Arc::clone(&rt.db), rt.id.clone());
+        let task = tokio::spawn(async move {
+            if let Err(e) = prefetch_full_text(&db).await {
+                tracing::event!(
+                    name: "full_text.prefetch.failure",
+                    Level::WARN,
+                    account.id = %id,
+                    error.message = %e,
+                    "prefetching Reader View for account {{account.id}} failed: {{error.message}}",
+                );
+            }
+        });
+        *running = Some(task.abort_handle());
     }
 }
 

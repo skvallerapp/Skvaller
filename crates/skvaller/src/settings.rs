@@ -25,7 +25,10 @@ use crate::article;
 use crate::dates::Dates;
 use crate::fonts;
 use crate::i18n::{sentence, t, t_count, t_with};
-use crate::icons::{BOOK_OPEN, CHEVRONS_UP_DOWN, CIRCLE_USER, Icon, KEYBOARD, PALETTE, PLUS};
+use crate::icons::{
+    BOOK_OPEN, CHEVRON_LEFT, CHEVRON_RIGHT, CHEVRONS_UP_DOWN, CIRCLE_USER, Icon, KEYBOARD, PALETTE,
+    PLUS,
+};
 use crate::live::use_live;
 use crate::shortcuts::{self, Action, Capture, Refusal};
 use crate::ui::APP_CSS;
@@ -90,6 +93,8 @@ pub enum Pane {
     Shortcuts,
     /// The account with this id.
     Account(String),
+    /// The Reader View page of the account with this id: its feeds' setting.
+    ReaderView(String),
     AddAccount,
 }
 
@@ -124,8 +129,7 @@ fn SettingsRoot() -> Element {
         move || {
             (live.revision)();
             let accounts = app.accounts();
-            let gone =
-                matches!(&*pane.read(), Pane::Account(id) if !accounts.iter().any(|a| &a.id == id));
+            let gone = matches!(&*pane.read(), Pane::Account(id) | Pane::ReaderView(id) if !accounts.iter().any(|a| &a.id == id));
             if gone {
                 pane.set(
                     accounts
@@ -135,6 +139,8 @@ fn SettingsRoot() -> Element {
             }
         }
     });
+    // Back from an account's Reader View page: its row takes the focus again.
+    let returned = use_signal(|| false);
     let feedback = Feedback {
         error: use_signal(|| None),
         failures: use_signal(|| 0),
@@ -146,7 +152,7 @@ fn SettingsRoot() -> Element {
     let accounts = app.accounts();
     let current = pane.read().clone();
     let account = match &current {
-        Pane::Account(id) => accounts.iter().find(|a| &a.id == id).cloned(),
+        Pane::Account(id) | Pane::ReaderView(id) => accounts.iter().find(|a| &a.id == id).cloned(),
         _ => None,
     };
     let title = match (&current, &account) {
@@ -154,12 +160,27 @@ fn SettingsRoot() -> Element {
         (Pane::Reading, _) => t("settings.reading"),
         (Pane::Shortcuts, _) => t("settings.shortcuts"),
         (Pane::Account(_), Some(a)) => a.description.clone(),
+        (Pane::ReaderView(_), _) => t("settings.readerView"),
         (Pane::Account(_), None) => String::new(),
         (Pane::AddAccount, _) => t("addAccount.title"),
     };
-    let username = match account.as_ref().map(|a| &a.kind) {
-        Some(AccountKind::Greader { username, .. }) => Some(username.clone()),
+    let username = match (&current, account.as_ref().map(|a| &a.kind)) {
+        (Pane::Account(_), Some(AccountKind::Greader { username, .. })) => Some(username.clone()),
         _ => None,
+    };
+    // The account's subscribed feeds, for its Reader View page. Read again with every
+    // config revision, which a change of a feed's setting bumps.
+    let feeds = match &current {
+        Pane::ReaderView(id) => app
+            .library(id)
+            .map(|lib| {
+                lib.feeds
+                    .into_iter()
+                    .filter(|f| f.subscribed)
+                    .collect::<Vec<_>>()
+            })
+            .map_err(|e| sentence(&e.to_string())),
+        _ => Ok(Vec::new()),
     };
     let ui_font = format!("--ui-font: {}", fonts::stack(settings.ui_font));
     let theme = article::theme_name(settings.theme);
@@ -198,6 +219,29 @@ fn SettingsRoot() -> Element {
             }
             main {
                 header {
+                    if let (Pane::ReaderView(id), Some(a)) = (&current, &account) {
+                        button {
+                            class: "back",
+                            aria_label: t_with("settings.back", &[("account", &a.description)]),
+                            // The row that opened the page is gone: focus moves to the way
+                            // back, as in the Tauri version.
+                            onmounted: move |e: MountedEvent| async move {
+                                if let Err(err) = e.data().set_focus(true).await {
+                                    tracing::warn!("focusing Back failed: {err}");
+                                }
+                            },
+                            onclick: {
+                                let id = id.clone();
+                                let mut returned = returned;
+                                move |_| {
+                                    returned.set(true);
+                                    pane.set(Pane::Account(id.clone()));
+                                }
+                            },
+                            Icon { size: 16, stroke: "2", paths: CHEVRON_LEFT }
+                            "{a.description}"
+                        }
+                    }
                     h1 { "{title}" }
                     if let Some(username) = username {
                         p { "{username}" }
@@ -214,8 +258,22 @@ fn SettingsRoot() -> Element {
                             (Pane::Appearance, _) => rsx! { AppearancePane { settings: settings.clone(), feedback } },
                             (Pane::Reading, _) => rsx! { ReadingPane { settings: settings.clone(), feedback } },
                             (Pane::Shortcuts, _) => rsx! { ShortcutsPane { overrides: settings.shortcuts.clone(), feedback } },
-                            (Pane::Account(_), Some(account)) => rsx! { AccountPane { key: "{account.id}", account, feedback } },
-                            (Pane::Account(_), None) => rsx! {},
+                            (Pane::Account(_), Some(account)) => {
+                                let id = account.id.clone();
+                                rsx! {
+                                    AccountPane {
+                                        key: "{account.id}",
+                                        account,
+                                        feedback,
+                                        returned,
+                                        on_reader_view: move |()| pane.set(Pane::ReaderView(id.clone())),
+                                    }
+                                }
+                            }
+                            (Pane::ReaderView(_), Some(account)) => rsx! {
+                                ReaderViewPane { account_id: account.id, feeds: feeds.clone(), feedback }
+                            },
+                            (Pane::Account(_) | Pane::ReaderView(_), None) => rsx! {},
                             (Pane::AddAccount, _) => rsx! {
                                 AddAccount {
                                     embedded: true,
@@ -255,7 +313,9 @@ fn NavRow(
 #[component]
 fn AccountRow(account: Account, current: Signal<Pane>) -> Element {
     let pane = Pane::Account(account.id.clone());
-    let selected = *current.read() == pane;
+    // Its Reader View page is part of its pane.
+    let selected =
+        matches!(&*current.read(), Pane::Account(id) | Pane::ReaderView(id) if *id == account.id);
     let detail = match &account.kind {
         AccountKind::Greader { username, .. } => username.clone(),
         AccountKind::Local => t("settings.localAccount"),
@@ -635,6 +695,43 @@ fn ShortcutsPane(overrides: shortcuts::Overrides, feedback: Feedback) -> Element
     }
 }
 
+/// The account's feeds, each with a switch to open its articles in Reader View.
+#[component]
+fn ReaderViewPane(
+    account_id: String,
+    feeds: Result<Vec<skvaller_core::Feed>, String>,
+    feedback: Feedback,
+) -> Element {
+    let app = use_context::<Arc<App>>();
+    rsx! {
+        section {
+            match feeds {
+                Err(why) => rsx! { p { class: "error", role: "alert", "{why}" } },
+                Ok(feeds) if feeds.is_empty() => rsx! { p { class: "intro", {t("settings.noSubscriptions")} } },
+                Ok(feeds) => rsx! {
+                    div { class: "group",
+                        for feed in feeds {
+                            {
+                                let (app, account_id, feed_id) = (Arc::clone(&app), account_id.clone(), feed.id.clone());
+                                rsx! {
+                                    Row { key: "{feed.id}", label: feed.title.clone(),
+                                        Switch {
+                                            label: feed.title,
+                                            on: feed.reader_view,
+                                            onchange: move |on: bool| feedback.report(app.set_feed_reader_view(&account_id, &feed_id, on)),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+            p { class: "note", {t("settings.readerViewNote")} }
+        }
+    }
+}
+
 /// The sync schedules, as the Tauri version offers them.
 const SCHEDULES: [SyncSchedule; 6] = [
     SyncSchedule::OnStart,
@@ -651,7 +748,13 @@ const KEEP_READ: [u32; 4] = [7, 14, 30, 90];
 const KEEP_UNREAD: [u32; 5] = [30, 90, 180, 365, 0];
 
 #[component]
-fn AccountPane(account: Account, feedback: Feedback) -> Element {
+fn AccountPane(
+    account: Account,
+    feedback: Feedback,
+    /// Back from the Reader View page, whose row then takes the focus.
+    returned: Signal<bool>,
+    on_reader_view: EventHandler,
+) -> Element {
     let app = use_context::<Arc<App>>();
     let mut name = use_signal(|| account.description.clone());
     let update = {
@@ -795,6 +898,26 @@ fn AccountPane(account: Account, feedback: Feedback) -> Element {
                     Row { label: t("settings.server"),
                         span { class: "value", "{server}" }
                     }
+                }
+            }
+        }
+        section {
+            h2 { {t("settings.reading")} }
+            div { class: "group",
+                button {
+                    class: "setting link",
+                    onmounted: move |e: MountedEvent| async move {
+                        let mut returned = returned;
+                        if *returned.peek() {
+                            returned.set(false);
+                            if let Err(err) = e.data().set_focus(true).await {
+                                tracing::warn!("focusing the Reader View row failed: {err}");
+                            }
+                        }
+                    },
+                    onclick: move |_| on_reader_view.call(()),
+                    span { {t("settings.readerViewRow")} }
+                    Icon { size: 16, stroke: "2", paths: CHEVRON_RIGHT }
                 }
             }
         }

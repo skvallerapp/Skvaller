@@ -483,6 +483,26 @@ button {
   opacity: 0.5;
 }
 
+/* Reader View: on, in the accent; loading, dimmed, as the sync. */
+.icon-button.reader-view {
+  color: var(--accent);
+}
+
+.icon-button.loading svg {
+  opacity: 0.5;
+}
+
+/* Why Reader View turned itself off, at the start of the reader's toolbar. */
+.reader .notice {
+  display: block;
+  padding-left: 12px;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 /* The account menu's line between the accounts and Add Account. */
 .menu .separator {
   height: 1px;
