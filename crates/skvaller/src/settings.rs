@@ -25,8 +25,9 @@ use crate::article;
 use crate::dates::Dates;
 use crate::fonts;
 use crate::i18n::{sentence, t, t_count, t_with};
-use crate::icons::{BOOK_OPEN, CHEVRONS_UP_DOWN, CIRCLE_USER, Icon, PALETTE, PLUS};
+use crate::icons::{BOOK_OPEN, CHEVRONS_UP_DOWN, CIRCLE_USER, Icon, KEYBOARD, PALETTE, PLUS};
 use crate::live::use_live;
+use crate::shortcuts::{self, Action, Capture, Refusal};
 use crate::ui::APP_CSS;
 
 const SETTINGS_CSS: &str = include_str!("settings.css");
@@ -86,6 +87,7 @@ impl SettingsWindow {
 pub enum Pane {
     Appearance,
     Reading,
+    Shortcuts,
     /// The account with this id.
     Account(String),
     AddAccount,
@@ -150,6 +152,7 @@ fn SettingsRoot() -> Element {
     let title = match (&current, &account) {
         (Pane::Appearance, _) => t("settings.appearance"),
         (Pane::Reading, _) => t("settings.reading"),
+        (Pane::Shortcuts, _) => t("settings.shortcuts"),
         (Pane::Account(_), Some(a)) => a.description.clone(),
         (Pane::Account(_), None) => String::new(),
         (Pane::AddAccount, _) => t("addAccount.title"),
@@ -184,6 +187,7 @@ fn SettingsRoot() -> Element {
                 ul {
                     NavRow { pane: Pane::Appearance, current: pane, label: t("settings.appearance"), icon: PALETTE }
                     NavRow { pane: Pane::Reading, current: pane, label: t("settings.reading"), icon: BOOK_OPEN }
+                    NavRow { pane: Pane::Shortcuts, current: pane, label: t("settings.shortcuts"), icon: KEYBOARD }
                 }
                 ul { class: "accounts", aria_label: t("settings.accounts"),
                     for a in accounts.iter() {
@@ -209,6 +213,7 @@ fn SettingsRoot() -> Element {
                         match (current.clone(), account.clone()) {
                             (Pane::Appearance, _) => rsx! { AppearancePane { settings: settings.clone(), feedback } },
                             (Pane::Reading, _) => rsx! { ReadingPane { settings: settings.clone(), feedback } },
+                            (Pane::Shortcuts, _) => rsx! { ShortcutsPane { overrides: settings.shortcuts.clone(), feedback } },
                             (Pane::Account(_), Some(account)) => rsx! { AccountPane { key: "{account.id}", account, feedback } },
                             (Pane::Account(_), None) => rsx! {},
                             (Pane::AddAccount, _) => rsx! {
@@ -487,6 +492,144 @@ fn ReadingPane(settings: Settings, feedback: Feedback) -> Element {
                         onchange: move |on: bool| set(Box::new(move |s| s.confirm_mark_all_read = on)),
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Whether keys show as macOS names them, such as ⇧ for Shift.
+const MAC: bool = cfg!(target_os = "macos");
+
+/// Each action and its key, as the Tauri version's `ShortcutList`.
+///
+/// Clicking a key waits for the next key press on that button, which has the focus
+/// then; leaving the button stops waiting.
+#[component]
+fn ShortcutsPane(overrides: shortcuts::Overrides, feedback: Feedback) -> Element {
+    let app = use_context::<Arc<App>>();
+    // The action waiting for its new key.
+    let mut recording = use_signal(|| None::<Action>);
+    // What the last key pressed came to, when worth saying.
+    let mut notice = use_signal(|| None::<String>);
+    let label_of = |action: Action| t(&format!("shortcuts.actions.{}", action.name()));
+    let save = {
+        let app = Arc::clone(&app);
+        move |new: shortcuts::Overrides| {
+            feedback
+                .report(app.change_settings(Box::new(move |s: &mut Settings| s.shortcuts = new)));
+        }
+    };
+    let note = match (notice(), recording()) {
+        (Some(notice), _) => notice,
+        (None, Some(_)) => t_with(
+            "shortcuts.recording",
+            &[(
+                "key",
+                &t(if MAC { "keys.delete" } else { "keys.backspace" }),
+            )],
+        ),
+        (None, None) => t("shortcuts.help"),
+    };
+    rsx! {
+        section {
+            h2 { {t("shortcuts.heading")} }
+            div { class: "group",
+                for action in Action::ALL {
+                    {
+                        let key = shortcuts::key_of(&overrides, action).map(str::to_owned);
+                        let waiting = recording() == Some(action);
+                        let shown = match (&key, waiting) {
+                            (_, true) => t("shortcuts.pressKey"),
+                            (Some(key), false) => shortcuts::key_label(key, MAC),
+                            (None, false) => t("shortcuts.none"),
+                        };
+                        let class = match (waiting, key.is_none()) {
+                            (true, _) => "key recording",
+                            (false, true) => "key none",
+                            (false, false) => "key",
+                        };
+                        let overrides = overrides.clone();
+                        let save = save.clone();
+                        rsx! {
+                            Row { key: "{action.name()}", label: label_of(action),
+                                button {
+                                    class,
+                                    aria_label: format!("{}, {shown}", label_of(action)),
+                                    onclick: move |_| {
+                                        recording.set(if waiting { None } else { Some(action) });
+                                        notice.set(None);
+                                    },
+                                    onblur: move |_| {
+                                        if recording.peek().is_some_and(|a| a == action) {
+                                            recording.set(None);
+                                        }
+                                    },
+                                    onkeydown: move |e: Event<KeyboardData>| {
+                                        if !waiting {
+                                            return;
+                                        }
+                                        // Tab moves on, as from any button, and stops waiting.
+                                        if e.key() == Key::Named(NamedKey::Tab) {
+                                            recording.set(None);
+                                            return;
+                                        }
+                                        // The key is this button's alone: Escape mustn't close
+                                        // the window, nor a letter reach anything else.
+                                        e.stop_propagation();
+                                        e.prevent_default();
+                                        let code = e.code().to_string();
+                                        let new = match shortcuts::capture(&e.key(), &code, e.modifiers()) {
+                                            Capture::Wait => return,
+                                            Capture::Cancel => {
+                                                recording.set(None);
+                                                notice.set(None);
+                                                return;
+                                            }
+                                            Capture::Refuse(why) => {
+                                                notice.set(Some(match why {
+                                                    Refusal::NotSingle => t("shortcuts.singleKey"),
+                                                    Refusal::Arrow => t("shortcuts.arrows"),
+                                                    Refusal::Enter => t_with(
+                                                        "shortcuts.notAllowed",
+                                                        &[("key", &shortcuts::key_label("Enter", MAC))],
+                                                    ),
+                                                }));
+                                                return;
+                                            }
+                                            Capture::Clear => None,
+                                            Capture::Key(name) => Some(name),
+                                        };
+                                        recording.set(None);
+                                        let (result, displaced) =
+                                            shortcuts::rebind(&overrides, action, new.as_deref());
+                                        notice.set(displaced.zip(new).map(|(other, key)| {
+                                            t_with(
+                                                "shortcuts.displaced",
+                                                &[
+                                                    ("key", &shortcuts::key_label(&key, MAC)),
+                                                    ("action", &label_of(other)),
+                                                ],
+                                            )
+                                        }));
+                                        save(result);
+                                    },
+                                    "{shown}"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            p { class: "note", aria_live: "polite", "{note}" }
+            button {
+                class: "button restore",
+                disabled: overrides.is_empty(),
+                onclick: move |_| {
+                    recording.set(None);
+                    notice.set(None);
+                    save(shortcuts::Overrides::new());
+                },
+                {t("shortcuts.restore")}
             }
         }
     }

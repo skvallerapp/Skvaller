@@ -46,6 +46,18 @@ pub const LAPTOP: &[&str] = &[
     "M18 5a2 2 0 0 1 2 2v8.526a2 2 0 0 0 .212.897l1.068 2.127a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45l1.068-2.127A2 2 0 0 0 4 15.526V7a2 2 0 0 1 2-2z",
     "M20.054 15.987H3.946",
 ];
+pub const KEYBOARD: &[&str] = &[
+    "M10 8h.01",
+    "M12 12h.01",
+    "M14 8h.01",
+    "M16 12h.01",
+    "M18 8h.01",
+    "M6 8h.01",
+    "M7 16h10",
+    "M8 12h.01",
+    // Lucide's rect, x 2, y 4, 20 by 16, corners of 2.
+    "M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z",
+];
 pub const PLUS: &[&str] = &["M5 12h14", "M12 5v14"];
 /// Lucide's rss, its dot as a path.
 pub const RSS: &[&str] = &[
