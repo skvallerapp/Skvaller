@@ -322,8 +322,49 @@ button {
   position: absolute;
   left: 0;
   right: 0;
+  display: flex;
+  gap: 12px;
   padding: 11px 20px 0;
   overflow: hidden;
+}
+
+/* The meta line and headline, and a Large thumbnail at the bottom, so every one sits
+   at the same place in its row whatever the headline's lines. */
+.row .text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Cropped to fill a fixed box, so rows never change height. The hairline keeps a light
+   image from melting into a light list. */
+.thumb {
+  flex: none;
+  object-fit: cover;
+  border-radius: 6px;
+  outline: 1px solid var(--separator);
+  outline-offset: -1px;
+}
+
+.thumb.small {
+  width: 40px;
+  height: 40px;
+  margin-top: 2px;
+}
+
+.thumb.medium {
+  width: 64px;
+  height: 64px;
+  margin-top: 2px;
+}
+
+/* 180 px is 16:9 of the row's width; ui.rs's LARGE_THUMB_EXTRA counts these sizes. */
+.thumb.large {
+  width: 100%;
+  height: 180px;
+  margin-top: auto;
+  margin-bottom: 11px;
 }
 
 .row:hover {

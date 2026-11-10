@@ -60,6 +60,8 @@ impl App {
             }
         };
         self.changed(&rt);
+        // Its articles are new to the cache: their thumbnails now, not at the next sync.
+        self.fetch_thumbnails(&rt);
         Ok(id)
     }
 

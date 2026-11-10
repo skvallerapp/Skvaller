@@ -123,6 +123,9 @@ pub(crate) struct Runtime {
     pub(crate) woke: AtomicBool,
     /// The Reader View prefetch started after the last sync, while it may still run.
     pub(crate) prefetch: Mutex<Option<tokio::task::AbortHandle>>,
+    /// The thumbnails' fetch started after the last sync or a new feed, while it may
+    /// still run.
+    pub(crate) thumbnails: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 impl Runtime {
@@ -138,6 +141,7 @@ impl Runtime {
             wake: Notify::new(),
             woke: AtomicBool::new(false),
             prefetch: Mutex::new(None),
+            thumbnails: Mutex::new(None),
         };
         // A local cache without feeds, as after a new version's cache started over,
         // gets them back from their backup before a sync backs up the empty list.
@@ -368,6 +372,13 @@ impl App {
     /// [`Error::Io`] when config.json can't be saved; the settings stay as they were.
     pub fn change_settings(&self, change: impl FnOnce(&mut crate::config::Settings)) -> Result<()> {
         self.update_config(|config| change(&mut config.settings))?;
+        // Turned off: no image host hears from the app from now on, not even for the
+        // rest of a run under way.
+        if self.settings().thumbnail_size == crate::ThumbnailSize::None {
+            for rt in self.runtimes() {
+                stop(&rt.thumbnails);
+            }
+        }
         self.announce();
         Ok(())
     }
@@ -688,6 +699,14 @@ fn local_db(dirs: &Dirs) -> Result<Db> {
         .save(&config_path)
         .map_err(io("Saving", &config_path))?;
     Ok(Db::open(db_path(&app.accounts_dir, &id))?)
+}
+
+/// Aborts the background task in `slot`, if one runs. It stops at its next await, so
+/// no write to the cache is cut short.
+pub(crate) fn stop(slot: &Mutex<Option<tokio::task::AbortHandle>>) {
+    if let Some(task) = lock(slot).take() {
+        task.abort();
+    }
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

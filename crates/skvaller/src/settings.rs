@@ -3,8 +3,8 @@
 //! It runs its own `VirtualDom`, so it shares nothing with the main window but what it
 //! is given: the [`App`], and the [`SettingsWindow`] slot that says whether it is open.
 //! A change is saved at once, and every window follows it through the app's config
-//! revision. Settings for what the native app doesn't have yet, such as thumbnails, are
-//! left out until it does.
+//! revision. Settings for what the native app doesn't have yet are left out until it
+//! does.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -15,7 +15,7 @@ use dioxus_native::winit::window::Window;
 use dioxus_native::{Config, LogicalSize, WindowAttributes, Windows, use_window};
 use skvaller_app::{
     Account, AccountChange, AccountKind, App, Clock, DateFormat, Font, MarkReadOn, Settings,
-    SyncSchedule, Theme,
+    SyncSchedule, Theme, ThumbnailSize,
 };
 use skvaller_core::ImportReport;
 use tokio::sync::Notify;
@@ -396,6 +396,18 @@ fn AppearancePane(settings: Settings, feedback: Feedback) -> Element {
         t("settings.themes.dark"),
         t("settings.themes.espresso"),
     ];
+    let sizes = [
+        ThumbnailSize::None,
+        ThumbnailSize::Small,
+        ThumbnailSize::Medium,
+        ThumbnailSize::Large,
+    ];
+    let size_labels = vec![
+        t("settings.thumbnailSizes.none"),
+        t("settings.thumbnailSizes.small"),
+        t("settings.thumbnailSizes.medium"),
+        t("settings.thumbnailSizes.large"),
+    ];
     let font_labels: Vec<String> = FONTS.iter().map(|&f| font_name(f)).collect();
     let set = move |change: SettingsChange| feedback.report(app.change_settings(change));
 
@@ -442,6 +454,23 @@ fn AppearancePane(settings: Settings, feedback: Feedback) -> Element {
                     }
                 }
             }
+        }
+        section {
+            h2 { {t("settings.articleList")} }
+            div { class: "group",
+                Row { label: t("settings.thumbnails"),
+                    Select {
+                        label: t("settings.thumbnails"),
+                        choices: size_labels,
+                        selected: index(&sizes, &settings.thumbnail_size),
+                        onchange: {
+                            let set = set.clone();
+                            move |i: usize| set(Box::new(move |s| s.thumbnail_size = sizes[i]))
+                        },
+                    }
+                }
+            }
+            p { class: "note", {t("settings.thumbnailsNote")} }
         }
         section {
             h2 { {t("settings.motion")} }

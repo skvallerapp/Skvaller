@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use dioxus_native::prelude::*;
 use dioxus_native::{use_window_event, use_windows};
-use skvaller_app::{App, Library, MarkReadOn, SyncStatus};
+use skvaller_app::{App, Library, MarkReadOn, SyncStatus, ThumbnailSize};
 use skvaller_core::{ArticleSummary, Scope, Selection, View};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -24,6 +24,7 @@ use crate::i18n::{t, t_count, t_with};
 use crate::live::{Live, use_live};
 use crate::settings::{Pane as SettingsPane, SettingsWindow};
 use crate::shortcuts::{ARROWS, Action, key_name};
+use crate::thumbs;
 
 mod manage;
 
@@ -31,9 +32,13 @@ use manage::{AddFeed, ConfirmRemove, Manage, ManageMenu, RenameField, Target, is
 
 pub(crate) const APP_CSS: &str = include_str!("app.css");
 
-/// Height of an article list row, in CSS pixels: the Tauri version's row without
-/// thumbnails. Every row has it, so the list can place rows without measuring them.
+/// Height of an article list row, in CSS pixels: the Tauri version's row with three
+/// lines of headline. Rows are placed from these heights, never by measuring them.
 const ROW_HEIGHT: f64 = 87.0;
+
+/// What a Large thumbnail adds to its row: a gap above it, its height and the row's
+/// bottom padding. It is 16:9 of the list's fixed 360 px less the rows' 20 px sides.
+const LARGE_THUMB_EXTRA: f64 = 8.0 + 180.0 + 11.0;
 
 /// Rows rendered above and below the visible ones, so a fast scroll doesn't show gaps
 /// before the next render.
@@ -737,10 +742,12 @@ pub fn Root() -> Element {
         move || {
             spawn(async move {
                 let mut events = app.subscribe();
-                // A report sent before this listened, as by the first sync at start.
+                // A report sent before this listened, as by the first sync at start: its
+                // status, and what it changed since the lists first loaded.
                 let shown = account.peek().clone();
                 if let Some(id) = shown {
                     status.set(app.status(&id).ok());
+                    revision += 1;
                 }
                 loop {
                     match events.recv().await {
@@ -1356,8 +1363,15 @@ fn ArticleList() -> Element {
 #[component]
 fn Viewport() -> Element {
     let app = use_context::<Arc<App>>();
-    let dates = (use_context::<Live>().dates)();
+    let live = use_context::<Live>();
+    let dates = (live.dates)();
     let mut reading = use_context::<Reading>();
+    let size = live.settings.read().thumbnail_size;
+    // Where each row starts: a Large thumbnail makes its row taller.
+    let offsets = use_memo(move || {
+        let size = live.settings.read().thumbnail_size;
+        row_offsets(&reading.articles.read().rows, size)
+    });
     let mut top = use_signal(|| 0.0_f64);
     let mut height = use_signal(|| INITIAL_VIEWPORT);
     let mut mounted = use_signal(|| None::<Rc<MountedData>>);
@@ -1384,7 +1398,10 @@ fn Viewport() -> Element {
             if (*height.peek() - view_height).abs() >= 1.0 {
                 height.set(view_height);
             }
-            let (row_top, row_bottom) = (row_offset(i), row_offset(i + 1));
+            let (row_top, row_bottom) = {
+                let offsets = offsets.peek();
+                (offsets[i], offsets[i + 1])
+            };
             let view_top = *top.peek();
             let target = if row_top < view_top {
                 row_top
@@ -1403,8 +1420,16 @@ fn Viewport() -> Element {
 
     let listed = reading.articles.read();
     let list = &listed.rows;
-    let (first, last) = visible_rows(top(), height(), list.len());
-    let total = row_offset(list.len());
+    let offsets = offsets.read();
+    let (first, last) = visible_rows(&offsets, top(), height());
+    let total = offsets[list.len()];
+    let account = reading.account.read().clone().unwrap_or_default();
+    let (beside, below) = match size {
+        ThumbnailSize::Small => (Some("thumb small"), false),
+        ThumbnailSize::Medium => (Some("thumb medium"), false),
+        ThumbnailSize::Large => (None, true),
+        ThumbnailSize::None => (None, false),
+    };
     let selected = reading.article.read().as_ref().map(|a| a.id.clone());
     let lib = reading.library.read();
     let feed_title = |id: &str| {
@@ -1445,25 +1470,35 @@ fn Viewport() -> Element {
                         if selected.as_deref() == Some(a.id.as_str()) {
                             class.push_str(" selected");
                         }
+                        let (row_top, row_height) = (offsets[i], offsets[i + 1] - offsets[i]);
+                        let thumb = a.thumbnail.then(|| thumbs::url(&account, &a.id));
                         rsx! {
                             div {
                                 key: "{a.id}",
                                 class,
-                                style: "top: {row_offset(i)}px; height: {ROW_HEIGHT}px",
+                                style: "top: {row_top}px; height: {row_height}px",
                                 onclick: move |_| {
                                     reading.pane.set(Pane::List);
                                     reading.open(&app, summary.clone());
                                 },
-                                div { class: "meta",
-                                    span { class: "feed", {feed_title(&a.feed_id)} }
-                                    if reading.is_starred(a) {
-                                        svg { class: "star", width: "11", height: "11", view_box: "0 0 24 24", fill: "currentColor",
-                                            path { d: STAR_PATH }
-                                        }
-                                    }
-                                    span { {dates.list(a.published)} }
+                                if let (Some(class), Some(src)) = (beside, thumb.clone()) {
+                                    img { class, src, alt: "" }
                                 }
-                                div { class: "title", "{a.title}" }
+                                div { class: "text",
+                                    div { class: "meta",
+                                        span { class: "feed", {feed_title(&a.feed_id)} }
+                                        if reading.is_starred(a) {
+                                            svg { class: "star", width: "11", height: "11", view_box: "0 0 24 24", fill: "currentColor",
+                                                path { d: STAR_PATH }
+                                            }
+                                        }
+                                        span { {dates.list(a.published)} }
+                                    }
+                                    div { class: "title", "{a.title}" }
+                                    if let Some(src) = thumb.filter(|_| below) {
+                                        img { class: "thumb large", src, alt: "" }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1625,44 +1660,81 @@ fn ReaderButtons(article: ArticleSummary) -> Element {
     }
 }
 
-/// The rows to render, `first..last`, for a viewport scrolled to `top` that is `height`
-/// tall, with `OVERSCAN` rows either side.
-fn visible_rows(top: f64, height: f64, len: usize) -> (usize, usize) {
-    let rows = |px: f64| {
-        let n = (px.max(0.0) / ROW_HEIGHT).floor();
-        // Bounded by the list length below; a scroll position is never near usize::MAX.
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "non-negative and small"
-        )]
-        let n = n as usize;
-        n
-    };
-    let first = rows(top).saturating_sub(OVERSCAN);
-    let last = (rows(top + height) + 1 + OVERSCAN).min(len);
-    (first.min(last), last)
+/// Where each of `rows` starts, in CSS pixels, and then where the last one ends.
+fn row_offsets(rows: &[ArticleSummary], size: ThumbnailSize) -> Vec<f64> {
+    let mut offsets = Vec::with_capacity(rows.len() + 1);
+    let mut at = 0.0;
+    offsets.push(at);
+    for a in rows {
+        at += if size == ThumbnailSize::Large && a.thumbnail {
+            ROW_HEIGHT + LARGE_THUMB_EXTRA
+        } else {
+            ROW_HEIGHT
+        };
+        offsets.push(at);
+    }
+    offsets
 }
 
-/// Where row `i` starts, in CSS pixels.
-fn row_offset(i: usize) -> f64 {
-    // Exact for any list a person scrolls: f64 holds integers up to 2^53.
-    #[expect(clippy::cast_precision_loss, reason = "row counts are far below 2^53")]
-    let i = i as f64;
-    i * ROW_HEIGHT
+/// The rows to render, `first..last`, for a viewport scrolled to `top` that is `height`
+/// tall, with `OVERSCAN` rows either side. `offsets` is [`row_offsets`]'s.
+fn visible_rows(offsets: &[f64], top: f64, height: f64) -> (usize, usize) {
+    let len = offsets.len().saturating_sub(1);
+    // The row that contains `y`: the last that starts at or above it.
+    let row_at = |y: f64| offsets.partition_point(|&o| o <= y).saturating_sub(1);
+    let first = row_at(top).saturating_sub(OVERSCAN).min(len);
+    let last = (row_at(top + height) + 1 + OVERSCAN).min(len);
+    (first.min(last), last)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn articles(thumbnails: &[bool]) -> Vec<ArticleSummary> {
+        thumbnails
+            .iter()
+            .enumerate()
+            .map(|(i, &thumbnail)| ArticleSummary {
+                id: i.to_string(),
+                feed_id: String::new(),
+                title: String::new(),
+                author: String::new(),
+                url: String::new(),
+                published: 0,
+                read: false,
+                starred: false,
+                thumbnail,
+            })
+            .collect()
+    }
+
     #[test]
     fn only_the_visible_rows_and_some_either_side_render() {
-        assert_eq!(visible_rows(0.0, 870.0, 5_000), (0, 19));
-        let (first, last) = visible_rows(87_000.0, 870.0, 5_000);
-        assert_eq!((first, last), (992, 1019));
-        assert_eq!(visible_rows(434_913.0, 870.0, 5_000), (4_991, 5_000));
-        assert_eq!(visible_rows(0.0, 870.0, 3), (0, 3));
+        let offsets = row_offsets(&articles(&[false; 5_000]), ThumbnailSize::Large);
+        assert_eq!(visible_rows(&offsets, 0.0, 870.0), (0, 19));
+        assert_eq!(visible_rows(&offsets, 87_000.0, 870.0), (992, 1019));
+        assert_eq!(visible_rows(&offsets, 434_913.0, 870.0), (4_991, 5_000));
+        let three = row_offsets(&articles(&[false; 3]), ThumbnailSize::Medium);
+        assert_eq!(visible_rows(&three, 0.0, 870.0), (0, 3));
+        assert_eq!(visible_rows(&[0.0], 0.0, 870.0), (0, 0));
+    }
+
+    #[test]
+    fn only_a_large_thumbnail_makes_its_row_taller() {
+        let list = articles(&[true, false, true]);
+        let tall = ROW_HEIGHT + LARGE_THUMB_EXTRA;
+        assert_eq!(
+            row_offsets(&list, ThumbnailSize::Large),
+            [0.0, tall, tall + ROW_HEIGHT, 2.0 * tall + ROW_HEIGHT]
+        );
+        assert_eq!(
+            row_offsets(&list, ThumbnailSize::Medium),
+            [0.0, ROW_HEIGHT, 2.0 * ROW_HEIGHT, 3.0 * ROW_HEIGHT]
+        );
+        // Past the end, the last rows render.
+        let offsets = row_offsets(&list, ThumbnailSize::Large);
+        assert_eq!(visible_rows(&offsets, 10_000.0, 500.0), (0, 3));
     }
 
     #[test]

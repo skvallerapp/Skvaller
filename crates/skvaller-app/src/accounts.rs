@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering;
 use skvaller_core::{Client, ImportReport, delete_token, export_opml, import_opml, save_token};
 use tracing::Level;
 
-use crate::app::{App, Runtime, default_description, lock, read, remove_db_files, write};
+use crate::app::{App, Runtime, default_description, lock, read, remove_db_files, stop, write};
 use crate::config::{Account, AccountKind, Config, DEFAULT_KEEP_UNREAD_DAYS, SyncSchedule};
 use crate::error::{Error, Result};
 
@@ -209,10 +209,9 @@ impl App {
                 // Its background sync looks again, finds the account gone, and ends.
                 rt.wake.notify_one();
                 *lock(&rt.client) = None;
-                // Aborted between pages' writes, at an await: no write is cut short.
-                if let Some(task) = lock(&rt.prefetch).take() {
-                    task.abort();
-                }
+                // Aborted between writes, at an await: no write is cut short.
+                stop(&rt.prefetch);
+                stop(&rt.thumbnails);
             }
         }
         drop(rt);

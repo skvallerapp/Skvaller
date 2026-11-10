@@ -15,6 +15,7 @@ mod error;
 mod feeds;
 mod gate;
 mod sync;
+mod thumbnails;
 
 #[doc(inline)]
 pub use app::{AccountChange, App, Dirs, Library, Notice, import_local, seed_local};

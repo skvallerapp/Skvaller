@@ -202,6 +202,7 @@ impl App {
             Outcome::Done(Some(ran)) => {
                 if ran == Ran::Synced {
                     self.prefetch(rt);
+                    self.fetch_thumbnails(rt);
                 }
                 ran
             }
@@ -247,7 +248,7 @@ impl App {
         }
     }
 
-    fn emit(&self, status: SyncStatus) {
+    pub(crate) fn emit(&self, status: SyncStatus) {
         // No listener yet is fine: a window that opens later reads the status itself.
         let _ = self.events.send(status);
     }
