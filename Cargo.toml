@@ -18,8 +18,9 @@ skvaller-core = { path = "crates/skvaller-core", version = "0.1.0" }
 # glyph caching so emoji don't panic Vello GPU, scrolling an iframe through MountedData,
 # the bullet font kept with an embedder's fonts, a redraw on a system theme change, and
 # opening more windows, and upstream PR #1321 (single-select <select>), with the upstream
-# main it merged.
-dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "24bba9ab", default-features = false }
+# main it merged, with the open list in the options' colors and keeping its keys from
+# the page.
+dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "ba23681c", default-features = false }
 
 dirs = "6.0.0"
 icu_calendar = { version = "2.4.0", default-features = false }
