@@ -740,6 +740,8 @@ pub(crate) fn remove_db_files(dir: &Path, id: &str) -> bool {
 /// effort: a failure is logged.
 fn restore_feeds(dir: &Path, account_id: &str, db: &Db) {
     let restored = match std::fs::read_to_string(feeds_backup_path(dir, account_id)) {
+        // A backup of no feeds, which the OPML reader doesn't take, restores nothing.
+        Ok(xml) if !xml.contains("<outline") => Ok(()),
         Ok(xml) => import_opml(db, &xml).map(drop).map_err(|e| e.to_string()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.to_string()),
