@@ -490,10 +490,21 @@ button {
   background: var(--separator);
 }
 
+/* The main window without an account to show. */
+.add-account-screen {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
 /* Over the add-account screen, the accounts that still work. */
 .other-accounts {
   position: absolute;
   top: 8px;
   right: 10px;
+  width: 260px;
+  display: flex;
+  justify-content: flex-end;
 }
 

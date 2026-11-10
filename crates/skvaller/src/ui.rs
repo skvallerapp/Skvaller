@@ -584,6 +584,11 @@ pub fn Root() -> Element {
         move || {
             spawn(async move {
                 let mut events = app.subscribe();
+                // A report sent before this listened, as by the first sync at start.
+                let shown = account.peek().clone();
+                if let Some(id) = shown {
+                    status.set(app.status(&id).ok());
+                }
                 loop {
                     match events.recv().await {
                         Ok(report) => {
@@ -721,6 +726,7 @@ pub fn Root() -> Element {
         }
     });
     let signed_out = (reading.status)().is_some_and(|s| s.unauthorized);
+    let adding = reading.account.peek().is_none() || signed_out;
     let settings_now = live.settings.read();
     let theme = article::theme_name(settings_now.theme);
     let ui_font = format!("--ui-font: {}", fonts::stack(settings_now.ui_font));
@@ -739,7 +745,10 @@ pub fn Root() -> Element {
             onmounted: move |e: MountedEvent| {
                 // Without focus the app hears no keys, but works otherwise.
                 reading.root.set(Some(e.data()));
-                reading.refocus();
+                // The add-account screen focuses its first field instead.
+                if !adding {
+                    reading.refocus();
+                }
             },
             onkeydown: move |e: Event<KeyboardData>| {
                 if e.code() == Code::Comma && e.modifiers() == COMMAND_MODIFIER {
@@ -785,9 +794,11 @@ fn AddAccountScreen() -> Element {
         .as_ref()
         .map(|a| t_with("app.signInAgain", &[("account", &a.description)]));
     rsx! {
-        AddAccount { embedded: false, again, initial_error: error, on_added: |_| {} }
-        if app.accounts().len() > 1 {
-            div { class: "other-accounts", AccountSwitcher {} }
+        div { class: "add-account-screen",
+            AddAccount { embedded: false, again, initial_error: error, on_added: |_| {} }
+            if app.accounts().len() > 1 {
+                div { class: "other-accounts", AccountSwitcher {} }
+            }
         }
     }
 }
