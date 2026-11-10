@@ -85,7 +85,10 @@ fn SettingsRoot() -> Element {
     let id = window.id();
     let live = use_live(&app);
     let pane = use_signal(|| Pane::Appearance);
-    let error = use_signal(|| None::<String>);
+    let feedback = Feedback {
+        error: use_signal(|| None),
+        failures: use_signal(|| 0),
+    };
 
     let settings = live.settings.read().clone();
     // The accounts change with the config too, as when one is renamed.
@@ -146,15 +149,19 @@ fn SettingsRoot() -> Element {
                         p { "{username}" }
                     }
                 }
-                if let Some(e) = error() {
+                if let Some(e) = (feedback.error)() {
                     p { class: "error", role: "alert", "{e}" }
                 }
-                div { class: "content",
-                    match (current, account) {
-                        (Pane::Appearance, _) => rsx! { AppearancePane { settings, error } },
-                        (Pane::Reading, _) => rsx! { ReadingPane { settings, error } },
-                        (Pane::Account(_), Some(account)) => rsx! { AccountPane { key: "{account.id}", account, error } },
-                        (Pane::Account(_), None) => rsx! {},
+                // Made again after a failed change, so its controls show what is saved
+                // rather than what was picked.
+                for failures in [(feedback.failures)()] {
+                    div { key: "{failures}", class: "content",
+                        match (current.clone(), account.clone()) {
+                            (Pane::Appearance, _) => rsx! { AppearancePane { settings: settings.clone(), feedback } },
+                            (Pane::Reading, _) => rsx! { ReadingPane { settings: settings.clone(), feedback } },
+                            (Pane::Account(_), Some(account)) => rsx! { AccountPane { key: "{account.id}", account, feedback } },
+                            (Pane::Account(_), None) => rsx! {},
+                        }
                     }
                 }
             }
@@ -208,17 +215,24 @@ fn AccountRow(account: Account, current: Signal<Pane>) -> Element {
     }
 }
 
-/// Saves the settings with `change` made, or says why it couldn't.
-fn change_settings(
-    app: &App,
-    mut error: Signal<Option<String>>,
-    change: impl FnOnce(&mut Settings),
-) {
-    let mut settings = app.settings();
-    change(&mut settings);
-    match app.set_settings(settings) {
-        Ok(()) => error.set(None),
-        Err(e) => error.set(Some(e.to_string())),
+/// What the last change came to, shown over the pane.
+#[derive(Clone, Copy, PartialEq)]
+struct Feedback {
+    /// Why the last change failed.
+    error: Signal<Option<String>>,
+    /// Counts the failed changes; the pane is made again on each.
+    failures: Signal<u32>,
+}
+
+impl Feedback {
+    fn report(mut self, result: skvaller_app::Result<()>) {
+        match result {
+            Ok(()) => self.error.set(None),
+            Err(e) => {
+                self.error.set(Some(e.to_string()));
+                self.failures += 1;
+            }
+        }
     }
 }
 
@@ -226,7 +240,7 @@ fn change_settings(
 type SettingsChange = Box<dyn FnOnce(&mut Settings)>;
 
 #[component]
-fn AppearancePane(settings: Settings, error: Signal<Option<String>>) -> Element {
+fn AppearancePane(settings: Settings, feedback: Feedback) -> Element {
     let app = use_context::<Arc<App>>();
     let clocks = [Clock::System, Clock::H24, Clock::H12];
     let clock_labels = vec![
@@ -256,7 +270,7 @@ fn AppearancePane(settings: Settings, error: Signal<Option<String>>) -> Element 
         t("settings.themes.espresso"),
     ];
     let font_labels: Vec<String> = FONTS.iter().map(|&f| font_name(f)).collect();
-    let set = move |change: SettingsChange| change_settings(&app, error, change);
+    let set = move |change: SettingsChange| feedback.report(app.change_settings(change));
 
     rsx! {
         section {
@@ -380,7 +394,7 @@ fn font_name(font: Font) -> String {
 }
 
 #[component]
-fn ReadingPane(settings: Settings, error: Signal<Option<String>>) -> Element {
+fn ReadingPane(settings: Settings, feedback: Feedback) -> Element {
     let app = use_context::<Arc<App>>();
     let modes = [MarkReadOn::Open, MarkReadOn::Delay, MarkReadOn::Manual];
     let mode_labels = vec![
@@ -388,7 +402,7 @@ fn ReadingPane(settings: Settings, error: Signal<Option<String>>) -> Element {
         t("settings.markReadModes.delay"),
         t("settings.markReadModes.manual"),
     ];
-    let set = move |change: SettingsChange| change_settings(&app, error, change);
+    let set = move |change: SettingsChange| feedback.report(app.change_settings(change));
     rsx! {
         section {
             h2 { {t("settings.markingRead")} }
@@ -432,27 +446,24 @@ const KEEP_READ: [u32; 4] = [7, 14, 30, 90];
 const KEEP_UNREAD: [u32; 5] = [30, 90, 180, 365, 0];
 
 #[component]
-fn AccountPane(account: Account, error: Signal<Option<String>>) -> Element {
+fn AccountPane(account: Account, feedback: Feedback) -> Element {
     let app = use_context::<Arc<App>>();
     let mut name = use_signal(|| account.description.clone());
     let update = {
         let (app, id) = (Arc::clone(&app), account.id.clone());
-        move |change: AccountChange| {
-            let mut error = error;
-            match app.update_account(&id, &change) {
-                Ok(()) => error.set(None),
-                Err(e) => error.set(Some(e.to_string())),
-            }
-        }
+        move |change: AccountChange| feedback.report(app.update_account(&id, &change))
     };
+    let current = account.description.clone();
     let mut rename = {
-        let (update, current) = (update.clone(), account.description.clone());
+        let (update, current) = (update.clone(), current.clone());
         move || {
             let next = name.peek().trim().to_owned();
             if next.is_empty() {
                 // A blank name isn't taken: the field shows the name again.
                 name.set(current.clone());
             } else if next != current {
+                // As saved, without the spaces around it.
+                name.set(next.clone());
                 update(AccountChange {
                     description: Some(next),
                     ..AccountChange::default()
@@ -460,20 +471,7 @@ fn AccountPane(account: Account, error: Signal<Option<String>>) -> Element {
             }
         }
     };
-    let schedule_labels: Vec<String> = SCHEDULES
-        .iter()
-        .map(|&s| match s {
-            SyncSchedule::OnStart => t("settings.syncSchedules.onStart"),
-            SyncSchedule::Every(60) => t("settings.syncSchedules.everyHour"),
-            SyncSchedule::Every(minutes) => {
-                t_count("settings.syncSchedules.everyMinutes", i64::from(minutes))
-            }
-            SyncSchedule::Manual => t("settings.syncSchedules.manual"),
-        })
-        .collect();
-    // A schedule or period set by hand in config.json, not on the list, shows as the
-    // first choice until another is picked.
-    let schedule = index(&SCHEDULES, &account.sync);
+    let schedule_labels: Vec<String> = SCHEDULES.iter().map(|&s| schedule_label(s)).collect();
     let read_labels: Vec<String> = KEEP_READ.iter().map(|&d| period(d)).collect();
     let unread_labels: Vec<String> = KEEP_UNREAD.iter().map(|&d| period(d)).collect();
     let local = account.kind == AccountKind::Local;
@@ -492,10 +490,18 @@ fn AccountPane(account: Account, error: Signal<Option<String>>) -> Element {
                         onkeydown: {
                             let mut rename = rename.clone();
                             move |e: Event<KeyboardData>| {
-                                // Keys typed here are the field's, not the window's.
+                                let key = e.key();
+                                // With nothing typed, Escape is the window's: it closes.
+                                if key == Key::Named(NamedKey::Escape) && *name.peek() == current {
+                                    return;
+                                }
+                                // Other keys typed here are the field's, not the window's.
                                 e.stop_propagation();
-                                if e.key() == Key::Named(NamedKey::Enter) {
-                                    rename();
+                                match key {
+                                    Key::Named(NamedKey::Enter) => rename(),
+                                    // Undoes the typing, as the Tauri version does.
+                                    Key::Named(NamedKey::Escape) => name.set(current.clone()),
+                                    _ => {}
                                 }
                             }
                         },
@@ -516,7 +522,8 @@ fn AccountPane(account: Account, error: Signal<Option<String>>) -> Element {
                     Select {
                         label: t("settings.syncSchedule"),
                         choices: schedule_labels,
-                        selected: schedule,
+                        selected: index(&SCHEDULES, &account.sync),
+                        other: schedule_label(account.sync),
                         onchange: {
                             let update = update.clone();
                             move |i: usize| update(AccountChange {
@@ -544,6 +551,7 @@ fn AccountPane(account: Account, error: Signal<Option<String>>) -> Element {
                         label: t("settings.keepRead"),
                         choices: read_labels,
                         selected: index(&KEEP_READ, &account.keep_read_days),
+                        other: period(account.keep_read_days),
                         onchange: {
                             let update = update.clone();
                             move |i: usize| update(AccountChange {
@@ -559,6 +567,7 @@ fn AccountPane(account: Account, error: Signal<Option<String>>) -> Element {
                             label: t("settings.keepUnread"),
                             choices: unread_labels,
                             selected: index(&KEEP_UNREAD, &account.keep_unread_days),
+                            other: period(account.keep_unread_days),
                             onchange: move |i: usize| update(AccountChange {
                                 keep_unread_days: Some(KEEP_UNREAD[i]),
                                 ..AccountChange::default()
@@ -569,6 +578,18 @@ fn AccountPane(account: Account, error: Signal<Option<String>>) -> Element {
             }
             p { class: "note", {t("settings.keepStarredNote")} }
         }
+    }
+}
+
+/// A sync schedule's name, as the Tauri version names it.
+fn schedule_label(schedule: SyncSchedule) -> String {
+    match schedule {
+        SyncSchedule::OnStart => t("settings.syncSchedules.onStart"),
+        SyncSchedule::Every(60) => t("settings.syncSchedules.everyHour"),
+        SyncSchedule::Every(minutes) => {
+            t_count("settings.syncSchedules.everyMinutes", i64::from(minutes))
+        }
+        SyncSchedule::Manual => t("settings.syncSchedules.manual"),
     }
 }
 
@@ -583,9 +604,9 @@ fn period(days: u32) -> String {
     }
 }
 
-/// Where `value` is in `choices`; the first when it isn't there.
-fn index<T: PartialEq>(choices: &[T], value: &T) -> usize {
-    choices.iter().position(|c| c == value).unwrap_or(0)
+/// Where `value` is in `choices`.
+fn index<T: PartialEq>(choices: &[T], value: &T) -> Option<usize> {
+    choices.iter().position(|c| c == value)
 }
 
 /// A labelled row of a group.
@@ -599,12 +620,14 @@ fn Row(label: String, children: Element) -> Element {
     }
 }
 
-/// A dropdown of `choices`, by index.
+/// A dropdown of `choices`, by index. A value not among them, as one set by hand in
+/// config.json, shows first as `other` until another is picked, as in the Tauri version.
 #[component]
 fn Select(
     label: String,
     choices: Vec<String>,
-    selected: usize,
+    selected: Option<usize>,
+    #[props(default)] other: String,
     onchange: EventHandler<usize>,
 ) -> Element {
     rsx! {
@@ -616,8 +639,11 @@ fn Select(
                         onchange.call(i);
                     }
                 },
+                if selected.is_none() {
+                    option { value: "other", selected: true, "{other}" }
+                }
                 for (i , choice) in choices.iter().enumerate() {
-                    option { key: "{i}", value: "{i}", selected: i == selected, "{choice}" }
+                    option { key: "{i}", value: "{i}", selected: Some(i) == selected, "{choice}" }
                 }
             }
             Icon { size: 14, stroke: "2", paths: CHEVRONS_UP_DOWN }

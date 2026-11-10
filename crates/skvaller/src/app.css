@@ -11,6 +11,7 @@
   --hover: rgb(0 0 0 / 0.04);
   --active: rgb(0 0 0 / 0.07);
   --switch-knob: #ffffff;
+  --thumb-edge: rgb(0 0 0 / 0.15);
   --accent: #9a5136;
   --accent-text: #ffffff;
   --unread: #9a5136;
@@ -30,6 +31,8 @@
     --hover: rgb(255 255 255 / 0.04);
     --active: rgb(255 255 255 / 0.08);
     --switch-knob: #d4d4d8;
+  --thumb-edge: rgb(255 255 255 / 0.2);
+    --thumb-edge: rgb(255 255 255 / 0.2);
     --accent: #52709c;
     --unread: #8aa4c8;
     --star: #f0b63a;
@@ -65,6 +68,7 @@
   --hover: rgb(255 236 224 / 0.05);
   --active: rgb(255 236 224 / 0.09);
   --switch-knob: #dcd2cc;
+  --thumb-edge: rgb(255 236 224 / 0.2);
   --accent: #9a6342;
   --unread: #cfa080;
   --star: #f0b63a;

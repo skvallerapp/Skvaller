@@ -244,7 +244,10 @@ impl Reading {
                 let (app, generation) = (Arc::clone(app), *self.mark_generation.peek());
                 spawn(async move {
                     tokio::time::sleep(MARK_READ_DELAY).await;
-                    if *self.mark_generation.peek() == generation {
+                    // Unless another article opened, or the setting changed, meanwhile.
+                    if *self.mark_generation.peek() == generation
+                        && app.settings().mark_read_on == MarkReadOn::Delay
+                    {
                         self.set_read(&app, &[id], true);
                     }
                 });
@@ -1223,6 +1226,9 @@ fn Reader() -> Element {
     let app = use_context::<Arc<App>>();
     let mut reading = use_context::<Reading>();
     let live = use_context::<Live>();
+    // Only what the document shows remakes it: remade, the frame loads again, back at
+    // the top.
+    let look = use_memo(move || article::Look::from(&*live.settings.read()));
     let doc = use_memo({
         let app = Arc::clone(&app);
         move || {
@@ -1232,13 +1238,7 @@ fn Reader() -> Element {
             let lib = reading.library.peek();
             let feed = lib.feeds.iter().find(|f| f.id == a.feed_id);
             let date = live.dates.read().full(a.published);
-            Some(article::document(
-                &a,
-                feed,
-                &html,
-                &date,
-                &live.settings.read(),
-            ))
+            Some(article::document(&a, feed, &html, &date, look()))
         }
     });
     let open = reading.open_article();

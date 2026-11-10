@@ -3,27 +3,45 @@
 //! The document goes into an `<iframe srcdoc>`, a document of its own, so the article's
 //! styles can't reach the app and the app's can't reach the article.
 
-use skvaller_app::{Settings, Theme};
+use skvaller_app::{Font, Settings, Theme};
 use skvaller_core::{ArticleSummary, Feed, ready_article};
 
 use crate::fonts;
 
 const FRAME_CSS: &str = include_str!("frame.css");
 
+/// What the reader's document takes from the settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Look {
+    pub theme: Theme,
+    pub article_font: Font,
+    pub headline_font: Font,
+}
+
+impl From<&Settings> for Look {
+    fn from(settings: &Settings) -> Self {
+        Self {
+            theme: settings.theme,
+            article_font: settings.article_font,
+            headline_font: settings.headline_font,
+        }
+    }
+}
+
 /// The whole reader document for `article`, with `html` as its untrusted body and
-/// `date` as its header shows it, in the settings' theme and fonts.
+/// `date` as its header shows it, in the theme and fonts of `look`.
 pub fn document(
     article: &ArticleSummary,
     feed: Option<&Feed>,
     html: &str,
     date: &str,
-    settings: &Settings,
+    look: Look,
 ) -> String {
-    let theme = theme_name(settings.theme);
+    let theme = theme_name(look.theme);
     let fonts = format!(
         "--article-font: {}; --headline-font: {}",
-        fonts::stack(settings.article_font),
-        fonts::stack(settings.headline_font)
+        fonts::stack(look.article_font),
+        fonts::stack(look.headline_font)
     );
     let date = escape(date);
     let title = linked(&article.title, Some(&article.url));
@@ -98,7 +116,13 @@ mod tests {
             theme: Theme::Dark,
             ..Settings::default()
         };
-        let doc = document(&article, None, "<img src=\"/i.png\">", "today", &settings);
+        let doc = document(
+            &article,
+            None,
+            "<img src=\"/i.png\">",
+            "today",
+            Look::from(&settings),
+        );
         assert!(doc.contains("&lt;b&gt;Bold&lt;/b&gt;"));
         assert!(doc.contains("A &amp; B"));
         assert!(doc.contains("<a href=\"https://example.com/a\" target=\"_blank\">"));

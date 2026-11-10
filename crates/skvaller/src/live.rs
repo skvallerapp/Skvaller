@@ -52,9 +52,15 @@ pub fn use_live(app: &Arc<App>) -> Live {
         move || {
             spawn(async move {
                 let mut changes = app.watch_config();
-                while changes.changed().await.is_ok() {
-                    let now = *changes.borrow_and_update();
-                    revision.set(now);
+                // A change made before this task started counts as seen to `changes`.
+                loop {
+                    let (now, shown) = (*changes.borrow_and_update(), *revision.peek());
+                    if now != shown {
+                        revision.set(now);
+                    }
+                    if changes.changed().await.is_err() {
+                        break;
+                    }
                 }
             });
         }
@@ -66,9 +72,15 @@ pub fn use_live(app: &Arc<App>) -> Live {
             app.settings()
         }
     });
-    let dates = use_memo(move || {
+    // Only a change of clock or date order makes new dates, as everything showing a date
+    // follows them.
+    let format = use_memo(move || {
         let settings = settings.read();
-        SharedDates(Rc::new(Dates::system(settings.clock, settings.date_format)))
+        (settings.clock, settings.date_format)
+    });
+    let dates = use_memo(move || {
+        let (clock, order) = format();
+        SharedDates(Rc::new(Dates::system(clock, order)))
     });
     let keys = use_memo(move || Rc::new(bindings(&settings.read().shortcuts)));
     Live {

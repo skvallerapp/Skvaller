@@ -88,6 +88,7 @@ pub struct Library {
 pub struct AccountChange {
     /// Ignored when blank.
     pub description: Option<String>,
+    /// Ignored when every 0 minutes.
     pub sync: Option<SyncSchedule>,
     /// At least 1.
     pub keep_read_days: Option<u32>,
@@ -349,13 +350,17 @@ impl App {
         self.update_config(|config| config.active = Some(account_id.to_owned()))
     }
 
-    /// Replaces the settings, saved to config.json, and tells every window.
+    /// Changes the settings as `change` says, saved to config.json, and tells every
+    /// window.
+    ///
+    /// The change is made to the settings as they are when saved, so it can't undo
+    /// another made meanwhile.
     ///
     /// # Errors
     ///
     /// [`Error::Io`] when config.json can't be saved; the settings stay as they were.
-    pub fn set_settings(&self, settings: crate::config::Settings) -> Result<()> {
-        self.update_config(|config| config.settings = settings)?;
+    pub fn change_settings(&self, change: impl FnOnce(&mut crate::config::Settings)) -> Result<()> {
+        self.update_config(|config| change(&mut config.settings))?;
         self.config_revision.send_modify(|r| *r += 1);
         Ok(())
     }
@@ -380,7 +385,8 @@ impl App {
             {
                 description.clone_into(&mut account.description);
             }
-            if let Some(sync) = change.sync {
+            // Every 0 minutes would sync without end, and config.json can't load it.
+            if let Some(sync) = change.sync.filter(|&s| s != SyncSchedule::Every(0)) {
                 schedule_changed = account.sync != sync;
                 account.sync = sync;
             }
@@ -797,10 +803,8 @@ mod tests {
         let (_tmp, dirs) = dirs();
         let app = App::load(&dirs).unwrap();
         let watch = app.watch_config();
-        let mut settings = app.settings();
-        settings.theme = crate::Theme::Espresso;
-
-        app.set_settings(settings).unwrap();
+        app.change_settings(|s| s.theme = crate::Theme::Espresso)
+            .unwrap();
 
         assert!(watch.has_changed().unwrap());
         assert_eq!(app.settings().theme, crate::Theme::Espresso);
@@ -809,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn an_account_change_keeps_a_name_and_at_least_a_day() {
+    fn an_account_change_keeps_a_name_a_schedule_and_at_least_a_day() {
         let (_tmp, dirs) = dirs();
         let opml = r#"<opml version="2.0"><body>
             <outline text="A" type="rss" xmlUrl="https://a.example/feed"/>
@@ -827,6 +831,7 @@ mod tests {
         });
         change(AccountChange {
             description: Some("   ".into()),
+            sync: Some(SyncSchedule::Every(0)),
             ..AccountChange::default()
         });
 

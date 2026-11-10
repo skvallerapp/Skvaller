@@ -120,6 +120,10 @@ impl App {
             if rt.woke.swap(false, Ordering::Relaxed) {
                 history.wake_sync = after_wake(&account, &history, SystemTime::now());
             }
+            // Sync on wake turned off meanwhile: the sync after waking it asked for stops.
+            if !account.sync_on_wake {
+                history.wake_sync = history.wake_sync.filter(|w| !w.asked);
+            }
             let wait = async {
                 match due(account.sync, &history, SystemTime::now()) {
                     Some(due) => sleep_until(Instant::now() + due).await,
@@ -282,8 +286,17 @@ struct History {
     /// The last automatic sync, and the last that worked.
     last: Option<SystemTime>,
     last_ok: Option<SystemTime>,
-    /// A sync after waking is due, with this many retries left if it fails.
-    wake_sync: Option<u32>,
+    /// A sync after waking is due.
+    wake_sync: Option<WakeSync>,
+}
+
+/// A sync after waking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WakeSync {
+    /// Retries left if it fails.
+    retries: u32,
+    /// Only the account's sync on wake asked for it, not a schedule the sleep held up.
+    asked: bool,
 }
 
 impl History {
@@ -295,7 +308,12 @@ impl History {
                 None
             }
             // Likely the network, not back yet after waking: again in a moment.
-            Ran::Failed { retry: true } => self.wake_sync.and_then(|r| r.checked_sub(1)),
+            Ran::Failed { retry: true } => self.wake_sync.and_then(|w| {
+                Some(WakeSync {
+                    retries: w.retries.checked_sub(1)?,
+                    ..w
+                })
+            }),
             Ran::Failed { retry: false } | Ran::Busy | Ran::Skipped => None,
         };
     }
@@ -304,7 +322,7 @@ impl History {
 /// The sync to make after waking, if any: when the account's sync on wake asks for it
 /// and none worked lately, or when the sleep held up the schedule, or its own sync ran
 /// on waking and failed, before the network was back.
-fn after_wake(account: &Account, history: &History, now: SystemTime) -> Option<u32> {
+fn after_wake(account: &Account, history: &History, now: SystemTime) -> Option<WakeSync> {
     // A time ahead of now, after the clock was set back, counts as long ago.
     let ago = |t: SystemTime| now.duration_since(t).unwrap_or(Duration::MAX);
     let overdue = match (account.sync, history.last) {
@@ -317,7 +335,11 @@ fn after_wake(account: &Account, history: &History, now: SystemTime) -> Option<u
     let failed_lately =
         history.last.is_some_and(|t| ago(t) < WAKE_SLACK) && history.last != history.last_ok;
     let asked = account.sync_on_wake && !synced_lately;
-    (asked || overdue || failed_lately).then_some(WAKE_RETRIES)
+    let held_up = overdue || failed_lately;
+    (asked || held_up).then_some(WakeSync {
+        retries: WAKE_RETRIES,
+        asked: !held_up,
+    })
 }
 
 /// How long until the next sync, or `None` when none is due until something changes.
@@ -379,14 +401,18 @@ mod tests {
         let asked = account(SyncSchedule::Manual, true);
         assert_eq!(
             wake(&asked, &history(hour_ago, hour_ago, now)),
-            Some(WAKE_RETRIES)
+            Some(WakeSync {
+                retries: WAKE_RETRIES,
+                asked: true
+            })
         );
         // Synced a moment ago: no need.
         let moment = Some(MINUTE);
         assert_eq!(wake(&asked, &history(moment, moment, now)), None);
 
         let every_15 = account(SyncSchedule::Every(15), false);
-        assert!(wake(&every_15, &history(hour_ago, hour_ago, now)).is_some());
+        // Held up by the sleep: not the sync on wake's, so turning that off keeps it.
+        assert!(wake(&every_15, &history(hour_ago, hour_ago, now)).is_some_and(|w| !w.asked));
         assert_eq!(wake(&every_15, &history(moment, moment, now)), None);
         // The schedule's own sync ran on waking and failed.
         assert!(wake(&every_15, &history(moment, hour_ago, now)).is_some());
@@ -412,7 +438,10 @@ mod tests {
     fn a_failed_sync_after_waking_retries_twice_then_gives_up() {
         let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
         let mut h = History {
-            wake_sync: Some(WAKE_RETRIES),
+            wake_sync: Some(WakeSync {
+                retries: WAKE_RETRIES,
+                asked: true,
+            }),
             ..History::default()
         };
         assert_eq!(due(SyncSchedule::Manual, &h, now), Some(WAKE_DELAY));
