@@ -359,7 +359,7 @@ button {
   margin-top: 2px;
 }
 
-/* 180 px is 16:9 of the row's width; ui.rs's LARGE_THUMB_EXTRA counts these sizes. */
+/* 180 px is about 16:9 of the row's 319 px; ui.rs's LARGE_THUMB_EXTRA counts these sizes. */
 .thumb.large {
   width: 100%;
   height: 180px;

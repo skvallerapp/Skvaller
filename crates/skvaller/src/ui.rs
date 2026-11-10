@@ -37,7 +37,8 @@ pub(crate) const APP_CSS: &str = include_str!("app.css");
 const ROW_HEIGHT: f64 = 87.0;
 
 /// What a Large thumbnail adds to its row: a gap above it, its height and the row's
-/// bottom padding. It is 16:9 of the list's fixed 360 px less the rows' 20 px sides.
+/// bottom padding. It is about 16:9 of the row's width: the list's fixed 360 px less its
+/// 1 px border and the rows' 20 px sides, 319 px.
 const LARGE_THUMB_EXTRA: f64 = 8.0 + 180.0 + 11.0;
 
 /// Rows rendered above and below the visible ones, so a fast scroll doesn't show gaps
@@ -1382,9 +1383,6 @@ fn Viewport() -> Element {
         let Some(id) = reading.article.read().as_ref().map(|a| a.id.clone()) else {
             return;
         };
-        let Some(i) = reading.articles.peek().rows.iter().position(|a| a.id == id) else {
-            return;
-        };
         let Some(el) = mounted.peek().clone() else {
             return;
         };
@@ -1398,9 +1396,17 @@ fn Viewport() -> Element {
             if (*height.peek() - view_height).abs() >= 1.0 {
                 height.set(view_height);
             }
-            let (row_top, row_bottom) = {
-                let offsets = offsets.peek();
-                (offsets[i], offsets[i + 1])
+            // Found now, not when the effect ran: a reload meanwhile may have moved the
+            // row, or taken it away.
+            let place = {
+                let (list, offsets) = (reading.articles.peek(), offsets.peek());
+                list.rows
+                    .iter()
+                    .position(|a| a.id == id)
+                    .and_then(|i| Some((*offsets.get(i)?, *offsets.get(i + 1)?)))
+            };
+            let Some((row_top, row_bottom)) = place else {
+                return;
             };
             let view_top = *top.peek();
             let target = if row_top < view_top {
@@ -1421,8 +1427,11 @@ fn Viewport() -> Element {
     let listed = reading.articles.read();
     let list = &listed.rows;
     let offsets = offsets.read();
-    let (first, last) = visible_rows(&offsets, top(), height());
     let total = offsets[list.len()];
+    // A list made shorter, as by a smaller thumbnail size, may still have the old scroll
+    // position until a scroll event says where the viewport clamped it.
+    let view_top = top().min((total - height()).max(0.0));
+    let (first, last) = visible_rows(&offsets, view_top, height());
     let account = reading.account.read().clone().unwrap_or_default();
     let (beside, below) = match size {
         ThumbnailSize::Small => (Some("thumb small"), false),
