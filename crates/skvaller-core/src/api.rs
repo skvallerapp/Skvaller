@@ -272,6 +272,11 @@ impl Client {
         Ok(())
     }
 
+    /// The server's address, which the user chose.
+    pub(crate) fn base_url(&self) -> Option<Url> {
+        Url::parse(&self.base).ok()
+    }
+
     /// Resolves a URL the server sent, which may be relative to the API URL.
     pub(crate) fn resolve(&self, url: &str) -> Option<Url> {
         Url::parse(&format!("{}/", self.base))

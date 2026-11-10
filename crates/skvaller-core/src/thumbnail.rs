@@ -19,7 +19,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::db::ThumbnailWanted;
-use crate::full_text::USER_AGENT;
+use crate::net::{self, Untrusted};
 use crate::{Db, Result, html};
 
 /// The longest side of a stored thumbnail, in pixels.
@@ -222,10 +222,8 @@ pub async fn prefetch(db: &Db, mut stored: impl FnMut()) -> Result<()> {
     if wanted.is_empty() {
         return Ok(());
     }
-    let http = reqwest::Client::builder()
-        .timeout(TIMEOUT)
-        .user_agent(USER_AGENT)
-        .build()?;
+    // The URLs come from the articles: only public addresses.
+    let http = Untrusted::new(TIMEOUT, &[])?;
     let limit = Arc::new(Semaphore::new(PARALLEL));
     let decoding = Arc::new(Semaphore::new(PARALLEL_DECODES));
     for batch in wanted.chunks(BATCH) {
@@ -273,11 +271,7 @@ async fn candidates(db: &Db, article: &ThumbnailWanted) -> Result<Vec<String>> {
 
 /// The first of `candidates` that makes a thumbnail. Stops at the first that may work
 /// later, so the rest are not tried in its place.
-async fn thumbnail(
-    http: &reqwest::Client,
-    decoding: &Semaphore,
-    candidates: Vec<String>,
-) -> Outcome {
+async fn thumbnail(http: &Untrusted, decoding: &Semaphore, candidates: Vec<String>) -> Outcome {
     for url in candidates {
         match fetch(http, &url).await {
             Fetched::Image(bytes) => {
@@ -298,12 +292,16 @@ async fn thumbnail(
     Outcome::None
 }
 
-async fn fetch(http: &reqwest::Client, url: &str) -> Fetched {
-    let Ok(url) = Url::parse(url) else {
+async fn fetch(http: &Untrusted, url: &str) -> Fetched {
+    // Unparsable, or on this device or a private network.
+    let Some(request) = Url::parse(url).ok().and_then(|url| http.get(url)) else {
         return Fetched::Unusable;
     };
-    let Ok(mut res) = http.get(url).send().await else {
-        return Fetched::Later;
+    let mut res = match request.send().await {
+        Ok(res) => res,
+        // A name or a redirect that leads there: unusable for good, the next one is tried.
+        Err(e) if net::is_blocked(&e) => return Fetched::Unusable,
+        Err(_) => return Fetched::Later,
     };
     let status = res.status();
     if status.is_server_error()

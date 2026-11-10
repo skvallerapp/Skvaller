@@ -10,6 +10,7 @@ use reqwest::{StatusCode, Url};
 
 use crate::db::FullText;
 use crate::html;
+use crate::net::{self, Untrusted};
 use crate::{Db, Result};
 
 /// Failed fetches of a page before it is given up on, until the user asks again.
@@ -74,30 +75,37 @@ pub async fn prefetch(db: &Db) -> Result<()> {
 }
 
 /// One client for every page, so connections are reused. Not the API client: pages
-/// redirect, and they get no access token. It keeps no cookies.
-fn http() -> Result<reqwest::Client> {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+/// redirect, and they get no access token. It keeps no cookies, and reaches only public
+/// addresses: the URL comes from the feed.
+fn http() -> Result<Untrusted> {
+    static CLIENT: OnceLock<Untrusted> = OnceLock::new();
     if let Some(client) = CLIENT.get() {
         return Ok(client.clone());
     }
-    let client = reqwest::Client::builder()
-        .timeout(TIMEOUT)
-        .user_agent(USER_AGENT)
-        .build()?;
+    let client = Untrusted::new(TIMEOUT, &[])?;
     Ok(CLIENT.get_or_init(|| client).clone())
 }
 
 /// The HTML of the page at `url`, and its URL after redirects. `Ok(None)`: it will
 /// never be readable (not an http(s) URL, gone, not HTML, too large). `Err`: it may
 /// work later (network errors, server errors, rate limits and bot walls).
-async fn fetch_page(http: &reqwest::Client, url: &str) -> Result<Option<(String, String)>> {
+async fn fetch_page(http: &Untrusted, url: &str) -> Result<Option<(String, String)>> {
     let Ok(url) = Url::parse(url) else {
         return Ok(None);
     };
     if !matches!(url.scheme(), "http" | "https") {
         return Ok(None);
     }
-    let mut res = http.get(url).send().await?;
+    // On this device or a private network: never fetched.
+    let Some(request) = http.get(url) else {
+        return Ok(None);
+    };
+    let mut res = match request.send().await {
+        Ok(res) => res,
+        // A name or a redirect that leads there: as never readable.
+        Err(e) if net::is_blocked(&e) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
     let status = res.status();
     let transient = [
         StatusCode::FORBIDDEN,
@@ -312,6 +320,18 @@ mod tests {
         assert_eq!(url, target);
         let extracted = extract(&html, &url).unwrap();
         assert!(extracted.contains(&format!("{target}diagram.png")));
+    }
+
+    #[tokio::test]
+    async fn a_page_on_a_refused_address_is_never_readable_not_retried() {
+        let server = MockServer::start().await;
+        let url = serve(&server, "/page", html_page(ARTICLE)).await;
+        // Without the tests' exception for loopback: the page is local.
+        let http = Untrusted::build(TIMEOUT, &[], Vec::new()).unwrap();
+        let by_name = url.replace("127.0.0.1", "localhost");
+        assert!(matches!(fetch_page(&http, &by_name).await, Ok(None)));
+        assert!(matches!(fetch_page(&http, &url).await, Ok(None)));
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]

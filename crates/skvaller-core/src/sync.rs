@@ -11,6 +11,7 @@ use tokio::task::JoinSet;
 
 use crate::api::{Item, READ, READING_LIST, STARRED, Subscription, parse_item_id};
 use crate::db::{ArticleRow, FeedRow, Flag};
+use crate::net::{self, Untrusted};
 use crate::{Client, Db, Error, Result, thumbnail};
 
 pub(crate) const DAY: i64 = 24 * 60 * 60;
@@ -111,7 +112,8 @@ pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Re
     // again. The server's own retention limits them.
     let pruned = db.prune(prune_before, i64::MIN)?;
     db.optimize()?;
-    fetch_icons(db, |url| client.resolve(url), None).await?;
+    let server: Vec<_> = client.base_url().into_iter().collect();
+    fetch_icons(db, |url| client.resolve(url), &server, None).await?;
     let pushed = pushed?;
     db.set_last_sync(now * 1000)?;
     Ok(SyncReport {
@@ -157,9 +159,13 @@ async fn push(client: &Client, db: &Db) -> Result<usize> {
 /// each URL absolute; with `only`, just that feed's. A few at a time, since feeds can
 /// point at slow hosts. An icon that can't be fetched now is tried again next sync; one
 /// that isn't an image is not.
+///
+/// Only from public addresses, and from the hosts of `trusted`: the sync server, which
+/// often serves the icons from the LAN, or the local account's feeds.
 pub(crate) async fn fetch_icons(
     db: &Db,
     resolve: impl Fn(&str) -> Option<reqwest::Url>,
+    trusted: &[reqwest::Url],
     only: Option<&str>,
 ) -> Result<()> {
     let stale: Vec<_> = db
@@ -171,7 +177,7 @@ pub(crate) async fn fetch_icons(
         return Ok(());
     }
     // Not the API client: icons may redirect, and they get no access token.
-    let http = reqwest::Client::builder().timeout(ICON_TIMEOUT).build()?;
+    let http = Untrusted::new(ICON_TIMEOUT, trusted)?;
     let limit = Arc::new(Semaphore::new(PARALLEL_ICONS));
     let mut fetches = JoinSet::new();
     for (feed_id, url) in stale {
@@ -195,8 +201,17 @@ pub(crate) async fn fetch_icons(
 
 /// The icon as a `data:` URL, `Some(None)` if there is no usable image there, or `None`
 /// to try again next sync.
-async fn fetch_icon(http: &reqwest::Client, url: reqwest::Url) -> Option<Option<String>> {
-    let mut res = http.get(url).send().await.ok()?;
+async fn fetch_icon(http: &Untrusted, url: reqwest::Url) -> Option<Option<String>> {
+    // On this device or a private network: no icon, for good.
+    let Some(request) = http.get(url) else {
+        return Some(None);
+    };
+    let mut res = match request.send().await {
+        Ok(res) => res,
+        // A name or a redirect that leads there: no icon, for good.
+        Err(e) if net::is_blocked(&e) => return Some(None),
+        Err(_) => return None,
+    };
     let status = res.status();
     if status.is_server_error()
         || status == reqwest::StatusCode::TOO_MANY_REQUESTS

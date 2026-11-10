@@ -58,7 +58,13 @@ pub async fn refresh(
     let http = http()?;
     let limit = Arc::new(Semaphore::new(PARALLEL));
     let mut fetches = JoinSet::new();
-    for feed in db.local_feeds()? {
+    let feeds = db.local_feeds()?;
+    // The user subscribed to these, LAN or not: their icons may come from them.
+    let trusted: Vec<Url> = feeds
+        .iter()
+        .filter_map(|f| Url::parse(&f.url).ok())
+        .collect();
+    for feed in feeds {
         let (http, limit) = (http.clone(), limit.clone());
         fetches.spawn(async move {
             // Held until the feed is stored, so only so many bodies wait in memory.
@@ -100,7 +106,7 @@ pub async fn refresh(
     if tried > 0 && reached == 0 {
         return Err(Error::Local("could not reach any feed".into()));
     }
-    fetch_icons(db, |url| Url::parse(url).ok(), None).await?;
+    fetch_icons(db, |url| Url::parse(url).ok(), &trusted, None).await?;
     db.set_last_sync(now * 1000)?;
     Ok(SyncReport {
         fetched,
@@ -156,7 +162,8 @@ pub async fn subscribe(db: &Db, url: &str, folder_id: Option<&str>, now: i64) ->
     })?;
     if added {
         store(db, &id, &parsed, &page, now)?;
-        fetch_icons(db, |url| Url::parse(url).ok(), Some(&id)).await?;
+        let trusted = [page.url.clone()];
+        fetch_icons(db, |url| Url::parse(url).ok(), &trusted, Some(&id)).await?;
     }
     Ok(id)
 }

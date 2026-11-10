@@ -7,6 +7,7 @@ mod full_text;
 mod html;
 mod keychain;
 mod local;
+mod net;
 mod opml;
 mod reader;
 mod seed;
