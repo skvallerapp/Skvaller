@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{
+    Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
+};
 
 use skvaller_core::{
     ArticleSummary, Client, Counts, Db, Feed, Folder, ImportReport, Selection, export_opml,
@@ -122,7 +124,7 @@ pub(crate) struct Runtime {
 }
 
 impl Runtime {
-    fn open(dir: &Path, account: &Account) -> skvaller_core::Result<Self> {
+    pub(crate) fn open(dir: &Path, account: &Account) -> skvaller_core::Result<Self> {
         let rt = Self {
             id: account.id.clone(),
             db: Arc::new(Db::open(db_path(dir, &account.id))?),
@@ -165,9 +167,9 @@ pub struct App {
     pub(crate) accounts_dir: PathBuf,
     config_path: PathBuf,
     pub(crate) config: Mutex<Config>,
-    pub(crate) runtimes: HashMap<String, Arc<Runtime>>,
+    pub(crate) runtimes: RwLock<HashMap<String, Arc<Runtime>>>,
     /// Accounts whose cache didn't open, and why.
-    broken: HashMap<String, String>,
+    pub(crate) broken: Mutex<HashMap<String, String>>,
     notice: Option<Notice>,
     pub(crate) events: broadcast::Sender<SyncStatus>,
     /// Bumped on every change to the settings or an account's, so each window can show
@@ -312,8 +314,8 @@ impl App {
             accounts_dir,
             config_path,
             config: Mutex::new(config),
-            runtimes,
-            broken,
+            runtimes: RwLock::new(runtimes),
+            broken: Mutex::new(broken),
             notice,
             events: broadcast::channel(EVENT_BACKLOG).0,
             config_revision: watch::Sender::new(0),
@@ -347,7 +349,9 @@ impl App {
     /// [`Error::Io`] when config.json can't be saved.
     pub fn set_active(&self, account_id: &str) -> Result<()> {
         self.runtime(account_id)?;
-        self.update_config(|config| config.active = Some(account_id.to_owned()))
+        self.update_config(|config| config.active = Some(account_id.to_owned()))?;
+        self.announce();
+        Ok(())
     }
 
     /// Changes the settings as `change` says, saved to config.json, and tells every
@@ -361,7 +365,7 @@ impl App {
     /// [`Error::Io`] when config.json can't be saved; the settings stay as they were.
     pub fn change_settings(&self, change: impl FnOnce(&mut crate::config::Settings)) -> Result<()> {
         self.update_config(|config| change(&mut config.settings))?;
-        self.config_revision.send_modify(|r| *r += 1);
+        self.announce();
         Ok(())
     }
 
@@ -404,7 +408,7 @@ impl App {
         if schedule_changed {
             rt.wake.notify_one();
         }
-        self.config_revision.send_modify(|r| *r += 1);
+        self.announce();
         Ok(())
     }
 
@@ -414,16 +418,21 @@ impl App {
         self.config_revision.subscribe()
     }
 
-    /// Changes the config and saves it. The change takes only once saved, so the app
-    /// never shows what the file doesn't have.
-    fn update_config(&self, change: impl FnOnce(&mut Config)) -> Result<()> {
+    /// Tells every window that the settings or the accounts changed.
+    pub(crate) fn announce(&self) {
+        self.config_revision.send_modify(|r| *r += 1);
+    }
+
+    /// Changes the config and saves it, giving what `change` gives. The change takes only
+    /// once saved, so the app never shows what the file doesn't have.
+    pub(crate) fn update_config<T>(&self, change: impl FnOnce(&mut Config) -> T) -> Result<T> {
         let mut config = lock(&self.config);
         let mut next = config.clone();
-        change(&mut next);
+        let out = change(&mut next);
         next.save(&self.config_path)
             .map_err(io("Saving", &self.config_path))?;
         *config = next;
-        Ok(())
+        Ok(out)
     }
 
     /// The account's unread articles, for the account switcher.
@@ -514,13 +523,17 @@ impl App {
     }
 
     pub(crate) fn runtime(&self, id: &str) -> Result<Arc<Runtime>> {
-        if let Some(rt) = self.runtimes.get(id) {
+        if let Some(rt) = read(&self.runtimes).get(id) {
             return Ok(Arc::clone(rt));
         }
-        Err(self
-            .broken
+        Err(lock(&self.broken)
             .get(id)
             .map_or(Error::NoAccount, |why| Error::Broken(why.clone())))
+    }
+
+    /// Every account's runtime, as now.
+    pub(crate) fn runtimes(&self) -> Vec<Arc<Runtime>> {
+        read(&self.runtimes).values().cloned().collect()
     }
 
     /// Writes the local account's feeds next to its cache, as OPML.
@@ -619,6 +632,14 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+pub(crate) fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+pub(crate) fn write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Copies `config.json` to `config.json.bak`, for the user to recover from.
 fn back_up(config_path: &Path) -> Result<PathBuf> {
     let backup = config_path.with_extension("json.bak");
@@ -646,7 +667,7 @@ fn move_old_cache(data_dir: &Path, accounts_dir: &Path, config: &Config) -> Resu
 
 /// The name an account gets until the user changes it: `FreshRSS`, the server's host
 /// name, or `Local`.
-fn default_description(kind: &AccountKind) -> String {
+pub(crate) fn default_description(kind: &AccountKind) -> String {
     match kind {
         AccountKind::Greader { server, .. } => {
             let rest = server
@@ -664,7 +685,7 @@ fn default_description(kind: &AccountKind) -> String {
     }
 }
 
-fn db_path(dir: &Path, id: &str) -> PathBuf {
+pub(crate) fn db_path(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.db"))
 }
 
@@ -685,7 +706,7 @@ fn feeds_backup_path(dir: &Path, id: &str) -> PathBuf {
 
 /// Removes a removed account's cache files. False if one stays, such as one still open
 /// on Windows.
-fn remove_db_files(dir: &Path, id: &str) -> bool {
+pub(crate) fn remove_db_files(dir: &Path, id: &str) -> bool {
     let cache = db_files(&db_path(dir, id));
     let corrupt = cache.iter().map(|f| {
         let mut name = f.as_os_str().to_owned();
@@ -735,10 +756,10 @@ fn restore_feeds(dir: &Path, account_id: &str, db: &Db) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn dirs() -> (tempfile::TempDir, Dirs) {
+    pub(crate) fn dirs() -> (tempfile::TempDir, Dirs) {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = Dirs::new(tmp.path().join("data"), tmp.path().join("config"));
         (tmp, dirs)

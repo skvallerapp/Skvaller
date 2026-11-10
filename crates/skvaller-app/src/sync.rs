@@ -64,12 +64,32 @@ impl App {
     /// When called outside a Tokio runtime.
     pub fn start_sync(self: &Arc<Self>) {
         let _ = self.sync_runtime.set(tokio::runtime::Handle::current());
-        for rt in self.runtimes.values() {
-            let (app, rt) = (Arc::clone(self), Arc::clone(rt));
-            tokio::spawn(async move { app.sync_loop(&rt).await });
+        for rt in self.runtimes() {
+            self.start_loop(rt);
         }
         let app = Arc::clone(self);
         tokio::spawn(async move { app.watch_for_wake().await });
+    }
+
+    /// Starts the account's background sync, on the sync runtime. Before
+    /// [`App::start_sync`] there is none, and nothing starts: that starts them all.
+    pub(crate) fn start_loop(self: &Arc<Self>, rt: Arc<Runtime>) {
+        if let Some(runtime) = self.sync_runtime.get() {
+            let app = Arc::clone(self);
+            runtime.spawn(async move { app.sync_loop(&rt).await });
+        }
+    }
+
+    /// Syncs the account on the sync runtime, after any sync running now: that one
+    /// started before a change it would miss, such as new feeds or a new token.
+    pub(crate) fn sync_soon(self: &Arc<Self>, rt: Arc<Runtime>) {
+        if let Some(runtime) = self.sync_runtime.get() {
+            let app = Arc::clone(self);
+            runtime.spawn(async move {
+                drop(rt.gate.stop().await);
+                app.run_sync(&rt).await
+            });
+        }
     }
 
     /// Tells every account's background sync when the computer wakes, as no system
@@ -81,7 +101,7 @@ impl App {
             tokio::time::sleep(WAKE_CHECK).await;
             let now = SystemTime::now();
             if slept(before, now, WAKE_CHECK) {
-                for rt in self.runtimes.values() {
+                for rt in self.runtimes() {
                     rt.woke.store(true, Ordering::Relaxed);
                     rt.wake.notify_one();
                 }

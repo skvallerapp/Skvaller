@@ -8,6 +8,7 @@
 //! The file formats and folders are those of the Tauri version of Skvaller, so its
 //! accounts carry over.
 
+mod accounts;
 mod app;
 mod config;
 mod error;

@@ -35,6 +35,9 @@ pub enum Error {
     /// No account has this ID.
     #[error("the account was removed")]
     NoAccount,
+    /// Only the local account keeps its own subscriptions, as OPML imports into.
+    #[error("only an account on this device imports OPML")]
+    NotLocal,
     /// The account's cache didn't open at startup.
     #[error("this account's cache can't be opened: {0}")]
     Broken(String),
