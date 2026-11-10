@@ -17,11 +17,15 @@ use skvaller_app::{
     Account, AccountChange, AccountKind, App, Clock, DateFormat, Font, MarkReadOn, Settings,
     SyncSchedule, Theme,
 };
+use skvaller_core::ImportReport;
+use tokio::sync::Notify;
 
+use crate::add_account::AddAccount;
 use crate::article;
 use crate::dates::Dates;
 use crate::fonts;
-use crate::i18n::{t, t_count};
+use crate::i18n::{sentence, t, t_count, t_with};
+use crate::icons::{BOOK_OPEN, CHEVRONS_UP_DOWN, CIRCLE_USER, Icon, PALETTE, PLUS};
 use crate::live::use_live;
 use crate::ui::APP_CSS;
 
@@ -29,11 +33,17 @@ const SETTINGS_CSS: &str = include_str!("settings.css");
 
 /// The open Settings window, if any, shared by the windows on the UI thread.
 #[derive(Clone, Default)]
-pub struct SettingsWindow(Rc<RefCell<Option<Weak<dyn Window>>>>);
+pub struct SettingsWindow {
+    window: Rc<RefCell<Option<Weak<dyn Window>>>>,
+    /// The pane another window asked to show, until the Settings window takes it.
+    pane: Rc<RefCell<Option<Pane>>>,
+    /// Tells an open Settings window that a pane was asked for.
+    asked: Rc<Notify>,
+}
 
 impl SettingsWindow {
     fn get(&self) -> Option<Arc<dyn Window>> {
-        self.0.borrow().as_ref().and_then(Weak::upgrade)
+        self.window.borrow().as_ref().and_then(Weak::upgrade)
     }
 
     /// Opens the Settings window, or brings it to the front when it is open.
@@ -56,6 +66,13 @@ impl SettingsWindow {
         windows.new_window(vdom, config);
     }
 
+    /// Opens the Settings window at `pane`.
+    pub fn open_at(&self, windows: &Windows, app: &Arc<App>, pane: Pane) {
+        *self.pane.borrow_mut() = Some(pane);
+        self.asked.notify_one();
+        self.open(windows, app);
+    }
+
     /// Closes the Settings window, if open.
     pub fn close(&self, windows: &Windows) {
         if let Some(window) = self.get() {
@@ -66,11 +83,12 @@ impl SettingsWindow {
 
 /// A section of the window.
 #[derive(Clone, Debug, PartialEq)]
-enum Pane {
+pub enum Pane {
     Appearance,
     Reading,
     /// The account with this id.
     Account(String),
+    AddAccount,
 }
 
 /// The Settings window's root component.
@@ -81,10 +99,40 @@ fn SettingsRoot() -> Element {
     let windows = use_context::<Windows>();
     let window = use_window();
     // The main window finds this window through the slot, to focus or close it.
-    use_hook(|| *slot.0.borrow_mut() = Some(Arc::downgrade(&window)));
+    use_hook(|| *slot.window.borrow_mut() = Some(Arc::downgrade(&window)));
     let id = window.id();
     let live = use_live(&app);
-    let pane = use_signal(|| Pane::Appearance);
+    let mut pane = use_signal(|| slot.pane.borrow_mut().take().unwrap_or(Pane::Appearance));
+    // A pane asked for while the window is open, as by the main window's Add Account.
+    use_hook(|| {
+        let slot = slot.clone();
+        spawn(async move {
+            loop {
+                slot.asked.notified().await;
+                let asked = slot.pane.borrow_mut().take();
+                if let Some(asked) = asked {
+                    pane.set(asked);
+                }
+            }
+        });
+    });
+    // A removed account's pane gives way to the next account's, or the first section.
+    use_effect({
+        let app = Arc::clone(&app);
+        move || {
+            (live.revision)();
+            let accounts = app.accounts();
+            let gone =
+                matches!(&*pane.read(), Pane::Account(id) if !accounts.iter().any(|a| &a.id == id));
+            if gone {
+                pane.set(
+                    accounts
+                        .first()
+                        .map_or(Pane::Appearance, |a| Pane::Account(a.id.clone())),
+                );
+            }
+        }
+    });
     let feedback = Feedback {
         error: use_signal(|| None),
         failures: use_signal(|| 0),
@@ -104,6 +152,7 @@ fn SettingsRoot() -> Element {
         (Pane::Reading, _) => t("settings.reading"),
         (Pane::Account(_), Some(a)) => a.description.clone(),
         (Pane::Account(_), None) => String::new(),
+        (Pane::AddAccount, _) => t("addAccount.title"),
     };
     let username = match account.as_ref().map(|a| &a.kind) {
         Some(AccountKind::Greader { username, .. }) => Some(username.clone()),
@@ -140,6 +189,7 @@ fn SettingsRoot() -> Element {
                     for a in accounts.iter() {
                         AccountRow { key: "{a.id}", account: a.clone(), current: pane }
                     }
+                    NavRow { pane: Pane::AddAccount, current: pane, label: t("accounts.add"), icon: PLUS }
                 }
             }
             main {
@@ -161,6 +211,12 @@ fn SettingsRoot() -> Element {
                             (Pane::Reading, _) => rsx! { ReadingPane { settings: settings.clone(), feedback } },
                             (Pane::Account(_), Some(account)) => rsx! { AccountPane { key: "{account.id}", account, feedback } },
                             (Pane::Account(_), None) => rsx! {},
+                            (Pane::AddAccount, _) => rsx! {
+                                AddAccount {
+                                    embedded: true,
+                                    on_added: move |id| pane.set(Pane::Account(id)),
+                                }
+                            },
                         }
                     }
                 }
@@ -225,14 +281,20 @@ struct Feedback {
 }
 
 impl Feedback {
-    fn report(mut self, result: skvaller_app::Result<()>) {
+    fn report(self, result: skvaller_app::Result<()>) {
         match result {
-            Ok(()) => self.error.set(None),
-            Err(e) => {
-                self.error.set(Some(e.to_string()));
-                self.failures += 1;
-            }
+            Ok(()) => self.clear(),
+            Err(e) => self.fail(&e.to_string()),
         }
+    }
+
+    fn clear(mut self) {
+        self.error.set(None);
+    }
+
+    fn fail(mut self, why: &str) {
+        self.error.set(Some(sentence(why)));
+        self.failures += 1;
     }
 }
 
@@ -475,6 +537,84 @@ fn AccountPane(account: Account, feedback: Feedback) -> Element {
     let read_labels: Vec<String> = KEEP_READ.iter().map(|&d| period(d)).collect();
     let unread_labels: Vec<String> = KEEP_UNREAD.iter().map(|&d| period(d)).collect();
     let local = account.kind == AccountKind::Local;
+    // What the last OPML import or export did.
+    let mut note = use_signal(|| None::<String>);
+    let mut confirming = use_signal(|| false);
+    let mut removing = use_signal(|| false);
+    let windows = use_context::<Windows>();
+    let window_id = use_window().id();
+    let import = {
+        let (app, id) = (Arc::clone(&app), account.id.clone());
+        move |_| {
+            let (app, id) = (Arc::clone(&app), id.clone());
+            spawn(async move {
+                let Some(file) = rfd::AsyncFileDialog::new()
+                    .add_filter("OPML", &["opml", "xml"])
+                    .pick_file()
+                    .await
+                else {
+                    return;
+                };
+                let xml = String::from_utf8_lossy(&file.read().await).into_owned();
+                match app.import_opml(&id, &xml) {
+                    Ok(report) => {
+                        note.set(Some(import_note(&report)));
+                        feedback.clear();
+                    }
+                    Err(e) => feedback.fail(&e.to_string()),
+                }
+            });
+        }
+    };
+    let export = use_callback({
+        let (app, id) = (Arc::clone(&app), account.id.clone());
+        move |()| {
+            let (app, id) = (Arc::clone(&app), id.clone());
+            spawn(async move {
+                let (xml, name) = match app.export_opml(&id) {
+                    Ok(opml) => opml,
+                    Err(e) => return feedback.fail(&e.to_string()),
+                };
+                let Some(file) = rfd::AsyncFileDialog::new()
+                    .add_filter("OPML", &["opml"])
+                    .set_file_name(name)
+                    .save_file()
+                    .await
+                else {
+                    return;
+                };
+                match std::fs::write(file.path(), xml) {
+                    Ok(()) => {
+                        note.set(Some(t("settings.exported")));
+                        feedback.clear();
+                    }
+                    Err(e) => feedback.fail(&e.to_string()),
+                }
+            });
+        }
+    });
+    let remove = {
+        let (app, id) = (Arc::clone(&app), account.id.clone());
+        move |_| {
+            let (app, id, windows) = (Arc::clone(&app), id.clone(), windows.clone());
+            removing.set(true);
+            spawn(async move {
+                let removed = app.remove_account(&id).await;
+                // Gone, the pane gives way to another; without any account, the main
+                // window asks to add one, and Settings closes.
+                if removed.is_ok() && app.accounts().is_empty() {
+                    windows.close_window(window_id);
+                    return;
+                }
+                removing.set(false);
+                feedback.report(removed);
+            });
+        }
+    };
+    let question = t_with(
+        "settings.removeQuestion",
+        &[("account", &account.description)],
+    );
 
     rsx! {
         section {
@@ -578,6 +718,81 @@ fn AccountPane(account: Account, feedback: Feedback) -> Element {
             }
             p { class: "note", {t("settings.keepStarredNote")} }
         }
+        section {
+            h2 { {t("settings.subscriptions")} }
+            div { class: "buttons",
+                if local {
+                    button { class: "button wide", onclick: import, {t("settings.importOpml")} }
+                }
+                button { class: "button wide", onclick: move |_| export.call(()), {t("settings.exportOpml")} }
+            }
+            if let Some(note) = note() {
+                p { class: "note", role: "status", "{note}" }
+            }
+        }
+        section {
+            h2 { {t("settings.account")} }
+            if confirming() {
+                div { class: "group confirm", role: "alertdialog",
+                    // Keys here are the question's: Escape cancels it, not the window.
+                    onkeydown: move |e: Event<KeyboardData>| {
+                        if e.key() == Key::Named(NamedKey::Escape) {
+                            e.stop_propagation();
+                            confirming.set(false);
+                        }
+                    },
+                    p {
+                        strong { "{question}" }
+                        if local { {t("settings.removeLocal")} } else { {t("settings.removeSync")} }
+                    }
+                    div { class: "actions",
+                        if local {
+                            button { class: "button export", onclick: move |_| export.call(()), {t("settings.exportOpml")} }
+                        }
+                        // Cancel takes the focus, so a second Return doesn't remove it.
+                        button {
+                            class: "button",
+                            onmounted: move |e: MountedEvent| async move {
+                                if let Err(err) = e.data().set_focus(true).await {
+                                    tracing::warn!("focusing Cancel failed: {err}");
+                                }
+                            },
+                            onclick: move |_| confirming.set(false),
+                            {t("common.cancel")}
+                        }
+                        button {
+                            class: "button destructive",
+                            disabled: removing(),
+                            onclick: remove,
+                            {t("settings.remove")}
+                        }
+                    }
+                }
+            } else {
+                button {
+                    class: "button wide remove",
+                    onclick: move |_| confirming.set(true),
+                    {t("settings.removeAccount")}
+                }
+            }
+        }
+    }
+}
+
+/// What an OPML import added and skipped, as the note under its button says.
+fn import_note(report: &ImportReport) -> String {
+    let added = i64::try_from(report.added).unwrap_or(i64::MAX);
+    let skipped = i64::try_from(report.skipped).unwrap_or(i64::MAX);
+    match (added, skipped) {
+        (0, _) => t("settings.importedNone"),
+        (_, 0) => t_count("settings.imported", added),
+        _ => t_with(
+            "common.twoSentences",
+            &[
+                ("first", &t_count("settings.imported", added)),
+                ("second", &t_count("settings.importSkipped", skipped)),
+            ],
+        ),
     }
 }
 
@@ -665,45 +880,6 @@ fn Switch(label: String, on: bool, onchange: EventHandler<bool>) -> Element {
         }
     }
 }
-
-/// A Lucide icon from its paths.
-#[component]
-fn Icon(size: u32, stroke: &'static str, paths: &'static [&'static str]) -> Element {
-    rsx! {
-        svg {
-            width: "{size}",
-            height: "{size}",
-            view_box: "0 0 24 24",
-            fill: "none",
-            stroke: "currentColor",
-            stroke_width: stroke,
-            stroke_linecap: "round",
-            stroke_linejoin: "round",
-            "aria-hidden": "true",
-            for d in paths {
-                path { d: *d }
-            }
-        }
-    }
-}
-
-const PALETTE: &[&str] = &[
-    "M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z",
-    "M13.5 6.5h.01",
-    "M17.5 10.5h.01",
-    "M6.5 12.5h.01",
-    "M8.5 7.5h.01",
-];
-const BOOK_OPEN: &[&str] = &[
-    "M12 7v14",
-    "M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z",
-];
-const CIRCLE_USER: &[&str] = &[
-    "M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0",
-    "M15 10a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
-    "M7 20.662V19a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v1.662",
-];
-const CHEVRONS_UP_DOWN: &[&str] = &["m7 15 5 5 5-5", "m7 9 5-5 5 5"];
 
 #[cfg(test)]
 mod tests {

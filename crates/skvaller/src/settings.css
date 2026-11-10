@@ -253,3 +253,59 @@
 .switch.on .knob {
   left: 16px;
 }
+
+/* The OPML buttons, and Remove Account: each as wide as a group. */
+.settings .buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings .button.wide {
+  width: 100%;
+  height: 40px;
+  border: 1px solid var(--separator);
+  border-radius: 10px;
+  background: var(--hover);
+}
+
+.settings .button.wide:hover {
+  background: var(--active);
+}
+
+/* Leads to a destructive action, so red text; the confirmation's button is filled red. */
+.settings .button.remove {
+  color: var(--error);
+}
+
+.settings .confirm {
+  /* Blitz sizes it to its content otherwise, after the button it replaces. */
+  box-sizing: border-box;
+  width: 100%;
+  padding: 12px;
+}
+
+.settings .confirm .button {
+  white-space: nowrap;
+}
+
+.settings .confirm p {
+  margin: 0 0 12px;
+  line-height: 1.45;
+}
+
+.settings .confirm strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.settings .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Apart from Cancel and Remove, at the start. */
+.settings .button.export {
+  margin-right: auto;
+}

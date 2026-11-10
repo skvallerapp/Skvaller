@@ -17,11 +17,12 @@ use skvaller_app::{App, Library, MarkReadOn, SyncStatus};
 use skvaller_core::{ArticleSummary, Scope, Selection, View};
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::add_account::AddAccount;
 use crate::article;
 use crate::fonts;
-use crate::i18n::{t, t_count};
+use crate::i18n::{t, t_count, t_with};
 use crate::live::{Live, use_live};
-use crate::settings::SettingsWindow;
+use crate::settings::{Pane as SettingsPane, SettingsWindow};
 use crate::shortcuts::{ARROWS, Action, key_name};
 
 pub(crate) const APP_CSS: &str = include_str!("app.css");
@@ -424,7 +425,7 @@ impl Reading {
         }
     }
 
-    /// Shows the account, keeping the view: its feeds, articles and status.
+    /// Shows the account and makes it the active one.
     fn switch_account(mut self, app: &App, id: &str) {
         self.menu.set(None);
         if self.account.peek().as_deref() == Some(id) {
@@ -434,13 +435,20 @@ impl Reading {
         if let Err(e) = app.set_active(id) {
             tracing::error!("saving account {id} as the one shown failed: {e}");
         }
+        self.show_account(app, Some(id.to_owned()));
+    }
+
+    /// Shows the account, keeping the view: its feeds, articles and status. `None` once
+    /// there is no account.
+    fn show_account(mut self, app: &App, id: Option<String>) {
         let view = self.selection.peek().view;
         self.select(Selection {
             view,
             scope: Scope::All,
         });
-        self.status.set(app.status(id).ok());
-        self.account.set(Some(id.to_owned()));
+        self.status
+            .set(id.as_deref().and_then(|id| app.status(id).ok()));
+        self.account.set(id);
     }
 
     /// Up and Down move in the open account menu, Enter picks, Escape closes.
@@ -685,8 +693,21 @@ pub fn Root() -> Element {
     // Hooks of its own: called here, not in the provider's closure.
     let live = use_live(&app);
     use_context_provider(|| live);
+    // The active account, as changed elsewhere: one added or removed in Settings.
+    use_effect({
+        let app = Arc::clone(&app);
+        move || {
+            (live.revision)();
+            let (active, shown) = (app.active(), reading.account.peek().clone());
+            if active != shown {
+                reading.show_account(&app, active);
+                // The add-account screen, gone, took the focused field with it.
+                reading.refocus();
+            }
+        }
+    });
     let windows = use_windows();
-    let settings = use_hook(SettingsWindow::default);
+    let settings = use_context_provider(SettingsWindow::default);
     // Settings goes with the main window, as the app does.
     use_window_event({
         let (settings, windows) = (settings.clone(), windows.clone());
@@ -699,6 +720,7 @@ pub fn Root() -> Element {
             }
         }
     });
+    let signed_out = (reading.status)().is_some_and(|s| s.unauthorized);
     let settings_now = live.settings.read();
     let theme = article::theme_name(settings_now.theme);
     let ui_font = format!("--ui-font: {}", fonts::stack(settings_now.ui_font));
@@ -737,9 +759,35 @@ pub fn Root() -> Element {
                     reading.confirming.set(false);
                 }
             },
-            Sidebar {}
-            ArticleList {}
-            Reader {}
+            if (reading.account)().is_none() || signed_out {
+                AddAccountScreen {}
+            } else {
+                Sidebar {}
+                ArticleList {}
+                Reader {}
+            }
+        }
+    }
+}
+
+/// The main window without an account to show: adding the first one, or signing in
+/// again to the shown one after its server rejected the token. The other accounts stay
+/// a click away.
+#[component]
+fn AddAccountScreen() -> Element {
+    let app = use_context::<Arc<App>>();
+    let reading = use_context::<Reading>();
+    let signed_out = (reading.status)().is_some_and(|s| s.unauthorized);
+    let again = (reading.account)()
+        .filter(|_| signed_out)
+        .and_then(|id| app.accounts().into_iter().find(|a| a.id == id));
+    let error = again
+        .as_ref()
+        .map(|a| t_with("app.signInAgain", &[("account", &a.description)]));
+    rsx! {
+        AddAccount { embedded: false, again, initial_error: error, on_added: |_| {} }
+        if app.accounts().len() > 1 {
+            div { class: "other-accounts", AccountSwitcher {} }
         }
     }
 }
@@ -892,12 +940,15 @@ fn Sidebar() -> Element {
 fn AccountSwitcher() -> Element {
     let app = use_context::<Arc<App>>();
     let mut reading = use_context::<Reading>();
+    let settings = use_context::<SettingsWindow>();
+    let windows = use_windows();
     let menu = (reading.menu)();
     let active = (reading.account)();
     // The counts change with changes made here and with syncs, as the library does.
     (reading.library)();
     let accounts = app.accounts();
     let menu_app = Arc::clone(&app);
+    let app_for_add = Arc::clone(&app);
     let shortcut_key = if ACCOUNT_MODIFIER == Modifiers::META {
         "⌘".to_owned()
     } else {
@@ -955,6 +1006,17 @@ fn AccountSwitcher() -> Element {
                                 }
                             }
                         }
+                    }
+                    div { class: "separator", role: "separator" }
+                    div {
+                        class: "menu-item",
+                        role: "menuitem",
+                        onclick: move |_| {
+                            reading.menu.set(None);
+                            settings.open_at(&windows, &app_for_add, SettingsPane::AddAccount);
+                        },
+                        span { class: "check" }
+                        span { class: "name", {t("accounts.add")} }
                     }
                 }
             }

@@ -14,6 +14,7 @@
   --thumb-edge: rgb(0 0 0 / 0.15);
   --accent: #9a5136;
   --accent-text: #ffffff;
+  --destructive: #c4352b;
   --unread: #9a5136;
   --star: #e0a21b;
   --error: #b52f28;
@@ -31,7 +32,6 @@
     --hover: rgb(255 255 255 / 0.04);
     --active: rgb(255 255 255 / 0.08);
     --switch-knob: #d4d4d8;
-  --thumb-edge: rgb(255 255 255 / 0.2);
     --thumb-edge: rgb(255 255 255 / 0.2);
     --accent: #52709c;
     --unread: #8aa4c8;
@@ -51,6 +51,7 @@
   --hover: rgb(255 255 255 / 0.04);
   --active: rgb(255 255 255 / 0.08);
   --switch-knob: #d4d4d8;
+  --thumb-edge: rgb(255 255 255 / 0.2);
   --accent: #52709c;
   --unread: #8aa4c8;
   --star: #f0b63a;
@@ -148,6 +149,11 @@ button {
 .button.primary {
   background: var(--accent);
   color: var(--accent-text);
+}
+
+.button.destructive {
+  background: var(--destructive);
+  color: #ffffff;
 }
 
 .spacer {
@@ -476,3 +482,18 @@ button {
 .sync.syncing svg {
   opacity: 0.5;
 }
+
+/* The account menu's line between the accounts and Add Account. */
+.menu .separator {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--separator);
+}
+
+/* Over the add-account screen, the accounts that still work. */
+.other-accounts {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+}
+

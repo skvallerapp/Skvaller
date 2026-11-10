@@ -37,6 +37,7 @@ icu_locale_core.workspace = true
 jiff.workspace = true
 mimalloc.workspace = true
 parley.workspace = true
+rfd.workspace = true
 serde_json.workspace = true
 skvaller-app.workspace = true
 skvaller-core.workspace = true

@@ -17,6 +17,27 @@ pub fn t(key: &str) -> String {
     EN.get(key).cloned().unwrap_or_else(|| key.to_owned())
 }
 
+/// The message for `key` with each `{name}` filled in from `args`.
+pub fn t_with(key: &str, args: &[(&str, &str)]) -> String {
+    args.iter().fold(t(key), |text, (name, value)| {
+        text.replace(&format!("{{{name}}}"), value)
+    })
+}
+
+/// A message from elsewhere, such as an error's, as a sentence: a capital first letter
+/// and a full stop.
+pub fn sentence(text: &str) -> String {
+    let mut chars = text.trim().chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let mut out: String = first.to_uppercase().chain(chars).collect();
+    if !out.ends_with(['.', '!', '?']) {
+        out.push('.');
+    }
+    out
+}
+
 /// The plural form of `key` for `count`, with `{count}` filled in.
 pub fn t_count(key: &str, count: i64) -> String {
     let form = if count == 1 { "one" } else { "other" };
@@ -32,5 +53,13 @@ mod tests {
         assert_eq!(t_count("list.unread", 1), "1 Unread Item");
         assert_eq!(t_count("list.unread", 3), "3 Unread Items");
         assert_eq!(t("no.such.key"), "no.such.key");
+        assert_eq!(
+            t_with("settings.removeQuestion", &[("account", "News")]),
+            "Remove News?"
+        );
+        assert_eq!(
+            sentence("the account was removed"),
+            "The account was removed."
+        );
     }
 }

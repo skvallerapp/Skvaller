@@ -7,10 +7,12 @@
 
 #![cfg_attr(all(not(test), target_os = "windows"), windows_subsystem = "windows")]
 
+mod add_account;
 mod article;
 mod dates;
 mod fonts;
 mod i18n;
+mod icons;
 mod live;
 mod settings;
 mod shortcuts;
