@@ -251,16 +251,12 @@ impl App {
     /// [`Error::NoAccount`] or [`Error::Broken`] for an account without a cache; and
     /// [`Error::Core`] for a file that is too large or not OPML.
     pub fn import_opml(self: &Arc<Self>, account_id: &str, xml: &str) -> Result<ImportReport> {
-        let account = self.account(account_id).ok_or(Error::NoAccount)?;
-        if account.kind != AccountKind::Local {
-            return Err(Error::NotLocal);
-        }
+        let rt = self.local(account_id)?;
         if xml.len() > MAX_OPML_BYTES {
             return Err(Error::Core(skvaller_core::Error::Local(
                 "the file is too large for an OPML file".into(),
             )));
         }
-        let rt = self.runtime(account_id)?;
         let report = import_opml(&rt.db, xml)?;
         self.back_up_feeds(&rt);
         if report.added > 0 {

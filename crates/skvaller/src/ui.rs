@@ -25,6 +25,10 @@ use crate::live::{Live, use_live};
 use crate::settings::{Pane as SettingsPane, SettingsWindow};
 use crate::shortcuts::{ARROWS, Action, key_name};
 
+mod manage;
+
+use manage::{AddFeed, ConfirmRemove, Manage, ManageMenu, RenameField, Target, is_local};
+
 pub(crate) const APP_CSS: &str = include_str!("app.css");
 
 /// Height of an article list row, in CSS pixels: the Tauri version's row without
@@ -164,6 +168,8 @@ struct Reading {
     /// The window's root, which takes focus back when the focused element goes away.
     root: Signal<Option<Rc<MountedData>>>,
     reader_view: Signal<ReaderView>,
+    /// The feed or folder menu, rename, question or Add Feed open in the sidebar.
+    manage: Signal<Manage>,
 }
 
 impl Reading {
@@ -583,6 +589,8 @@ impl Reading {
     /// Shows the account, keeping the view: its feeds, articles and status. `None` once
     /// there is no account.
     fn show_account(mut self, app: &App, id: Option<String>) {
+        // Another account's feeds are its own.
+        self.manage.set(Manage::Closed);
         let view = self.selection.peek().view;
         self.select(Selection {
             view,
@@ -625,6 +633,9 @@ impl Reading {
         let menu = *self.menu.peek();
         if let Some(at) = menu {
             self.on_menu_key(app, &key, at);
+            return true;
+        }
+        if self.on_manage_key(app, &key, e.modifiers()) {
             return true;
         }
         // A sync may have emptied the list meanwhile: then the question is gone.
@@ -840,6 +851,7 @@ pub fn Root() -> Element {
         menu: Signal::new(None),
         root: Signal::new(None),
         reader_view: Signal::new(ReaderView::default()),
+        manage: Signal::new(Manage::default()),
     });
     use_context_provider(|| live);
     // The active account, as changed elsewhere: one added or removed in Settings.
@@ -902,14 +914,17 @@ pub fn Root() -> Element {
                     e.prevent_default();
                 }
             },
-            // A click outside the account menu or the mark-all-read question closes it;
-            // their own clicks don't get here.
+            // A click outside the account menu, the mark-all-read question or a sidebar
+            // popover closes it; their own clicks don't get here.
             onclick: move |_| {
                 if reading.menu.peek().is_some() {
                     reading.menu.set(None);
                 }
                 if *reading.confirming.peek() {
                     reading.confirming.set(false);
+                }
+                if matches!(*reading.manage.peek(), Manage::Menu { .. } | Manage::Confirm(_) | Manage::AddFeed { busy: false }) {
+                    reading.close_manage();
                 }
             },
             if (reading.account)().is_none() || signed_out {
@@ -1019,6 +1034,7 @@ fn Sidebar() -> Element {
     } else {
         "sidebar"
     };
+    let local = is_local(&app, reading.account.read().as_deref());
     let FeedsPane(mut feeds_pane) = use_context_provider(|| FeedsPane(Signal::new(None)));
     // The views are at the top: one selected, as by the arrow keys, shows the top.
     use_effect(move || {
@@ -1038,9 +1054,13 @@ fn Sidebar() -> Element {
     rsx! {
         nav { class, aria_label: t("sidebar.label"),
             div { class: "toolbar",
+                if local {
+                    AddFeed {}
+                }
                 if app.accounts().len() > 1 {
                     AccountSwitcher {}
                 }
+                ConfirmRemove {}
                 button {
                     class: if syncing { "icon-button sync syncing" } else { "icon-button sync" },
                     aria_label: t("sidebar.sync"),
@@ -1085,6 +1105,7 @@ fn Sidebar() -> Element {
                 class: if status_line.1 { "status error" } else { "status" },
                 "{status_line.0}"
             }
+            ManageMenu {}
         }
     }
 }
@@ -1194,7 +1215,13 @@ struct FeedsPane(Signal<Option<Rc<MountedData>>>);
 /// A folder or feed in the sidebar. Selected, as by the arrow keys, it scrolls into view.
 #[component]
 fn ScopeItem(scope: Scope, title: String, count: i64, nested: bool) -> Element {
+    let app = use_context::<Arc<App>>();
     let reading = use_context::<Reading>();
+    let target = Target::of(&scope);
+    let renaming = target
+        .as_ref()
+        .filter(|t| *reading.manage.read() == Manage::Rename((*t).clone()))
+        .cloned();
     let mut mounted = use_signal(|| None::<Rc<MountedData>>);
     let selected = reading.selection.read().scope == scope;
     let class = match (selected, nested) {
@@ -1245,7 +1272,18 @@ fn ScopeItem(scope: Scope, title: String, count: i64, nested: bool) -> Element {
             class,
             onmounted: move |e: MountedEvent| mounted.set(Some(e.data())),
             onclick: move |_| reading.select_scope(scope.clone()),
-            span { class: "name", "{title}" }
+            oncontextmenu: move |e: Event<MouseData>| {
+                e.prevent_default();
+                if let Some(target) = target.clone() {
+                    let at = e.client_coordinates();
+                    reading.open_manage_menu(&app, target, at.x, at.y);
+                }
+            },
+            if let Some(target) = renaming {
+                RenameField { target, title: title.clone() }
+            } else {
+                span { class: "name", "{title}" }
+            }
             if count > 0 { span { class: "count", "{count}" } }
         }
     }

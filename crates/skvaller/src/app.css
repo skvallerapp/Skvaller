@@ -528,3 +528,133 @@ button {
   justify-content: flex-end;
 }
 
+
+/* Drawn with the theme's colors instead of the platform's. */
+.select {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.select select {
+  appearance: none;
+  min-width: 0;
+  height: 26px;
+  padding: 0 28px 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--active);
+  font: inherit;
+  color: var(--text);
+}
+
+.select option {
+  background: var(--reader-bg);
+  color: var(--text);
+}
+
+.select svg {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  color: var(--text-2);
+  pointer-events: none;
+}
+
+/* Add Feed, the question before removing a feed or folder, and the feed and folder
+   menus. The first two hang from the sidebar's toolbar, as the account menu does. */
+
+.sidebar-popover {
+  top: 40px;
+  left: 8px;
+  right: 8px;
+}
+
+.confirm.sidebar-popover {
+  width: auto;
+}
+
+.confirm .message {
+  font-weight: 400;
+  color: var(--text-2);
+}
+
+.add-feed-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.add-feed-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.add-feed-form input,
+input.rename {
+  min-width: 0;
+  padding: 0 8px;
+  border: 1px solid var(--separator);
+  border-radius: 6px;
+  background: var(--reader-bg);
+  color: var(--text);
+  font: inherit;
+  font-weight: 400;
+}
+
+.add-feed-form input {
+  height: 28px;
+}
+
+.add-feed-form input:focus,
+input.rename:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.add-feed-form .select select {
+  flex: 1;
+  height: 28px;
+  line-height: 28px;
+  font-weight: 400;
+}
+
+.add-feed-form .select svg {
+  top: 7px;
+}
+
+.add-feed-form .error {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--error);
+}
+
+.button:disabled {
+  opacity: 0.5;
+}
+
+/* A feed's or folder's name, being renamed in its row. */
+input.rename {
+  flex: 1;
+  height: 22px;
+}
+
+/* At the pointer: its place is set on the element. */
+.menu.context-menu {
+  right: auto;
+  width: 220px;
+  z-index: 20;
+}
+
+.menu-heading {
+  padding: 4px 8px 2px 28px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+}

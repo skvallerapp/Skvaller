@@ -12,6 +12,7 @@ mod accounts;
 mod app;
 mod config;
 mod error;
+mod feeds;
 mod gate;
 mod sync;
 

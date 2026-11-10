@@ -162,37 +162,9 @@
   color: var(--text-2);
 }
 
-/* Drawn with the theme's colors instead of the platform's. */
-.select {
-  position: relative;
-  display: inline-flex;
-  min-width: 0;
+/* A setting's dropdown leaves room for its label. */
+.settings .select {
   max-width: 60%;
-}
-
-.select select {
-  appearance: none;
-  min-width: 0;
-  height: 26px;
-  padding: 0 28px 0 10px;
-  border: 0;
-  border-radius: 6px;
-  background: var(--active);
-  font: inherit;
-  color: var(--text);
-}
-
-.select option {
-  background: var(--reader-bg);
-  color: var(--text);
-}
-
-.select svg {
-  position: absolute;
-  top: 6px;
-  right: 8px;
-  color: var(--text-2);
-  pointer-events: none;
 }
 
 /* An editable value, drawn like the read-only ones until focused. */

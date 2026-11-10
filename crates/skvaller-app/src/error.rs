@@ -35,9 +35,13 @@ pub enum Error {
     /// No account has this ID.
     #[error("the account was removed")]
     NoAccount,
-    /// Only the local account keeps its own subscriptions, as OPML imports into.
-    #[error("only an account on this device imports OPML")]
+    /// Only the local account keeps its own subscriptions; a sync account's are
+    /// managed on its server.
+    #[error("this account's feeds are managed on its server")]
     NotLocal,
+    /// A feed or folder needs a name.
+    #[error("enter a name")]
+    NoTitle,
     /// The account's cache didn't open at startup.
     #[error("this account's cache can't be opened: {0}")]
     Broken(String),
