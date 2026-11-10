@@ -88,6 +88,11 @@ impl Dates {
         self.zone.to_datetime(Timestamp::now())
     }
 
+    /// Today's date with its year, to show what this order looks like in the settings.
+    pub fn today(&self) -> String {
+        self.date(self.now(), false, true)
+    }
+
     /// For the article list: the time for today, a short date otherwise.
     pub fn list(&self, ms: i64) -> String {
         self.list_at(ms, self.now())

@@ -9,7 +9,7 @@ use skvaller_core::{
     ArticleSummary, Client, Counts, Db, Feed, Folder, ImportReport, Selection, export_opml,
     import_opml,
 };
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::{Notify, broadcast, watch};
 use tracing::Level;
 
 use crate::config::{
@@ -81,6 +81,19 @@ pub struct Library {
     pub feeds: Vec<Feed>,
     /// Unread and starred articles per feed.
     pub counts: Counts,
+}
+
+/// A change to an account's name or sync settings; fields left `None` stay.
+#[derive(Clone, Debug, Default)]
+pub struct AccountChange {
+    /// Ignored when blank.
+    pub description: Option<String>,
+    pub sync: Option<SyncSchedule>,
+    /// At least 1.
+    pub keep_read_days: Option<u32>,
+    /// 0 keeps them.
+    pub keep_unread_days: Option<u32>,
+    pub sync_on_wake: Option<bool>,
 }
 
 /// What one account needs while the app runs: its cache, its client and its syncs.
@@ -156,6 +169,9 @@ pub struct App {
     broken: HashMap<String, String>,
     notice: Option<Notice>,
     pub(crate) events: broadcast::Sender<SyncStatus>,
+    /// Bumped on every change to the settings or an account's, so each window can show
+    /// them at once.
+    config_revision: watch::Sender<u64>,
     /// The runtime [`App::start_sync`] ran on, where every sync runs, away from the UI.
     pub(crate) sync_runtime: OnceLock<tokio::runtime::Handle>,
 }
@@ -299,6 +315,7 @@ impl App {
             broken,
             notice,
             events: broadcast::channel(EVENT_BACKLOG).0,
+            config_revision: watch::Sender::new(0),
             sync_runtime: OnceLock::new(),
         })
     }
@@ -329,11 +346,78 @@ impl App {
     /// [`Error::Io`] when config.json can't be saved.
     pub fn set_active(&self, account_id: &str) -> Result<()> {
         self.runtime(account_id)?;
+        self.update_config(|config| config.active = Some(account_id.to_owned()))
+    }
+
+    /// Replaces the settings, saved to config.json, and tells every window.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when config.json can't be saved; the settings stay as they were.
+    pub fn set_settings(&self, settings: crate::config::Settings) -> Result<()> {
+        self.update_config(|config| config.settings = settings)?;
+        self.config_revision.send_modify(|r| *r += 1);
+        Ok(())
+    }
+
+    /// Changes the account's name or sync settings, as the Tauri version's
+    /// `update_account` does, saved and told to every window. A schedule change reaches
+    /// its background sync at once.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoAccount`] or [`Error::Broken`] for an account without a cache, and
+    /// [`Error::Io`] when config.json can't be saved; the account stays as it was.
+    pub fn update_account(&self, account_id: &str, change: &AccountChange) -> Result<()> {
+        let rt = self.runtime(account_id)?;
+        let mut schedule_changed = false;
+        self.update_config(|config| {
+            let Some(account) = config.accounts.iter_mut().find(|a| a.id == account_id) else {
+                return;
+            };
+            if let Some(description) = change.description.as_deref().map(str::trim)
+                && !description.is_empty()
+            {
+                description.clone_into(&mut account.description);
+            }
+            if let Some(sync) = change.sync {
+                schedule_changed = account.sync != sync;
+                account.sync = sync;
+            }
+            if let Some(days) = change.keep_read_days {
+                account.keep_read_days = days.max(1);
+            }
+            if let Some(days) = change.keep_unread_days {
+                account.keep_unread_days = days;
+            }
+            if let Some(on) = change.sync_on_wake {
+                schedule_changed |= account.sync_on_wake != on;
+                account.sync_on_wake = on;
+            }
+        })?;
+        if schedule_changed {
+            rt.wake.notify_one();
+        }
+        self.config_revision.send_modify(|r| *r += 1);
+        Ok(())
+    }
+
+    /// Changes in the settings or the accounts: the revision changes on each.
+    #[must_use]
+    pub fn watch_config(&self) -> watch::Receiver<u64> {
+        self.config_revision.subscribe()
+    }
+
+    /// Changes the config and saves it. The change takes only once saved, so the app
+    /// never shows what the file doesn't have.
+    fn update_config(&self, change: impl FnOnce(&mut Config)) -> Result<()> {
         let mut config = lock(&self.config);
-        config.active = Some(account_id.to_owned());
-        config
-            .save(&self.config_path)
-            .map_err(io("Saving", &self.config_path))
+        let mut next = config.clone();
+        change(&mut next);
+        next.save(&self.config_path)
+            .map_err(io("Saving", &self.config_path))?;
+        *config = next;
+        Ok(())
     }
 
     /// The account's unread articles, for the account switcher.
@@ -706,6 +790,50 @@ mod tests {
             std::fs::read(dirs.config_file().with_extension("json.bak")).unwrap(),
             raw
         );
+    }
+
+    #[test]
+    fn changed_settings_are_saved_and_announced() {
+        let (_tmp, dirs) = dirs();
+        let app = App::load(&dirs).unwrap();
+        let watch = app.watch_config();
+        let mut settings = app.settings();
+        settings.theme = crate::Theme::Espresso;
+
+        app.set_settings(settings).unwrap();
+
+        assert!(watch.has_changed().unwrap());
+        assert_eq!(app.settings().theme, crate::Theme::Espresso);
+        let saved = App::load(&dirs).unwrap();
+        assert_eq!(saved.settings().theme, crate::Theme::Espresso);
+    }
+
+    #[test]
+    fn an_account_change_keeps_a_name_and_at_least_a_day() {
+        let (_tmp, dirs) = dirs();
+        let opml = r#"<opml version="2.0"><body>
+            <outline text="A" type="rss" xmlUrl="https://a.example/feed"/>
+        </body></opml>"#;
+        import_local(&dirs, opml).unwrap();
+        let app = App::load(&dirs).unwrap();
+        let id = app.accounts()[0].id.clone();
+        let change = |c: AccountChange| app.update_account(&id, &c).unwrap();
+
+        change(AccountChange {
+            description: Some("  News  ".into()),
+            keep_read_days: Some(0),
+            sync: Some(SyncSchedule::Manual),
+            ..AccountChange::default()
+        });
+        change(AccountChange {
+            description: Some("   ".into()),
+            ..AccountChange::default()
+        });
+
+        let account = &App::load(&dirs).unwrap().accounts()[0];
+        assert_eq!(account.description, "News");
+        assert_eq!(account.keep_read_days, 1);
+        assert_eq!(account.sync, SyncSchedule::Manual);
     }
 
     #[test]

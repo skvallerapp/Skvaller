@@ -10,6 +10,7 @@
   --separator: rgb(0 0 0 / 0.08);
   --hover: rgb(0 0 0 / 0.04);
   --active: rgb(0 0 0 / 0.07);
+  --switch-knob: #ffffff;
   --accent: #9a5136;
   --accent-text: #ffffff;
   --unread: #9a5136;
@@ -28,6 +29,7 @@
     --separator: rgb(255 255 255 / 0.08);
     --hover: rgb(255 255 255 / 0.04);
     --active: rgb(255 255 255 / 0.08);
+    --switch-knob: #d4d4d8;
     --accent: #52709c;
     --unread: #8aa4c8;
     --star: #f0b63a;
@@ -45,6 +47,7 @@
   --separator: rgb(255 255 255 / 0.08);
   --hover: rgb(255 255 255 / 0.04);
   --active: rgb(255 255 255 / 0.08);
+  --switch-knob: #d4d4d8;
   --accent: #52709c;
   --unread: #8aa4c8;
   --star: #f0b63a;
@@ -61,6 +64,7 @@
   --separator: rgb(255 236 224 / 0.09);
   --hover: rgb(255 236 224 / 0.05);
   --active: rgb(255 236 224 / 0.09);
+  --switch-knob: #dcd2cc;
   --accent: #9a6342;
   --unread: #cfa080;
   --star: #f0b63a;
@@ -467,13 +471,4 @@ button {
    version's does with animations off. */
 .sync.syncing svg {
   opacity: 0.5;
-}
-
-/* Settings window */
-
-.root.settings {
-  display: block;
-  padding: 24px 32px;
-  background: var(--reader-bg);
-  color: var(--text);
 }
