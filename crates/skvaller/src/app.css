@@ -468,3 +468,12 @@ button {
 .sync.syncing svg {
   opacity: 0.5;
 }
+
+/* Settings window */
+
+.root.settings {
+  display: block;
+  padding: 24px 32px;
+  background: var(--reader-bg);
+  color: var(--text);
+}

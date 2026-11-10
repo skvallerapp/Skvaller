@@ -11,6 +11,7 @@ mod article;
 mod dates;
 mod fonts;
 mod i18n;
+mod settings;
 mod shortcuts;
 mod ui;
 

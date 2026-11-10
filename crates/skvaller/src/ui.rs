@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dioxus_native::prelude::*;
+use dioxus_native::{use_window_event, use_windows};
 use skvaller_app::{App, Library, MarkReadOn, SyncStatus};
 use skvaller_core::{ArticleSummary, Scope, Selection, View};
 use tokio::sync::broadcast::error::RecvError;
@@ -20,9 +21,10 @@ use crate::article;
 use crate::dates::Dates;
 use crate::fonts;
 use crate::i18n::{t, t_count};
+use crate::settings::SettingsWindow;
 use crate::shortcuts::{ARROWS, Action, bindings, key_name};
 
-const APP_CSS: &str = include_str!("app.css");
+pub(crate) const APP_CSS: &str = include_str!("app.css");
 
 /// Height of an article list row, in CSS pixels: the Tauri version's row without
 /// thumbnails. Every row has it, so the list can place rows without measuring them.
@@ -46,6 +48,13 @@ const READ_ON_PAGE: f64 = 0.9;
 /// How near the end, in CSS pixels, counts as the end: scroll offsets can fall short of
 /// it by a rounded fraction.
 const END_SLACK: f64 = 1.0;
+
+/// The modifier of the app's own shortcuts, such as Settings: ⌘ on macOS, Ctrl elsewhere.
+const COMMAND_MODIFIER: Modifiers = if cfg!(target_os = "macos") {
+    Modifiers::META
+} else {
+    Modifiers::CONTROL
+};
 
 /// The modifier of the account shortcuts, ⌘ on macOS and Alt elsewhere.
 const ACCOUNT_MODIFIER: Modifiers = if cfg!(target_os = "macos") {
@@ -671,6 +680,20 @@ pub fn Root() -> Element {
         root: Signal::new(None),
     });
     let keys = use_hook(|| Rc::new(bindings(&app.settings().shortcuts)));
+    let windows = use_windows();
+    let settings = use_hook(SettingsWindow::default);
+    // Settings goes with the main window, as the app does.
+    use_window_event({
+        let (settings, windows) = (settings.clone(), windows.clone());
+        move |event, _| {
+            if matches!(
+                event,
+                dioxus_native::winit::event::WindowEvent::CloseRequested
+            ) {
+                settings.close(&windows);
+            }
+        }
+    });
     use_context_provider(|| {
         let settings = app.settings();
         Rc::new(Dates::system(settings.clock, settings.date_format))
@@ -694,7 +717,10 @@ pub fn Root() -> Element {
                 reading.refocus();
             },
             onkeydown: move |e: Event<KeyboardData>| {
-                if reading.on_key(&app, &keys, &e.data()) {
+                if e.code() == Code::Comma && e.modifiers() == COMMAND_MODIFIER {
+                    settings.open(&windows, &app);
+                    e.prevent_default();
+                } else if reading.on_key(&app, &keys, &e.data()) {
                     e.prevent_default();
                 }
             },
