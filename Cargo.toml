@@ -20,8 +20,8 @@ skvaller-core = { path = "crates/skvaller-core", version = "0.1.0" }
 # opening more windows, and upstream PR #1321 (single-select <select>), with the upstream
 # main it merged, with the open list in the options' colors, keeping its keys from the
 # page (an iframe's list too), and closing on outside clicks, scrolling and window blur;
-# and <input type=password> masked.
-dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "53512306", default-features = false }
+# <input type=password> masked; and the HTTP client and a request filter set by the app.
+dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "e5335577", default-features = false }
 
 dirs = "6.0.0"
 icu_calendar = { version = "2.4.0", default-features = false }

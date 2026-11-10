@@ -94,6 +94,47 @@ impl Untrusted {
     }
 }
 
+/// What the article's own document may load: its images, styles and fonts, as Blitz
+/// fetches them, not core.
+///
+/// Public addresses only, with no exceptions, as thumbnails from the same HTML; and
+/// only `http`, `https` and `data:` URLs, so no `file:` reads a local file or, on
+/// Windows, opens a network share.
+#[derive(Clone, Debug)]
+pub struct ArticleNet(Untrusted);
+
+impl ArticleNet {
+    /// Requests time out after this long, as an image that slow is not coming.
+    const TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// The article's client and its check.
+    ///
+    /// # Errors
+    ///
+    /// When the HTTP client can't be built, as without TLS support.
+    pub fn new() -> reqwest::Result<Self> {
+        Untrusted::build(Self::TIMEOUT, &[], Vec::new()).map(Self)
+    }
+
+    /// The client for the document's requests. Its resolver refuses local and
+    /// private addresses, of names and redirects alike; [`ArticleNet::allows`] checks
+    /// an address in the URL, which reqwest connects to without resolving.
+    #[must_use]
+    pub fn client(&self) -> reqwest::Client {
+        self.0.http.clone()
+    }
+
+    /// Whether the document may request `url`.
+    #[must_use]
+    pub fn allows(&self, url: &Url) -> bool {
+        match url.scheme() {
+            "data" => true,
+            "http" | "https" => self.0.guard.allows(url),
+            _ => false,
+        }
+    }
+}
+
 /// Where an [`Untrusted`] client may connect: public addresses, and its exceptions.
 #[derive(Clone, Debug)]
 struct Guard {
@@ -291,6 +332,42 @@ mod tests {
         ] {
             assert!(is_public(public.parse().unwrap()), "{public}");
         }
+    }
+
+    #[test]
+    fn the_article_loads_only_public_web_and_data_urls() {
+        let net = ArticleNet::new().unwrap();
+        assert!(net.allows(&url("https://example.com/a.png")));
+        assert!(net.allows(&url("http://93.184.216.34/a.png")));
+        assert!(net.allows(&url("data:image/png;base64,AAAA")));
+        for refused in [
+            "http://127.0.0.1/a.png",
+            "http://192.168.1.1/admin",
+            "https://[::1]/a.png",
+            "http://169.254.169.254/latest/meta-data",
+            "file:///etc/passwd",
+            "file://server/share/a.png",
+            "ftp://example.com/a.png",
+            "dioxus://index.html/a.png",
+        ] {
+            assert!(!net.allows(&url(refused)), "{refused}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_articles_client_refuses_a_name_for_a_local_address() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let net = ArticleNet::new().unwrap();
+        let named = format!("http://localhost:{}/a.png", server.address().port());
+
+        let e = net.client().get(&named).send().await.unwrap_err();
+
+        assert!(is_blocked(&e), "{e}");
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[test]

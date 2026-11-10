@@ -24,6 +24,7 @@ use std::sync::Arc;
 use dioxus_native::{Config, LogicalSize, WindowAttributes};
 use mimalloc::MiMalloc;
 use skvaller_app::{App, Dirs, import_local, seed_local};
+use skvaller_core::ArticleNet;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -82,14 +83,18 @@ fn run() -> Result<(), String> {
         .with_title("Skvaller")
         .with_surface_size(LogicalSize::new(1200.0, 800.0))
         .with_min_surface_size(LogicalSize::new(640.0, 400.0));
+    // Every document's requests, the article frame's among them, may reach only public
+    // web addresses: article HTML is untrusted. The app's own UI loads nothing.
+    let net = ArticleNet::new().map_err(|e| format!("building the HTTP client failed: {e}"))?;
+    let config = Config::default()
+        .with_font_ctx(fonts::font_context())
+        .with_http_client(net.client())
+        .with_request_filter(move |request| net.allows(&request.url));
     let context = Arc::clone(&app);
     dioxus_native::launch_cfg(
         ui::Root,
         vec![Box::new(move || Box::new(Arc::clone(&context)))],
-        vec![
-            Box::new(Config::default().with_font_ctx(fonts::font_context())),
-            Box::new(window),
-        ],
+        vec![Box::new(config), Box::new(window)],
     );
     drop(runtime);
     Ok(())
