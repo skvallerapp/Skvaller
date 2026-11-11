@@ -6,7 +6,8 @@ account), then measures the app and every process it runs (WebKit's included):
 
   launch  10 s after its window appears
   idle    the 30 s after that
-  scroll  360 mouse-wheel notches over the article list, 30 ms apart
+  scroll  mouse-wheel notches over the article list, 30 ms apart, in batches of 100, until
+          a batch no longer changes the window: the whole list, the same distance in both apps
 
 Linux (X11, or Xwayland: both apps are made to use it) and macOS. Python 3.9+, standard
 library only. See README.md next to this file.
@@ -15,6 +16,7 @@ library only. See README.md next to this file.
 import argparse
 import ctypes
 import datetime
+import hashlib
 import lzma
 import os
 import platform
@@ -36,8 +38,7 @@ def main():
     parser.add_argument("--rust", required=True, help="the all-Rust build's binary")
     parser.add_argument("--machine", required=True, help="a short name for the results file, like steam-deck or macbook-m1")
     parser.add_argument("--runs", type=int, default=2, help="measured runs per app (default 2)")
-    parser.add_argument("--notches", type=int, default=360)
-    parser.add_argument("--wheel-delta", type=int, default=-1,
+    parser.add_argument("--wheel-delta", type=int, default=-3,
                         help="macOS only: lines per scroll event; flip the sign if the list scrolls up")
     parser.add_argument("--no-warmup", action="store_true",
                         help="skip the unmeasured first launch of each app that fills shader caches")
@@ -107,7 +108,9 @@ def run(plat, label, binary, args, measure):
         pids = plat.processes(proc.pid, before)
         cpu_before = plat.cpu(pids)
         threads_before = plat.threads(pids)
-        plat.scroll(proc.pid, x, y, args.notches, args.wheel_delta)
+        scroll_started = time.time()
+        notches = scroll_to_bottom(plat, label, window, args.wheel_delta)
+        scroll_time = time.time() - scroll_started
         time.sleep(3)
         pids = plat.processes(proc.pid, before)
         cpu_scroll = plat.cpu(pids) - cpu_before
@@ -119,6 +122,7 @@ def run(plat, label, binary, args, measure):
             "cpu_launch": cpu_launch, "mem_launch": mem_launch,
             "cpu_idle": cpu_idle, "mem_idle": mem_idle,
             "cpu_scroll": cpu_scroll, "mem_scroll": mem_scroll,
+            "notches": notches, "scroll_time": scroll_time,
             "per_process": plat.per_process(pids), "threads": threads, "screenshot": shot,
         }
     finally:
@@ -132,6 +136,31 @@ def run(plat, label, binary, args, measure):
         time.sleep(2)
 
 
+BATCH = 100
+MAX_NOTCHES = 30000
+
+
+def scroll_to_bottom(plat, label, window, delta):
+    """Scrolls in batches until one leaves the window unchanged; returns the notches sent.
+
+    The last batch, at the bottom, moves nothing; both apps get one, so it stays fair."""
+    last, sent = plat.snapshot(window), 0
+    while True:
+        plat.scroll(BATCH, delta)
+        sent += BATCH
+        time.sleep(0.5)
+        now = plat.snapshot(window)
+        if now == last:
+            if sent == BATCH:
+                sys.exit(f"{label}: the window didn't change while scrolling. Either the pointer wasn't over "
+                         "the list, or capturing the window doesn't work here (on macOS: Screen Recording "
+                         "access). See README.md.")
+            return sent
+        if sent >= MAX_NOTCHES:
+            sys.exit(f"{label}: no bottom after {sent} notches; is the window still changing on its own?")
+        last = now
+
+
 def diff_threads(before, after):
     out = {name: after[name] - before.get(name, 0.0) for name in after}
     return sorted(((s, n) for n, s in out.items() if s >= 0.05), reverse=True)[:12]
@@ -143,7 +172,8 @@ def summary_line(r, plat):
     return (f"window after {r['window_after']:.1f} s | procs {r['procs']} | "
             f"launch cpu {r['cpu_launch']:.2f} s, {a}/{b} {fmt(r['mem_launch'])} | "
             f"idle 30 s cpu {r['cpu_idle']:.2f} s, {fmt(r['mem_idle'])} | "
-            f"scroll cpu {r['cpu_scroll']:.2f} s, {fmt(r['mem_scroll'])}")
+            f"scroll {r['notches']} notches in {r['scroll_time']:.0f} s, cpu {r['cpu_scroll']:.2f} s, "
+            f"{fmt(r['mem_scroll'])}")
 
 
 def write_report(args, plat, apps, results):
@@ -156,16 +186,17 @@ def write_report(args, plat, apps, results):
         f"- Date: {datetime.date.today().isoformat()}",
         f"- Machine: {plat.machine_info()}",
         f"- Builds: " + ", ".join(f"{label} `{git_rev(binary)}`" for label, binary in apps),
-        f"- Settings: {args.runs} runs, {args.notches} notches, warm-up {'off' if args.no_warmup else 'on'}",
+        f"- Settings: {args.runs} runs, scroll to the bottom of the list, warm-up {'off' if args.no_warmup else 'on'}",
         f"- Memory columns: {a} / {b} in MB, summed over the app and its child processes. {plat.mem_note}",
         "",
-        f"| Run | Window after | Procs | Launch CPU | Launch {a}/{b} | Idle 30 s CPU | Idle {a}/{b} | Scroll CPU | After scroll {a}/{b} |",
-        "|---|---|---|---|---|---|---|---|---|",
+        f"| Run | Window after | Procs | Launch CPU | Launch {a}/{b} | Idle 30 s CPU | Idle {a}/{b} | Notches | Scroll time | Scroll CPU | After scroll {a}/{b} |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
         m = lambda k: f"{r[k][0]:.0f} / {r[k][1]:.0f}"
         lines.append(f"| {r['label']} | {r['window_after']:.1f} s | {r['procs']} | {r['cpu_launch']:.2f} s | "
-                     f"{m('mem_launch')} | {r['cpu_idle']:.2f} s | {m('mem_idle')} | {r['cpu_scroll']:.2f} s | "
+                     f"{m('mem_launch')} | {r['cpu_idle']:.2f} s | {m('mem_idle')} | {r['notches']} | {r['scroll_time']:.0f} s | "
+                     f"{r['cpu_scroll']:.2f} s | "
                      f"{m('mem_scroll')} |")
     for r in results:
         lines += ["", f"## {r['label']}", "", f"Processes after the scroll ({a} / {b} MB):", ""]
@@ -321,7 +352,10 @@ class Linux(Platform):
     def prepare_scroll(self, pid, x, y):
         self.x.move(x, y)
 
-    def scroll(self, pid, x, y, notches, _delta):
+    def snapshot(self, window):
+        return self.x.snapshot(window[4], window[2], window[3])
+
+    def scroll(self, notches, _delta):
         for _ in range(notches):
             self.x.wheel_down()
             time.sleep(0.03)
@@ -358,6 +392,14 @@ class XWindowAttributes(ctypes.Structure):
                 ("override_redirect", ctypes.c_int), ("screen", ctypes.c_void_p)]
 
 
+class XImage(ctypes.Structure):
+    """The start of Xlib's XImage: the fields up to the ones read here."""
+    _fields_ = [("width", ctypes.c_int), ("height", ctypes.c_int), ("xoffset", ctypes.c_int),
+                ("format", ctypes.c_int), ("data", ctypes.c_void_p), ("byte_order", ctypes.c_int),
+                ("bitmap_unit", ctypes.c_int), ("bitmap_bit_order", ctypes.c_int), ("bitmap_pad", ctypes.c_int),
+                ("depth", ctypes.c_int), ("bytes_per_line", ctypes.c_int), ("bits_per_pixel", ctypes.c_int)]
+
+
 class Xlib:
     """Just enough Xlib + XTest, through ctypes, to find a window by PID and scroll it."""
 
@@ -384,6 +426,8 @@ class Xlib:
         x.XTranslateCoordinates.argtypes = [c.c_void_p, c.c_ulong, c.c_ulong, c.c_int, c.c_int,
                                             c.POINTER(c.c_int), c.POINTER(c.c_int), c.POINTER(c.c_ulong)]
         x.XFree.argtypes = [c.c_void_p]
+        x.XGetImage.restype = c.c_void_p
+        x.XGetImage.argtypes = [c.c_void_p, c.c_ulong, c.c_int, c.c_int, c.c_uint, c.c_uint, c.c_ulong, c.c_int]
         x.XFlush.argtypes = [c.c_void_p]
         x.XSync.argtypes = [c.c_void_p, c.c_int]
         self.t.XTestFakeMotionEvent.argtypes = [c.c_void_p, c.c_int, c.c_int, c.c_int, c.c_ulong]
@@ -419,7 +463,7 @@ class Xlib:
         return out
 
     def window_of(self, pid):
-        """(x, y, width, height) on the root of pid's largest viewable window, or None."""
+        """(x, y, width, height, id) on the root of pid's largest viewable window, or None."""
         best, todo = None, [self.root]
         while todo:
             w = todo.pop()
@@ -435,8 +479,19 @@ class Xlib:
             self.x.XTranslateCoordinates(self.d, w, self.root, 0, 0, ctypes.byref(rx), ctypes.byref(ry),
                                          ctypes.byref(child))
             if best is None or a.width * a.height > best[2] * best[3]:
-                best = (rx.value, ry.value, a.width, a.height)
+                best = (rx.value, ry.value, a.width, a.height, w)
         return best
+
+    def snapshot(self, w, width, height):
+        """A hash of the window's pixels."""
+        img = self.x.XGetImage(self.d, w, 0, 0, width, height, (1 << 64) - 1, 2)  # AllPlanes, ZPixmap
+        if not img:
+            return None
+        head = ctypes.cast(img, ctypes.POINTER(XImage))[0]
+        digest = hashlib.sha1(ctypes.string_at(head.data, head.bytes_per_line * head.height)).digest()
+        self.x.XFree(head.data)
+        self.x.XFree(img)
+        return digest
 
     def move(self, x, y):
         self.t.XTestFakeMotionEvent(self.d, -1, x, y, 0)
@@ -531,7 +586,17 @@ class Mac(Platform):
     def prepare_scroll(self, pid, x, y):
         subprocess.run([self.helper, "focus", str(pid), str(x), str(y)], check=True)
 
-    def scroll(self, pid, x, y, notches, delta):
+    def snapshot(self, window):
+        path = os.path.join(self.home, "snapshot.png")
+        region = ",".join(str(v) for v in window[:4])
+        subprocess.run(["screencapture", "-x", "-R", region, path], capture_output=True)
+        try:
+            with open(path, "rb") as f:
+                return hashlib.sha1(f.read()).digest()
+        except OSError:
+            return None
+
+    def scroll(self, notches, delta):
         subprocess.run([self.helper, "scroll", str(notches), str(delta), "30"], check=True)
 
     def screenshot(self, path):

@@ -19,7 +19,12 @@ Per run, summed over the app and all its processes:
 | Window after | Seconds from launch until the window is on screen |
 | Launch | CPU time and memory 10 s after the window appeared |
 | Idle | CPU time over the next 30 s, memory at the end |
-| Scroll | 360 mouse-wheel notches over the article list, 30 ms apart; CPU time and memory after |
+| Scroll | Mouse-wheel notches over the article list, 30 ms apart, from the top **to the bottom of the list**; CPU time and memory after |
+
+The scroll runs in batches of 100 notches. After each batch the script captures the window,
+and it stops when a batch leaves the window unchanged: the list is at the bottom. So both apps
+scroll exactly the same distance, all 5,000 articles, however far one notch goes in each
+(it differs per app and per OS). The report has the notches and seconds each app needed.
 
 First, each app is launched once without measuring (warm-up) so shader caches are filled.
 Then the apps alternate, `--runs` times each (default 2). On Linux the report also splits
@@ -45,9 +50,9 @@ The binaries are `../skvaller-main/target/release/skvaller` and
 
 - Needs the Xcode Command Line Tools (`swiftc`, used to build `mac-input.swift` on the first
   run), Rust and bun.
-- Give the terminal app that runs the script **Accessibility** access (System Settings >
-  Privacy & Security > Accessibility). The script stops with a message if it's missing. For
-  the screenshots, also **Screen Recording**; without it they show only the desktop.
+- Give the terminal app that runs the script **Accessibility** access (to send scroll events)
+  and **Screen Recording** access (to see when the list reaches the bottom), in System
+  Settings > Privacy & Security. The script stops with a message if either is missing.
 
 ### Steam Deck
 
@@ -75,7 +80,7 @@ python3 bench/bench.py \
   --machine steam-deck        # or macbook-<chip>, e.g. macbook-m1
 ```
 
-It takes about 6 minutes. Don't touch the mouse or the keyboard while it runs: the scroll
+It takes about 15–20 minutes. Don't touch the mouse or the keyboard while it runs: the scroll
 goes to whatever is under the pointer. It writes `bench/results/<machine>.md` and a
 screenshot after each run's scroll.
 
@@ -83,12 +88,13 @@ screenshot after each run's scroll.
 
 Open every screenshot.
 
-- Both apps' article lists must have scrolled down, well past the first article. Write down
-  the number of the top article ("Test article N") in each screenshot. The two apps scroll
-  **different distances** for the same notches (on the Linux dev server: Tauri ~351, Rust
-  ~249), so the scroll CPU is only comparable together with that distance.
-- On macOS, if a list scrolled up instead, run again with `--wheel-delta 1`. If it didn't move,
-  the pointer was not over the list: check that the window is fully on screen.
+- Both apps' article lists must be at the bottom: the last articles (Test article 4,99x)
+  showing. If one isn't, the run doesn't count: find out why (a window partly off screen,
+  another window on top) and run again.
+- If the script says the window didn't change while scrolling: on macOS, check Screen
+  Recording access, and run again with `--wheel-delta 3` in case the list scrolled up (it is
+  already at the top, so up looks like no change). Otherwise, make sure the whole window is on
+  screen.
 - On Linux, the report must have no "rendered in software" warning for either app. If the
   all-Rust app has one, fix the container's Vulkan driver and run again.
 - The runs of the same app should agree within a few percent. If they don't, something else
@@ -96,8 +102,8 @@ Open every screenshot.
 
 ## 4. Report
 
-Add to the end of `bench/results/<machine>.md` a short `## Notes` section: the top article
-number in each screenshot, anything unusual, and the setup (Xwayland on the Deck, power
+Add to the end of `bench/results/<machine>.md` a short `## Notes` section: whether every
+screenshot shows the bottom of the list, anything unusual, and the setup (Xwayland on the Deck, power
 plugged in). Then commit the `.md` and the `.png` files to this branch and push:
 
 ```sh
