@@ -2,6 +2,14 @@
 target/
 **/*.rs.bk
 
+# Left behind by the tauri branch
+node_modules/
+dist/
+src-tauri/
+
+# Local test setup, kept out of the repo
+dev/
+
 # Environment and secrets
 .env
 .env.*
