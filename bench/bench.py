@@ -23,9 +23,11 @@ import platform
 import re
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import time
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_ID = "io.github.skvallerapp.Skvaller"
@@ -143,7 +145,8 @@ MAX_NOTCHES = 30000
 def scroll_to_bottom(plat, label, window, delta):
     """Scrolls in batches until one leaves the window unchanged; returns the notches sent.
 
-    The last batch, at the bottom, moves nothing; both apps get one, so it stays fair."""
+    The last batch, at the bottom, moves nothing; both apps get one (two on Linux, see
+    Linux.confirm_bottom), so it stays fair."""
     last, sent = plat.snapshot(window), 0
     while True:
         plat.scroll(BATCH, delta)
@@ -151,14 +154,38 @@ def scroll_to_bottom(plat, label, window, delta):
         time.sleep(0.5)
         now = plat.snapshot(window)
         if now == last:
-            if sent == BATCH:
-                sys.exit(f"{label}: the window didn't change while scrolling. Either the pointer wasn't over "
-                         "the list, or capturing the window doesn't work here (on macOS: Screen Recording "
-                         "access). See README.md.")
-            return sent
+            at_bottom, extra = plat.confirm_bottom(window, delta)
+            sent += extra
+            if at_bottom:
+                if sent == BATCH + extra:
+                    sys.exit(f"{label}: the window didn't change while scrolling. Either the pointer wasn't "
+                             "over the list, or capturing the window doesn't work here (on macOS: Screen "
+                             "Recording access). See README.md.")
+                return sent
+            now = plat.snapshot(window)
         if sent >= MAX_NOTCHES:
             sys.exit(f"{label}: no bottom after {sent} notches; is the window still changing on its own?")
         last = now
+
+
+def png_rows(path, top, bottom):
+    """The raw (still filtered) bytes of a PNG's rows top..bottom, enough to tell whether that
+    part of two captures from the same encoder is the same."""
+    with open(path, "rb") as f:
+        data = f.read()
+    pos, idat, width, bpp = 8, [], 0, 4
+    while pos < len(data):
+        length, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + length]
+        if kind == b"IHDR":
+            width, _, depth, color = struct.unpack(">IIBB", body[:10])
+            bpp = {0: 1, 2: 3, 4: 2, 6: 4}.get(color, 4) * max(depth // 8, 1)
+        elif kind == b"IDAT":
+            idat.append(body)
+        pos += 12 + length
+    stride = width * bpp + 1  # each row starts with its filter byte
+    raw = zlib.decompress(b"".join(idat))
+    return raw[max(top, 0) * stride:max(bottom, 0) * stride]
 
 
 def diff_threads(before, after):
@@ -235,6 +262,10 @@ def output(cmd):
 class Platform:
     def __init__(self, home):
         self.home = home
+
+    def confirm_bottom(self, window, delta):
+        """Whether an unchanged snapshot really means the bottom; returns (yes, notches sent)."""
+        return True, 0
 
     def reset_data(self):
         """Puts a fresh copy of the fixture in place; caches outside it are kept."""
@@ -354,6 +385,28 @@ class Linux(Platform):
 
     def snapshot(self, window):
         return self.x.snapshot(window[4], window[2], window[3])
+
+    def confirm_bottom(self, window, delta):
+        """XGetImage can return a stale frame for a window drawn with Skia (GL or Vulkan) on
+        Xwayland, for several batches in a row, while the screen moves on. So an unchanged
+        snapshot is checked against the compositor: capture the screen, scroll one more batch,
+        capture again, and compare the rows the window covers (not the taskbar's clock).
+        Returns (at the bottom, notches sent)."""
+        path = os.path.join(self.home, "confirm.png")
+
+        def shot():
+            if os.path.exists(path):
+                os.remove(path)
+            if self.screenshot(path) is None:
+                return None
+            return hashlib.sha1(png_rows(path, window[1], window[1] + window[3])).digest()
+
+        before = shot()
+        if before is None:
+            return True, 0  # no compositor capture here: trust XGetImage
+        self.scroll(BATCH, delta)
+        time.sleep(0.5)
+        return shot() == before, BATCH
 
     def scroll(self, notches, _delta):
         for _ in range(notches):
