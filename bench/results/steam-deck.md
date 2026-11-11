@@ -114,5 +114,7 @@ Screenshot after the scroll: `results/steam-deck-rust2.png`
   compositor, Skia workers) and its UI process.
 - After the scroll, the Rust app held 177 MB PSS (no growth from launch). Tauri held about
   560 MB, up from about 370 MB at launch.
-- The two apps opened in different themes (Tauri dark, Rust light). Each used the fixture's
-  settings as it reads them; this was not changed for the run.
+- The two apps opened in different themes, though the fixture's `config.json` sets
+  `"theme": "system"` and the Deck's desktop is dark: Tauri followed it (dark), the all-Rust
+  app did not (light). So the all-Rust app doesn't pick up the system theme here, on Xwayland
+  inside the distrobox. The theme may change the rendering cost a little.
