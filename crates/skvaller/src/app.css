@@ -233,8 +233,23 @@ button {
   color: var(--accent-text);
 }
 
+/* Lines the feed's name up with its folder's, after the disclosure button. */
 .item.nested {
-  padding-left: 24px;
+  padding-left: 32px;
+}
+
+/* A folder's chevron, which shows or hides its feeds. */
+.item .disclosure {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
 }
 
 .heading {

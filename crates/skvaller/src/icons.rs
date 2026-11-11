@@ -40,6 +40,7 @@ pub const CIRCLE_USER: &[&str] = &[
     "M7 20.662V19a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v1.662",
 ];
 pub const CHEVRONS_UP_DOWN: &[&str] = &["m7 15 5 5 5-5", "m7 9 5-5 5 5"];
+pub const CHEVRON_DOWN: &[&str] = &["m6 9 6 6 6-6"];
 pub const CHEVRON_LEFT: &[&str] = &["m15 18-6-6 6-6"];
 pub const CHEVRON_RIGHT: &[&str] = &["m9 18 6-6-6-6"];
 pub const LAYERS: &[&str] = &[

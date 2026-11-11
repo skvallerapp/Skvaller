@@ -187,11 +187,19 @@ impl Reading {
             }
             (Item::Move { folder, .. }, Target::Feed(id)) => {
                 let moved = app.move_feed(&account, id, folder.as_deref());
+                // The feed shows where it went.
+                if let Some(folder) = folder {
+                    self.collapsed.write().remove(folder);
+                }
                 // A folder's list gains or loses the feed's articles.
                 self.revision += 1;
                 moved
             }
             (Item::Rename, _) => {
+                // A folder opens, showing what is being renamed.
+                if let Target::Folder(id) = &target {
+                    self.collapsed.write().remove(id);
+                }
                 self.manage.set(Manage::Rename(target));
                 return;
             }
