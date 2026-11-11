@@ -37,3 +37,8 @@ commit to it unless asked.
   performance; the Steam Deck is the low-power test machine. The article list must
   scroll smoothly with 5,000+ items.
 - **Screen reader support** is a goal, but not a blocker for shipping a feature.
+
+## On the `bench` branch
+
+This branch holds the Tauri vs all-Rust CPU and memory test. Read `bench/README.md` and follow
+it; build the apps from `main` and `tauri` worktrees, not from this branch.

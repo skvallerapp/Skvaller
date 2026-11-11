@@ -1,0 +1,31 @@
+{
+  "accounts": [
+    {
+      "id": "1",
+      "description": "Local",
+      "kind": "local",
+      "sync": 15,
+      "keepReadDays": 30,
+      "keepUnreadDays": 180,
+      "syncOnWake": false
+    }
+  ],
+  "active": "1",
+  "nextId": 2,
+  "removed": [],
+  "confirmMarkAllRead": true,
+  "theme": "system",
+  "animations": true,
+  "uiFont": "inter",
+  "headlineFont": "inter",
+  "articleFont": "literata",
+  "shortcuts": {},
+  "sortSubscriptions": "foldersFirst",
+  "markReadOn": "open",
+  "markReadOnScroll": false,
+  "unreadBadge": true,
+  "thumbnailSize": "medium",
+  "language": null,
+  "clock": "system",
+  "dateFormat": "system"
+}
