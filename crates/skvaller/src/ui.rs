@@ -177,8 +177,9 @@ struct Reading {
     reader_view: Signal<ReaderView>,
     /// The feed or folder menu, rename, question or Add Feed open in the sidebar.
     manage: Signal<Manage>,
-    /// The ids of the folders whose feeds the sidebar hides, for this session.
-    collapsed: Signal<HashSet<String>>,
+    /// The ids of the folders whose feeds the sidebar hides, by account, for this
+    /// session.
+    collapsed: Signal<HashMap<String, HashSet<String>>>,
 }
 
 impl Reading {
@@ -575,11 +576,47 @@ impl Reading {
         }
     }
 
+    /// The shown account's collapsed folders, without subscribing to changes.
+    fn collapsed_folders(&self) -> HashSet<String> {
+        let account = self.account.peek();
+        let collapsed = self.collapsed.peek();
+        account
+            .as_ref()
+            .and_then(|id| collapsed.get(id))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Whether the shown account's `folder` hides its feeds.
+    fn is_collapsed(&self, folder: &str) -> bool {
+        let account = self.account.read();
+        let collapsed = self.collapsed.read();
+        account
+            .as_ref()
+            .and_then(|id| collapsed.get(id))
+            .is_some_and(|folders| folders.contains(folder))
+    }
+
+    /// Hides or shows the feeds of the shown account's `folder`.
+    fn set_collapsed(mut self, folder: &str, collapse: bool) {
+        let Some(account) = self.account.peek().clone() else {
+            return;
+        };
+        let mut collapsed = self.collapsed.write();
+        let folders = collapsed.entry(account).or_default();
+        if collapse {
+            folders.insert(folder.to_owned());
+        } else {
+            folders.remove(folder);
+        }
+    }
+
     /// Moves the sidebar's selection to the next (1) or previous (-1) scope, keeping
     /// the view, as the Tauri version does.
     fn step_sidebar(self, delta: isize) {
         let next = {
-            let (lib, collapsed) = (self.library.peek(), self.collapsed.peek());
+            let lib = self.library.peek();
+            let collapsed = self.collapsed_folders();
             let current = self.selection.peek().scope.clone();
             // A feed in a collapsed folder has no row: step from its folder's.
             let row = match &current {
@@ -621,9 +658,8 @@ impl Reading {
     /// Shows the account, keeping the view: its feeds, articles and status. `None` once
     /// there is no account.
     fn show_account(mut self, app: &App, id: Option<String>) {
-        // Another account's feeds and folders are its own.
+        // Another account's feeds are its own.
         self.manage.set(Manage::Closed);
-        self.collapsed.write().clear();
         let view = self.selection.peek().view;
         self.select(Selection {
             view,
@@ -887,7 +923,7 @@ pub fn Root() -> Element {
         root: Signal::new(None),
         reader_view: Signal::new(ReaderView::default()),
         manage: Signal::new(Manage::default()),
-        collapsed: Signal::new(HashSet::new()),
+        collapsed: Signal::new(HashMap::new()),
     });
     use_context_provider(|| live);
     // The active account, as changed elsewhere: one added or removed in Settings.
@@ -1160,7 +1196,7 @@ fn Sidebar() -> Element {
                     {
                         let scope = Scope::Folder { id: folder.id.clone() };
                         let count: i64 = feeds_in(&lib, Some(&folder.id)).iter().map(|f| counts_for(current.view, &f.id)).sum();
-                        let expanded = !reading.collapsed.read().contains(&folder.id);
+                        let expanded = !reading.is_collapsed(&folder.id);
                         let feeds: Vec<_> = if expanded {
                             feeds_in(&lib, Some(&folder.id)).into_iter().cloned().collect()
                         } else {
@@ -1375,7 +1411,7 @@ struct FeedsPane(Signal<Option<Rc<MountedData>>>);
 #[component]
 fn ScopeItem(scope: Scope, title: String, count: i64, nested: bool, expanded: Option<bool>) -> Element {
     let app = use_context::<Arc<App>>();
-    let mut reading = use_context::<Reading>();
+    let reading = use_context::<Reading>();
     let target = Target::of(&scope);
     let renaming = target
         .as_ref()
@@ -1450,10 +1486,7 @@ fn ScopeItem(scope: Scope, title: String, count: i64, nested: bool, expanded: Op
                             onclick: move |e| {
                                 // Not a click on the folder: its selection stays.
                                 e.stop_propagation();
-                                let mut collapsed = reading.collapsed.write();
-                                if !collapsed.remove(&id) {
-                                    collapsed.insert(id.clone());
-                                }
+                                reading.set_collapsed(&id, expanded);
                             },
                             Icon { size: 16, stroke: "2", paths: if expanded { CHEVRON_DOWN } else { CHEVRON_RIGHT } }
                         }
