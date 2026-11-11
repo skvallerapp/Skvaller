@@ -26,4 +26,4 @@ pub use opml::{ImportReport, export as export_opml, import as import_opml};
 pub use reader::ready_article;
 pub use seed::seed_articles;
 pub use sync::{DEFAULT_KEEP_READ_DAYS, SyncReport, sync};
-pub use thumbnail::prefetch as prefetch_thumbnails;
+pub use thumbnail::{prefetch as prefetch_thumbnails, square as square_thumbnail};

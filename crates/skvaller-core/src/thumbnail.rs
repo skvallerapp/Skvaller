@@ -24,9 +24,11 @@ use crate::{Db, Result, html};
 
 /// The longest side of a stored thumbnail, in pixels.
 ///
-/// The Large size spans the list, at most 560 CSS pixels wide, and needs about twice
-/// that on a HiDPI screen. 800 is a compromise with the space the cache takes: a
-/// thumbnail is about 40–60 KB, so 5,000 cached articles take about 250 MB.
+/// The Large size fills a box of about 320 × 180 CSS pixels (`LARGE_THUMB_EXTRA` in the
+/// app's `ui.rs`), twice that on a HiDPI screen, and 800 covers its width for a
+/// landscape image. It is a compromise with the space the
+/// cache takes: a thumbnail is about 40–60 KB, so 5,000 cached articles take about
+/// 250 MB.
 const MAX_SIDE: u32 = 800;
 /// JPEG quality of a stored thumbnail. Artifacts don't show at thumbnail size.
 const JPEG_QUALITY: u8 = 75;
@@ -369,9 +371,40 @@ fn shrink(bytes: &[u8]) -> Option<Vec<u8>> {
     if let Some(orientation) = orientation {
         image.apply_orientation(orientation);
     }
+    encode(&on_white(&image))
+}
+
+/// A cached thumbnail cropped and shrunk to a square of `side` pixels.
+///
+/// What shows a thumbnail decodes it whole, at four bytes a pixel: a stored one of
+/// [`MAX_SIDE`] takes over a megabyte, a square of 128 pixels 64 KB. The crop is
+/// centered, as CSS `object-fit: cover` crops. One whose shorter side is under `side`
+/// is cropped but not enlarged; a square no larger comes back as it is.
+///
+/// Returns `None` if `jpeg` can't be decoded or encoded.
+#[must_use]
+pub fn square(jpeg: &[u8], side: u32) -> Option<Vec<u8>> {
+    let image = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg).ok()?;
+    let (width, height) = (image.width(), image.height());
+    let short = width.min(height);
+    if width == height && short <= side {
+        return Some(jpeg.to_vec());
+    }
+    let square = image.crop_imm((width - short) / 2, (height - short) / 2, short, short);
+    // An area average: faster than `resize`, and as good for shrinking.
+    let square = if short > side {
+        square.thumbnail_exact(side, side)
+    } else {
+        square
+    };
+    encode(&square.to_rgb8())
+}
+
+/// `image` as a thumbnail JPEG, or `None` if encoding fails.
+fn encode(image: &RgbImage) -> Option<Vec<u8>> {
     let mut jpeg = Vec::new();
     JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY)
-        .encode_image(&on_white(&image))
+        .encode_image(image)
         .ok()?;
     Some(jpeg)
 }

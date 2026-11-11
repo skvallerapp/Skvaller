@@ -134,6 +134,37 @@ fn a_large_image_shrinks_to_fit_and_a_small_one_stays_its_size() {
 }
 
 #[test]
+fn a_thumbnail_squares_to_the_middle_and_is_never_enlarged() {
+    // Red, blue, red; the blue middle is wider than the square in the middle. Any crop
+    // but the centered one takes in red at an edge.
+    let wide = RgbaImage::from_fn(600, 200, |x, _| {
+        Rgba(if (150..450).contains(&x) {
+            [0, 0, 255, 255]
+        } else {
+            [255, 0, 0, 255]
+        })
+    });
+    let mut encoded = Cursor::new(Vec::new());
+    wide.write_to(&mut encoded, ImageFormat::Png).unwrap();
+    let jpeg = shrink(encoded.get_ref()).unwrap();
+    let squared = decoded(&square(&jpeg, 128).unwrap()).to_rgb8();
+    assert_eq!(squared.dimensions(), (128, 128));
+    for x in [4, 64, 123] {
+        let [r, _, b] = squared.get_pixel(x, 64).0;
+        assert!(r < 40 && b > 200, "red at x {x}: the crop isn't centered");
+    }
+
+    // Narrower than the square: cropped, not enlarged.
+    let narrow = shrink(&png(110, 330, [10, 120, 200, 255])).unwrap();
+    let squared = decoded(&square(&narrow, 128).unwrap());
+    assert_eq!((squared.width(), squared.height()), (110, 110));
+
+    let small = shrink(&png(120, 120, [10, 120, 200, 255])).unwrap();
+    assert_eq!(square(&small, 128), Some(small));
+    assert_eq!(square(b"not a jpeg", 128), None);
+}
+
+#[test]
 fn tiny_broken_and_see_through_images() {
     assert_eq!(shrink(&png(1, 1, [0, 0, 0, 0])), None);
     assert_eq!(shrink(&png(400, 60, [0, 0, 0, 255])), None);

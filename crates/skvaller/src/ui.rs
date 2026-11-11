@@ -1433,11 +1433,11 @@ fn Viewport() -> Element {
     let view_top = top().min((total - height()).max(0.0));
     let (first, last) = visible_rows(&offsets, view_top, height());
     let account = reading.account.read().clone().unwrap_or_default();
-    let (beside, below) = match size {
-        ThumbnailSize::Small => (Some("thumb small"), false),
-        ThumbnailSize::Medium => (Some("thumb medium"), false),
-        ThumbnailSize::Large => (None, true),
-        ThumbnailSize::None => (None, false),
+    let (beside, below, fit) = match size {
+        ThumbnailSize::Small => (Some("thumb small"), false, thumbs::Fit::Square),
+        ThumbnailSize::Medium => (Some("thumb medium"), false, thumbs::Fit::Square),
+        ThumbnailSize::Large => (None, true, thumbs::Fit::Full),
+        ThumbnailSize::None => (None, false, thumbs::Fit::Square),
     };
     let selected = reading.article.read().as_ref().map(|a| a.id.clone());
     let lib = reading.library.read();
@@ -1480,7 +1480,7 @@ fn Viewport() -> Element {
                             class.push_str(" selected");
                         }
                         let (row_top, row_height) = (offsets[i], offsets[i + 1] - offsets[i]);
-                        let thumb = a.thumbnail.then(|| thumbs::url(&account, &a.id));
+                        let thumb = a.thumbnail.then(|| thumbs::url(&account, &a.id, fit));
                         rsx! {
                             div {
                                 key: "{a.id}",
