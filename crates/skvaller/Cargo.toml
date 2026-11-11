@@ -12,8 +12,10 @@ categories = ["gui"]
 publish = false
 
 [features]
-default = ["hybrid"]
-# Renderers: the GPU hybrid one by default; the CPU one for comparison.
+default = ["skia"]
+# Renderers: Skia by default; the Vello ones for comparison. Vello hybrid scrolled with
+# about 30% more CPU a second and panics on color emoji in an article.
+skia = ["dioxus-native/skia"]
 hybrid = ["dioxus-native/vello-hybrid"]
 cpu = ["dioxus-native/vello-cpu-pixels"]
 # Prints each frame's time, for measuring scrolling.
