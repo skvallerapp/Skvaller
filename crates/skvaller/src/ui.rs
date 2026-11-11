@@ -14,7 +14,7 @@ use std::time::Duration;
 use dioxus_native::prelude::*;
 use dioxus_native::{use_window_event, use_windows};
 use skvaller_app::{App, Library, MarkReadOn, SyncStatus, ThumbnailSize};
-use skvaller_core::{ArticleSummary, Scope, Selection, View};
+use skvaller_core::{ArticleSummary, Counts, Scope, Selection, View};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::add_account::AddAccount;
@@ -160,9 +160,8 @@ struct Reading {
     counts: Signal<u64>,
     marks: Signal<Marks>,
     library: Memo<Library>,
-    /// The feeds the Unread or Starred view's sidebar shows: those with articles in it
-    /// when the account, view or selection was picked or a sync finished, and since.
-    pinned: Memo<HashSet<String>>,
+    /// The feeds Unread and Starred keep showing after they are read to zero.
+    pinned: Memo<Rc<HashSet<String>>>,
     articles: Memo<Listed>,
     pane: Signal<Pane>,
     /// The mark-all-read question is open.
@@ -617,33 +616,14 @@ impl Reading {
     /// Moves the sidebar's selection to the next (1) or previous (-1) scope, keeping
     /// the view, as the Tauri version does.
     fn step_sidebar(self, delta: isize) {
+        // Before the library's guard: reading `pinned` may recompute it, which reads
+        // the library.
+        let pinned = (self.pinned)();
         let next = {
             let lib = self.library.peek();
+            let Selection { view, scope } = self.selection.peek().clone();
             let collapsed = self.collapsed_folders();
-            let pinned = self.pinned.peek();
-            let Selection {
-                view,
-                scope: current,
-            } = self.selection.peek().clone();
-            // A feed in a collapsed folder has no row: step from its folder's.
-            let row = match &current {
-                Scope::Feed { id } => lib
-                    .feeds
-                    .iter()
-                    .find(|f| &f.id == id)
-                    .and_then(|f| f.folder_id.clone())
-                    .filter(|folder| collapsed.contains(folder))
-                    .map_or_else(|| current.clone(), |id| Scope::Folder { id }),
-                _ => current.clone(),
-            };
-            let tree = sidebar_tree(&lib, view, &pinned, &current);
-            let scopes = sidebar_scopes(&tree, &collapsed);
-            scopes
-                .iter()
-                .position(|scope| *scope == row)
-                .and_then(|i| i.checked_add_signed(delta))
-                .and_then(|i| scopes.get(i))
-                .cloned()
+            step_scope(&lib, view, &pinned, &collapsed, &scope, delta)
         };
         if let Some(scope) = next {
             self.select_scope(scope);
@@ -854,31 +834,17 @@ pub fn Root() -> Element {
                 .unwrap_or_default()
         }
     });
-    // A feed read to zero keeps its row until the next of these, so rows don't jump
-    // while you read, as the list keeps its articles.
-    let pinned = use_memo({
-        let held = Rc::new(RefCell::new((None, HashSet::new())));
-        move || {
-            let selection = selection();
-            let last_sync = status.read().as_ref().and_then(|s| s.last_sync);
-            let key = Some((account(), selection.clone(), last_sync));
-            let lib = library.read();
-            let counts = match selection.view {
-                View::Starred => &lib.counts.starred_by_feed,
-                View::Unread | View::All => &lib.counts.unread_by_feed,
-            };
-            let mut held = held.borrow_mut();
-            if held.0 != key {
-                *held = (key, HashSet::new());
-            }
-            held.1.extend(
-                counts
-                    .iter()
-                    .filter(|(_, n)| **n > 0)
-                    .map(|(id, _)| id.clone()),
-            );
-            held.1.clone()
-        }
+    // A feed read to zero keeps its row until the account, view or selection changes
+    // or a sync finishes, so rows don't jump while you read.
+    let pinned_state = use_hook(|| Rc::new(RefCell::new(Pinned::default())));
+    let pinned = use_memo(move || {
+        let selection = selection();
+        let last_sync = status.read().as_ref().and_then(|s| s.last_sync);
+        let lib = library.read();
+        let counts = counts_by_feed(&lib.counts, selection.view);
+        pinned_state
+            .borrow_mut()
+            .update((account(), selection, last_sync), counts)
     });
     // The last load, what it listed and what it was for: a sync's reload keeps rows.
     let last = use_hook(|| Rc::new(RefCell::new((Listed::default(), None, 0_u64))));
@@ -1069,12 +1035,35 @@ fn AddAccountScreen() -> Element {
     }
 }
 
-/// The subscribed feeds in `folder`, or outside every folder for `None`.
-fn feeds_in<'a>(lib: &'a Library, folder: Option<&str>) -> Vec<&'a skvaller_core::Feed> {
-    lib.feeds
-        .iter()
-        .filter(|f| f.subscribed && f.folder_id.as_deref() == folder)
-        .collect()
+/// The article counts per feed that `view` shows: starred for Starred, else unread.
+///
+/// Feeds without any are left out.
+fn counts_by_feed(counts: &Counts, view: View) -> &HashMap<String, i64> {
+    match view {
+        View::Starred => &counts.starred_by_feed,
+        View::Unread | View::All => &counts.unread_by_feed,
+    }
+}
+
+/// What the account, view and selection were, and when the last sync finished.
+type PinnedKey = (Option<String>, Selection, Option<i64>);
+
+/// The feeds with articles when the key last changed.
+#[derive(Debug, Default)]
+struct Pinned {
+    key: Option<PinnedKey>,
+    feeds: Rc<HashSet<String>>,
+}
+
+impl Pinned {
+    /// The feeds in `counts`, taken again only when `key` changed.
+    fn update(&mut self, key: PinnedKey, counts: &HashMap<String, i64>) -> Rc<HashSet<String>> {
+        if self.key.as_ref() != Some(&key) {
+            self.key = Some(key);
+            self.feeds = Rc::new(counts.keys().cloned().collect());
+        }
+        Rc::clone(&self.feeds)
+    }
 }
 
 /// The folders and feeds the sidebar shows, in its order.
@@ -1086,38 +1075,76 @@ struct Tree<'a> {
     loose: Vec<&'a skvaller_core::Feed>,
 }
 
-/// What the sidebar shows of `lib` in `view`. All shows everything. Unread and Starred
-/// show the `pinned` feeds and the folders with any, and always the selected `scope`.
+/// What the sidebar shows of `lib` in `view`. All shows every subscribed feed. Unread
+/// and Starred show the feeds with articles in the view or `pinned`, the folders with
+/// any, and always the selected `scope`.
 fn sidebar_tree<'a>(
     lib: &'a Library,
     view: View,
     pinned: &HashSet<String>,
     scope: &Scope,
 ) -> Tree<'a> {
-    let feeds = |folder: Option<&str>| -> Vec<_> {
-        feeds_in(lib, folder)
-            .into_iter()
-            .filter(|f| {
-                view == View::All
-                    || pinned.contains(&f.id)
-                    || matches!(scope, Scope::Feed { id } if *id == f.id)
-            })
-            .collect()
-    };
+    let counts = counts_by_feed(&lib.counts, view);
+    let mut by_folder: HashMap<Option<&str>, Vec<&skvaller_core::Feed>> = HashMap::new();
+    for feed in lib.feeds.iter().filter(|f| f.subscribed) {
+        let shown = view == View::All
+            || counts.contains_key(&feed.id)
+            || pinned.contains(&feed.id)
+            || matches!(scope, Scope::Feed { id } if *id == feed.id);
+        if shown {
+            by_folder
+                .entry(feed.folder_id.as_deref())
+                .or_default()
+                .push(feed);
+        }
+    }
     let folders = lib
         .folders
         .iter()
-        .map(|folder| (folder, feeds(Some(&folder.id))))
-        .filter(|(folder, feeds)| {
-            view == View::All
+        .filter_map(|folder| {
+            let feeds = by_folder
+                .remove(&Some(folder.id.as_str()))
+                .unwrap_or_default();
+            let shown = view == View::All
                 || !feeds.is_empty()
-                || matches!(scope, Scope::Folder { id } if *id == folder.id)
+                || matches!(scope, Scope::Folder { id } if *id == folder.id);
+            shown.then_some((folder, feeds))
         })
         .collect();
     Tree {
         folders,
-        loose: feeds(None),
+        loose: by_folder.remove(&None).unwrap_or_default(),
     }
+}
+
+/// The scope `delta` rows from `scope` in the sidebar, if there is a row there.
+fn step_scope(
+    lib: &Library,
+    view: View,
+    pinned: &HashSet<String>,
+    collapsed: &HashSet<String>,
+    scope: &Scope,
+    delta: isize,
+) -> Option<Scope> {
+    // A feed in a collapsed folder has no row: step from its folder's.
+    let collapsed_folder = match scope {
+        Scope::Feed { id } => lib
+            .feeds
+            .iter()
+            .find(|f| &f.id == id)
+            .and_then(|f| f.folder_id.clone())
+            .filter(|folder| collapsed.contains(folder))
+            .map(|id| Scope::Folder { id }),
+        _ => None,
+    };
+    let row = collapsed_folder.as_ref().unwrap_or(scope);
+    let scopes = sidebar_scopes(&sidebar_tree(lib, view, pinned, scope), collapsed);
+    scopes
+        .iter()
+        .position(|s| s == row)
+        .and_then(|i| i.checked_add_signed(delta))
+        .and_then(|i| scopes.get(i))
+        .cloned()
 }
 
 /// The sidebar's scopes from top to bottom, as the arrow keys step through them: all
@@ -1152,23 +1179,15 @@ fn Sidebar() -> Element {
     let dates = (use_context::<Live>().dates)();
     let mut reading = use_context::<Reading>();
     let lib = (reading.library)();
-    let pinned = (reading.pinned)();
-    let unread_total: i64 = lib.counts.unread_by_feed.values().sum();
-    let starred_total: i64 = lib.counts.starred_by_feed.values().sum();
     let current = (reading.selection)();
+    let counts = counts_by_feed(&lib.counts, current.view);
     let mut select = move |next: Selection| {
         reading.pane.set(Pane::Sidebar);
         reading.select(next);
     };
     let all_label = t(&format!("views.{}.all", view_key(current.view)));
-    let all_count = match current.view {
-        View::Starred => starred_total,
-        View::Unread | View::All => unread_total,
-    };
-    let counts_for = |view: View, id: &str| match view {
-        View::Unread | View::All => lib.counts.unread_by_feed.get(id).copied().unwrap_or(0),
-        View::Starred => lib.counts.starred_by_feed.get(id).copied().unwrap_or(0),
-    };
+    let all_count: i64 = counts.values().sum();
+    let count_of = |id: &str| counts.get(id).copied().unwrap_or(0);
     let status = (reading.status)();
     let syncing = status.as_ref().is_some_and(|s| s.syncing);
     let sync_app = Arc::clone(&app);
@@ -1213,7 +1232,7 @@ fn Sidebar() -> Element {
         .and_then(|id| app.accounts().into_iter().find(|a| a.id == id))
         .map(|a| a.description)
         .unwrap_or_default();
-    let tree = sidebar_tree(&lib, current.view, &pinned, &current.scope);
+    let tree = sidebar_tree(&lib, current.view, &reading.pinned.read(), &current.scope);
     let FeedsPane(mut feeds_pane) = use_context_provider(|| FeedsPane(Signal::new(None)));
     // Every feed is at the top: selected, as by the arrow keys, it shows the top.
     use_effect(move || {
@@ -1271,11 +1290,13 @@ fn Sidebar() -> Element {
                     span { class: "name", "{all_label}" }
                     if all_count > 0 { span { class: "count", "{all_count}" } }
                 }
-                div { class: "heading", {t("sidebar.feeds")} }
+                if !tree.folders.is_empty() || !tree.loose.is_empty() {
+                    div { class: "heading", {t("sidebar.feeds")} }
+                }
                 for (folder, feeds) in tree.folders {
                     {
                         let scope = Scope::Folder { id: folder.id.clone() };
-                        let count: i64 = feeds_in(&lib, Some(&folder.id)).iter().map(|f| counts_for(current.view, &f.id)).sum();
+                        let count: i64 = feeds.iter().map(|f| count_of(&f.id)).sum();
                         let expanded = !reading.is_collapsed(&folder.id);
                         let feeds: Vec<_> = if expanded {
                             feeds.into_iter().cloned().collect()
@@ -1285,13 +1306,13 @@ fn Sidebar() -> Element {
                         rsx! {
                             ScopeItem { key: "folder-{folder.id}", scope, title: folder.title.clone(), count, nested: false, expanded }
                             for feed in feeds {
-                                FeedItem { key: "{feed.id}", count: counts_for(current.view, &feed.id), feed, nested: true }
+                                FeedItem { key: "{feed.id}", count: count_of(&feed.id), feed, nested: true }
                             }
                         }
                     }
                 }
                 for feed in tree.loose.into_iter().cloned() {
-                    FeedItem { key: "{feed.id}", count: counts_for(current.view, &feed.id), feed, nested: false }
+                    FeedItem { key: "{feed.id}", count: count_of(&feed.id), feed, nested: false }
                 }
             }
             ViewSwitcher {}
@@ -2136,8 +2157,8 @@ mod tests {
     }
 
     #[test]
-    fn unread_and_starred_show_only_pinned_feeds_their_folders_and_the_selection() {
-        let lib = Library {
+    fn unread_and_starred_hide_feeds_without_articles() {
+        let mut lib = Library {
             folders: vec![folder("d"), folder("e"), folder("f")],
             feeds: vec![
                 feed("a", Some("d")),
@@ -2148,7 +2169,12 @@ mod tests {
             ],
             ..Default::default()
         };
-        let pinned = HashSet::from(["b".to_owned(), "y".to_owned()]);
+        // "b" was read to zero but is still pinned; "y" has articles in both views, and
+        // "x" only unread ones.
+        let pinned = HashSet::from(["b".to_owned()]);
+        lib.counts.unread_by_feed.insert("x".into(), 2);
+        lib.counts.unread_by_feed.insert("y".into(), 3);
+        lib.counts.starred_by_feed.insert("y".into(), 1);
         let scopes = |view, selected: &Scope| {
             sidebar_scopes(
                 &sidebar_tree(&lib, view, &pinned, selected),
@@ -2161,12 +2187,18 @@ mod tests {
                 Scope::All,
                 folder_scope("d"),
                 feed_scope("b"),
+                feed_scope("x"),
                 feed_scope("y")
             ]
         );
         assert_eq!(
             scopes(View::Starred, &Scope::All),
-            scopes(View::Unread, &Scope::All)
+            [
+                Scope::All,
+                folder_scope("d"),
+                feed_scope("b"),
+                feed_scope("y")
+            ]
         );
         // The selected feed shows, and so its folder; a selected folder shows empty.
         assert_eq!(
@@ -2177,6 +2209,7 @@ mod tests {
                 feed_scope("b"),
                 folder_scope("e"),
                 feed_scope("c"),
+                feed_scope("x"),
                 feed_scope("y"),
             ]
         );
@@ -2187,9 +2220,90 @@ mod tests {
                 folder_scope("d"),
                 feed_scope("b"),
                 folder_scope("f"),
+                feed_scope("x"),
                 feed_scope("y")
             ]
         );
-        assert_eq!(scopes(View::All, &Scope::All).len(), 9);
+        assert_eq!(
+            scopes(View::All, &Scope::All),
+            [
+                Scope::All,
+                folder_scope("d"),
+                feed_scope("a"),
+                feed_scope("b"),
+                folder_scope("e"),
+                feed_scope("c"),
+                folder_scope("f"),
+                feed_scope("x"),
+                feed_scope("y"),
+            ]
+        );
+    }
+
+    #[test]
+    fn pinned_feeds_are_taken_again_only_when_the_key_changes() {
+        let key = |view, last_sync| {
+            let selection = Selection {
+                view,
+                scope: Scope::All,
+            };
+            (Some("1".to_owned()), selection, last_sync)
+        };
+        let ids = |set: Rc<HashSet<String>>| {
+            let mut ids: Vec<_> = set.iter().cloned().collect();
+            ids.sort();
+            ids
+        };
+        let mut pinned = Pinned::default();
+        let mut counts = HashMap::from([("a".to_owned(), 2), ("b".to_owned(), 1)]);
+        assert_eq!(
+            ids(pinned.update(key(View::Unread, None), &counts)),
+            ["a", "b"]
+        );
+        // Read to zero, "b" stays while the key is the same.
+        counts.remove("b");
+        assert_eq!(
+            ids(pinned.update(key(View::Unread, None), &counts)),
+            ["a", "b"]
+        );
+        // A finished sync takes them again, as a new view or selection does.
+        assert_eq!(
+            ids(pinned.update(key(View::Unread, Some(5)), &counts)),
+            ["a"]
+        );
+        let starred = ids(pinned.update(key(View::Starred, Some(5)), &HashMap::new()));
+        assert_eq!(starred, Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_arrow_keys_step_through_the_shown_rows_only() {
+        let lib = Library {
+            folders: vec![folder("d")],
+            feeds: vec![
+                feed("a", Some("d")),
+                feed("b", Some("d")),
+                feed("x", None),
+                feed("y", None),
+            ],
+            ..Default::default()
+        };
+        let pinned = HashSet::from(["a".to_owned(), "y".to_owned()]);
+        let none = HashSet::new();
+        let step = |collapsed: &HashSet<String>, from: &Scope, delta| {
+            step_scope(&lib, View::Unread, &pinned, collapsed, from, delta)
+        };
+        // "x" has no articles: "a" steps over it to "y".
+        assert_eq!(step(&none, &feed_scope("a"), 1), Some(feed_scope("y")));
+        assert_eq!(step(&none, &feed_scope("y"), -1), Some(feed_scope("a")));
+        // A selected feed shows, so it has a row to step from.
+        assert_eq!(step(&none, &feed_scope("x"), 1), Some(feed_scope("y")));
+        assert_eq!(step(&none, &feed_scope("b"), -1), Some(feed_scope("a")));
+        // Past either end, nothing.
+        assert_eq!(step(&none, &Scope::All, -1), None);
+        assert_eq!(step(&none, &feed_scope("y"), 1), None);
+        // From a feed in a collapsed folder, the folder's row.
+        let collapsed = HashSet::from(["d".to_owned()]);
+        assert_eq!(step(&collapsed, &feed_scope("a"), 1), Some(feed_scope("y")));
+        assert_eq!(step(&collapsed, &feed_scope("a"), -1), Some(Scope::All));
     }
 }
