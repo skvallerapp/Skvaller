@@ -15,7 +15,7 @@ use dioxus_native::winit::window::Window;
 use dioxus_native::{Config, LogicalSize, WindowAttributes, Windows, use_window};
 use skvaller_app::{
     Account, AccountChange, AccountKind, App, Clock, DateFormat, Font, MarkReadOn, Settings,
-    SyncSchedule, Theme, ThumbnailSize,
+    SortSubscriptions, SyncSchedule, Theme, ThumbnailSize,
 };
 use skvaller_core::ImportReport;
 use tokio::sync::Notify;
@@ -561,8 +561,32 @@ fn ReadingPane(settings: Settings, feedback: Feedback) -> Element {
         t("settings.markReadModes.delay"),
         t("settings.markReadModes.manual"),
     ];
+    let orders = [
+        SortSubscriptions::FoldersFirst,
+        SortSubscriptions::Alphabetical,
+    ];
+    let order_labels = vec![
+        t("settings.sortOrders.foldersFirst"),
+        t("settings.sortOrders.alphabetical"),
+    ];
     let set = move |change: SettingsChange| feedback.report(app.change_settings(change));
     rsx! {
+        section {
+            h2 { {t("settings.subscriptions")} }
+            div { class: "group",
+                Row { label: t("settings.sort"),
+                    Select {
+                        label: t("settings.sort"),
+                        choices: order_labels,
+                        selected: index(&orders, &settings.sort_subscriptions),
+                        onchange: {
+                            let set = set.clone();
+                            move |i: usize| set(Box::new(move |s| s.sort_subscriptions = orders[i]))
+                        },
+                    }
+                }
+            }
+        }
         section {
             h2 { {t("settings.markingRead")} }
             div { class: "group",

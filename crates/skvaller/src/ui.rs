@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use dioxus_native::prelude::*;
 use dioxus_native::{use_window_event, use_windows};
-use skvaller_app::{App, Library, MarkReadOn, SyncStatus, ThumbnailSize};
+use skvaller_app::{App, Library, MarkReadOn, SortSubscriptions, SyncStatus, ThumbnailSize};
 use skvaller_core::{ArticleSummary, Counts, Scope, Selection, View};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -560,10 +560,11 @@ impl Reading {
         // the library. Read, not peek: a peek can return the library from before these
         // counts.
         let pinned = (self.pinned)();
+        let sort = app.settings().sort_subscriptions;
         let next = {
             let lib = self.library.read();
             let collapsed = self.collapsed_folders();
-            next_with_articles(&lib, view, &pinned, &collapsed, &scope)
+            next_with_articles(&lib, view, &pinned, &collapsed, &scope, sort)
         };
         if let Some(scope) = next {
             self.select(Selection { view, scope });
@@ -633,8 +634,8 @@ impl Reading {
     }
 
     /// Moves the sidebar's selection to the next (1) or previous (-1) scope, keeping
-    /// the view, as the Tauri version does.
-    fn step_sidebar(self, delta: isize) {
+    /// the view, as the Tauri version does. `sort` is the sidebar's order.
+    fn step_sidebar(self, delta: isize, sort: SortSubscriptions) {
         // Before the library's guard: reading `pinned` may recompute it, which reads
         // the library.
         let pinned = (self.pinned)();
@@ -642,7 +643,7 @@ impl Reading {
             let lib = self.library.peek();
             let Selection { view, scope } = self.selection.peek().clone();
             let collapsed = self.collapsed_folders();
-            step_scope(&lib, view, &pinned, &collapsed, &scope, delta)
+            step_scope(&lib, view, &pinned, &collapsed, &scope, delta, sort)
         };
         if let Some(scope) = next {
             self.select_scope(scope);
@@ -746,7 +747,9 @@ impl Reading {
                     }
                 }
                 // Each sidebar step loads a whole list: they don't repeat.
-                _ if pane == Pane::Sidebar && !repeat => self.step_sidebar(delta),
+                _ if pane == Pane::Sidebar && !repeat => {
+                    self.step_sidebar(delta, app.settings().sort_subscriptions);
+                }
                 _ if pane == Pane::List => self.step(app, delta),
                 _ => {}
             }
@@ -1085,24 +1088,50 @@ impl Pinned {
     }
 }
 
-/// The folders and feeds the sidebar shows, in its order.
+/// A row at the top level of the sidebar's feeds.
 #[derive(Debug)]
-struct Tree<'a> {
-    /// Each shown folder with its shown feeds, collapsed or not.
-    folders: Vec<(&'a skvaller_core::Folder, Vec<&'a skvaller_core::Feed>)>,
-    /// The shown feeds outside every folder.
-    loose: Vec<&'a skvaller_core::Feed>,
+enum Entry<'a> {
+    /// A folder with its shown feeds, collapsed or not.
+    Folder(&'a skvaller_core::Folder, Vec<&'a skvaller_core::Feed>),
+    /// A feed in no folder.
+    Feed(&'a skvaller_core::Feed),
 }
 
-/// What the sidebar shows of `lib` in `view`. All shows every subscribed feed. Unread
-/// and Starred show the feeds with articles in the view or `pinned`, the folders with
-/// any, and always the selected `scope`.
+impl Entry<'_> {
+    fn title(&self) -> &str {
+        match self {
+            Self::Folder(folder, _) => &folder.title,
+            Self::Feed(feed) => &feed.title,
+        }
+    }
+
+    /// The row's key, so a row that moves keeps its state.
+    fn key(&self) -> String {
+        match self {
+            Self::Folder(folder, _) => format!("folder-{}", folder.id),
+            Self::Feed(feed) => feed.id.clone(),
+        }
+    }
+}
+
+/// Orders titles as SQLite's NOCASE does, as the cache sorts each list.
+///
+/// ASCII letters are folded, then the UTF-8 bytes compare.
+fn nocase(a: &str, b: &str) -> std::cmp::Ordering {
+    let a = a.bytes().map(|c| c.to_ascii_lowercase());
+    a.cmp(b.bytes().map(|c| c.to_ascii_lowercase()))
+}
+
+/// What the sidebar shows of `lib` in `view`, in the `sort` order. All shows every
+/// subscribed feed. Unread and Starred show the feeds with articles in the view or
+/// `pinned`, the folders with any, and always the selected `scope`.
 fn sidebar_tree<'a>(
     lib: &'a Library,
     view: View,
     pinned: &HashSet<String>,
     scope: &Scope,
-) -> Tree<'a> {
+    sort: SortSubscriptions,
+) -> Vec<Entry<'a>> {
     let counts = counts_by_feed(&lib.counts, view);
     let mut by_folder: HashMap<Option<&str>, Vec<&skvaller_core::Feed>> = HashMap::new();
     for feed in lib.feeds.iter().filter(|f| f.subscribed) {
@@ -1117,23 +1146,23 @@ fn sidebar_tree<'a>(
                 .push(feed);
         }
     }
-    let folders = lib
-        .folders
-        .iter()
-        .filter_map(|folder| {
-            let feeds = by_folder
-                .remove(&Some(folder.id.as_str()))
-                .unwrap_or_default();
-            let shown = view == View::All
-                || !feeds.is_empty()
-                || matches!(scope, Scope::Folder { id } if *id == folder.id);
-            shown.then_some((folder, feeds))
-        })
-        .collect();
-    Tree {
-        folders,
-        loose: by_folder.remove(&None).unwrap_or_default(),
+    let folders = lib.folders.iter().filter_map(|folder| {
+        let feeds = by_folder
+            .remove(&Some(folder.id.as_str()))
+            .unwrap_or_default();
+        let shown = view == View::All
+            || !feeds.is_empty()
+            || matches!(scope, Scope::Folder { id } if *id == folder.id);
+        shown.then_some(Entry::Folder(folder, feeds))
+    });
+    let mut entries: Vec<_> = folders.collect();
+    let loose = by_folder.remove(&None).unwrap_or_default();
+    entries.extend(loose.into_iter().map(Entry::Feed));
+    // Each list is A–Z already. Stable, so a folder stays before a feed of its name.
+    if sort == SortSubscriptions::Alphabetical {
+        entries.sort_by(|a, b| nocase(a.title(), b.title()));
     }
+    entries
 }
 
 /// The scope `delta` rows from `scope` in the sidebar, if there is a row there.
@@ -1144,6 +1173,7 @@ fn step_scope(
     collapsed: &HashSet<String>,
     scope: &Scope,
     delta: isize,
+    sort: SortSubscriptions,
 ) -> Option<Scope> {
     // A feed in a collapsed folder has no row: step from its folder's.
     let collapsed_folder = match scope {
@@ -1157,7 +1187,7 @@ fn step_scope(
         _ => None,
     };
     let row = collapsed_folder.as_ref().unwrap_or(scope);
-    let scopes = sidebar_scopes(&sidebar_tree(lib, view, pinned, scope), collapsed);
+    let scopes = sidebar_scopes(&sidebar_tree(lib, view, pinned, scope, sort), collapsed);
     scopes
         .iter()
         .position(|s| s == row)
@@ -1174,25 +1204,29 @@ fn next_with_articles(
     pinned: &HashSet<String>,
     collapsed: &HashSet<String>,
     scope: &Scope,
+    sort: SortSubscriptions,
 ) -> Option<Scope> {
     if *scope == Scope::All {
         return None;
     }
     let counts = counts_by_feed(&lib.counts, view);
-    let tree = sidebar_tree(lib, view, pinned, scope);
-    // Every feed with articles is in the tree, collapsed or not.
-    let folders: HashSet<&str> = tree
-        .folders
+    let entries = sidebar_tree(lib, view, pinned, scope, sort);
+    // Every feed with articles is in the entries, collapsed or not.
+    let folders: HashSet<&str> = entries
         .iter()
-        .filter(|(_, feeds)| feeds.iter().any(|f| counts.contains_key(&f.id)))
-        .map(|(folder, _)| folder.id.as_str())
+        .filter_map(|entry| match entry {
+            Entry::Folder(folder, feeds) if feeds.iter().any(|f| counts.contains_key(&f.id)) => {
+                Some(folder.id.as_str())
+            }
+            _ => None,
+        })
         .collect();
     let has_articles = |row: &Scope| match row {
         Scope::Feed { id } => counts.contains_key(id),
         Scope::Folder { id } => folders.contains(id.as_str()),
         Scope::All => false,
     };
-    let rows = sidebar_scopes(&tree, collapsed);
+    let rows = sidebar_scopes(&entries, collapsed);
     let at = rows.iter().position(|row| row == scope)?;
     Some(
         rows[at + 1..]
@@ -1204,27 +1238,22 @@ fn next_with_articles(
 }
 
 /// The sidebar's scopes from top to bottom, as the arrow keys step through them: all
-/// feeds, then each folder with its feeds unless `collapsed`, then the feeds outside
-/// folders.
-fn sidebar_scopes(tree: &Tree<'_>, collapsed: &HashSet<String>) -> Vec<Scope> {
+/// feeds, then each entry, with a folder's feeds unless it is `collapsed`.
+fn sidebar_scopes(entries: &[Entry<'_>], collapsed: &HashSet<String>) -> Vec<Scope> {
+    let feed = |f: &skvaller_core::Feed| Scope::Feed { id: f.id.clone() };
     let mut scopes = vec![Scope::All];
-    for (folder, feeds) in &tree.folders {
-        scopes.push(Scope::Folder {
-            id: folder.id.clone(),
-        });
-        if collapsed.contains(&folder.id) {
-            continue;
+    for entry in entries {
+        match entry {
+            Entry::Folder(folder, feeds) => {
+                scopes.push(Scope::Folder {
+                    id: folder.id.clone(),
+                });
+                if !collapsed.contains(&folder.id) {
+                    scopes.extend(feeds.iter().map(|f| feed(f)));
+                }
+            }
+            Entry::Feed(f) => scopes.push(feed(f)),
         }
-        for feed in feeds {
-            scopes.push(Scope::Feed {
-                id: feed.id.clone(),
-            });
-        }
-    }
-    for feed in &tree.loose {
-        scopes.push(Scope::Feed {
-            id: feed.id.clone(),
-        });
     }
     scopes
 }
@@ -1232,7 +1261,8 @@ fn sidebar_scopes(tree: &Tree<'_>, collapsed: &HashSet<String>) -> Vec<Scope> {
 #[component]
 fn Sidebar() -> Element {
     let app = use_context::<Arc<App>>();
-    let dates = (use_context::<Live>().dates)();
+    let live = use_context::<Live>();
+    let dates = (live.dates)();
     let mut reading = use_context::<Reading>();
     let lib = (reading.library)();
     let current = (reading.selection)();
@@ -1288,7 +1318,14 @@ fn Sidebar() -> Element {
         .and_then(|id| app.accounts().into_iter().find(|a| a.id == id))
         .map(|a| a.description)
         .unwrap_or_default();
-    let tree = sidebar_tree(&lib, current.view, &reading.pinned.read(), &current.scope);
+    let sort = live.settings.read().sort_subscriptions;
+    let entries = sidebar_tree(
+        &lib,
+        current.view,
+        &reading.pinned.read(),
+        &current.scope,
+        sort,
+    );
     let FeedsPane(mut feeds_pane) = use_context_provider(|| FeedsPane(Signal::new(None)));
     // Every feed is at the top: selected, as by the arrow keys, it shows the top.
     use_effect(move || {
@@ -1346,29 +1383,35 @@ fn Sidebar() -> Element {
                     span { class: "name", "{all_label}" }
                     if all_count > 0 { span { class: "count", "{all_count}" } }
                 }
-                if !tree.folders.is_empty() || !tree.loose.is_empty() {
+                if !entries.is_empty() {
                     div { class: "heading", {t("sidebar.feeds")} }
                 }
-                for (folder, feeds) in tree.folders {
-                    {
-                        let scope = Scope::Folder { id: folder.id.clone() };
-                        let count: i64 = feeds.iter().map(|f| count_of(&f.id)).sum();
-                        let expanded = !reading.is_collapsed(&folder.id);
-                        let feeds: Vec<_> = if expanded {
-                            feeds.into_iter().cloned().collect()
-                        } else {
-                            Vec::new()
-                        };
-                        rsx! {
-                            ScopeItem { key: "folder-{folder.id}", scope, title: folder.title.clone(), count, nested: false, expanded }
-                            for feed in feeds {
-                                FeedItem { key: "{feed.id}", count: count_of(&feed.id), feed, nested: true }
+                for entry in entries {
+                    // Keyed here: the match makes each row an expression, which keeps
+                    // no key of its own.
+                    Fragment { key: "{entry.key()}",
+                    match entry {
+                        Entry::Folder(folder, feeds) => {
+                            let scope = Scope::Folder { id: folder.id.clone() };
+                            let count: i64 = feeds.iter().map(|f| count_of(&f.id)).sum();
+                            let expanded = !reading.is_collapsed(&folder.id);
+                            let feeds: Vec<_> = if expanded {
+                                feeds.into_iter().cloned().collect()
+                            } else {
+                                Vec::new()
+                            };
+                            rsx! {
+                                ScopeItem { key: "folder-{folder.id}", scope, title: folder.title.clone(), count, nested: false, expanded }
+                                for feed in feeds {
+                                    FeedItem { key: "{feed.id}", count: count_of(&feed.id), feed, nested: true }
+                                }
                             }
                         }
+                        Entry::Feed(feed) => rsx! {
+                            FeedItem { key: "{feed.id}", count: count_of(&feed.id), feed: feed.clone(), nested: false }
+                        },
                     }
-                }
-                for feed in tree.loose.into_iter().cloned() {
-                    FeedItem { key: "{feed.id}", count: count_of(&feed.id), feed, nested: false }
+                    }
                 }
             }
             ViewSwitcher {}
@@ -2195,9 +2238,15 @@ mod tests {
             feeds: vec![feed("loose", None), feed("inner", Some("d"))],
             ..Default::default()
         };
-        let tree = sidebar_tree(&lib, View::All, &HashSet::new(), &Scope::All);
+        let entries = sidebar_tree(
+            &lib,
+            View::All,
+            &HashSet::new(),
+            &Scope::All,
+            SortSubscriptions::FoldersFirst,
+        );
         assert_eq!(
-            sidebar_scopes(&tree, &HashSet::new()),
+            sidebar_scopes(&entries, &HashSet::new()),
             [
                 Scope::All,
                 folder_scope("d"),
@@ -2207,7 +2256,7 @@ mod tests {
         );
         // A collapsed folder's feeds have no rows.
         assert_eq!(
-            sidebar_scopes(&tree, &HashSet::from(["d".to_owned()])),
+            sidebar_scopes(&entries, &HashSet::from(["d".to_owned()])),
             [Scope::All, folder_scope("d"), feed_scope("loose")]
         );
     }
@@ -2233,7 +2282,13 @@ mod tests {
         lib.counts.starred_by_feed.insert("y".into(), 1);
         let scopes = |view, selected: &Scope| {
             sidebar_scopes(
-                &sidebar_tree(&lib, view, &pinned, selected),
+                &sidebar_tree(
+                    &lib,
+                    view,
+                    &pinned,
+                    selected,
+                    SortSubscriptions::FoldersFirst,
+                ),
                 &HashSet::new(),
             )
         };
@@ -2346,7 +2401,15 @@ mod tests {
         let pinned = HashSet::from(["a".to_owned(), "y".to_owned()]);
         let none = HashSet::new();
         let step = |collapsed: &HashSet<String>, from: &Scope, delta| {
-            step_scope(&lib, View::Unread, &pinned, collapsed, from, delta)
+            step_scope(
+                &lib,
+                View::Unread,
+                &pinned,
+                collapsed,
+                from,
+                delta,
+                SortSubscriptions::FoldersFirst,
+            )
         };
         // "x" has no articles: "a" steps over it to "y".
         assert_eq!(step(&none, &feed_scope("a"), 1), Some(feed_scope("y")));
@@ -2382,7 +2445,14 @@ mod tests {
         let pinned = HashSet::from(["a", "b", "c", "x", "y"].map(String::from));
         let none = HashSet::new();
         let next = |collapsed: &HashSet<String>, from: &Scope| {
-            next_with_articles(&lib, View::Unread, &pinned, collapsed, from)
+            next_with_articles(
+                &lib,
+                View::Unread,
+                &pinned,
+                collapsed,
+                from,
+                SortSubscriptions::FoldersFirst,
+            )
         };
         // Past "b", which has none: folder "e" comes first, as its feed has some.
         assert_eq!(next(&none, &feed_scope("a")), Some(folder_scope("e")));
@@ -2400,5 +2470,46 @@ mod tests {
             next(&collapsed, &folder_scope("d")),
             Some(folder_scope("e"))
         );
+    }
+
+    #[test]
+    fn alphabetical_mixes_folders_and_loose_feeds() {
+        // As the cache lists them: each list A–Z in NOCASE order. Folder titles are
+        // their ids in capitals.
+        let lib = Library {
+            folders: vec![folder("b"), folder("news")],
+            feeds: vec![
+                feed("a", None),
+                feed("inner", Some("news")),
+                feed("News", None),
+                feed("Zed", None),
+                feed("été", None),
+            ],
+            ..Default::default()
+        };
+        let sort = SortSubscriptions::Alphabetical;
+        let entries = sidebar_tree(&lib, View::All, &HashSet::new(), &Scope::All, sort);
+        // The folder "NEWS" and the feed "News" tie: the folder comes first. Letters
+        // outside ASCII aren't folded and sort after Z, as in SQLite.
+        assert_eq!(
+            sidebar_scopes(&entries, &HashSet::new()),
+            [
+                Scope::All,
+                feed_scope("a"),
+                folder_scope("b"),
+                folder_scope("news"),
+                feed_scope("inner"),
+                feed_scope("News"),
+                feed_scope("Zed"),
+                feed_scope("été"),
+            ]
+        );
+        // The arrow keys follow the shown order.
+        let step = |from: &Scope| {
+            let none = HashSet::new();
+            step_scope(&lib, View::All, &none, &none, from, 1, sort)
+        };
+        assert_eq!(step(&feed_scope("a")), Some(folder_scope("b")));
+        assert_eq!(step(&feed_scope("inner")), Some(feed_scope("News")));
     }
 }
