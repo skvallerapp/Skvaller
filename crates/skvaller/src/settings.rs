@@ -34,6 +34,9 @@ use crate::shortcuts::{self, Action, Capture, Refusal};
 use crate::ui::APP_CSS;
 
 const SETTINGS_CSS: &str = include_str!("settings.css");
+/// The smallest window in which every pane still lays out.
+const MIN_WIDTH: f64 = 560.0;
+const MIN_HEIGHT: f64 = 400.0;
 
 /// The open Settings window, if any, shared by the windows on the UI thread.
 #[derive(Clone, Default)]
@@ -60,7 +63,7 @@ impl SettingsWindow {
         let attributes = WindowAttributes::default()
             .with_title(t("settings.label"))
             .with_surface_size(LogicalSize::new(720.0, 520.0))
-            .with_resizable(false);
+            .with_min_surface_size(LogicalSize::new(MIN_WIDTH, MIN_HEIGHT));
         let vdom = VirtualDom::new(SettingsRoot)
             .with_root_context(Arc::clone(app))
             .with_root_context(self.clone());
