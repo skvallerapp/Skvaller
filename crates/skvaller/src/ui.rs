@@ -1026,8 +1026,16 @@ fn Sidebar() -> Element {
     let syncing = status.as_ref().is_some_and(|s| s.syncing);
     let sync_app = Arc::clone(&app);
     let status_line = match status {
-        Some(s) if s.syncing => (t("sidebar.syncing"), false),
         // The Tauri version shows the reason on hover, but Blitz shows no titles yet.
+        Some(SyncStatus {
+            cache_broken: true,
+            error,
+            ..
+        }) => match error {
+            Some(e) => (format!("{}: {e}", t("sidebar.cacheDamaged")), true),
+            None => (t("sidebar.cacheDamaged"), true),
+        },
+        Some(s) if s.syncing => (t("sidebar.syncing"), false),
         Some(SyncStatus { error: Some(e), .. }) => {
             (format!("{}: {e}", t("sidebar.syncFailed")), true)
         }
@@ -1043,6 +1051,13 @@ fn Sidebar() -> Element {
         "sidebar"
     };
     let local = is_local(&app, reading.account.read().as_deref());
+    let title = reading
+        .account
+        .read()
+        .as_deref()
+        .and_then(|id| app.accounts().into_iter().find(|a| a.id == id))
+        .map(|a| a.description)
+        .unwrap_or_default();
     let FeedsPane(mut feeds_pane) = use_context_provider(|| FeedsPane(Signal::new(None)));
     // The views are at the top: one selected, as by the arrow keys, shows the top.
     use_effect(move || {
@@ -1081,6 +1096,10 @@ fn Sidebar() -> Element {
                     }
                 }
             }
+            header { class: "account",
+                h1 { "{title}" }
+                p { class: if status_line.1 { "failed" } else { "" }, "{status_line.0}" }
+            }
             div { class: "feeds",
                 onmounted: move |e: MountedEvent| feeds_pane.set(Some(e.data())),
                 for (view , label , count) in views {
@@ -1108,10 +1127,6 @@ fn Sidebar() -> Element {
                 for feed in feeds_in(&lib, None).into_iter().cloned() {
                     FeedItem { key: "{feed.id}", count: counts_for(current.view, &feed.id), feed, nested: false }
                 }
-            }
-            div {
-                class: if status_line.1 { "status error" } else { "status" },
-                "{status_line.0}"
             }
             ManageMenu {}
         }

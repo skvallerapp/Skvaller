@@ -241,13 +241,31 @@ button {
   text-transform: uppercase;
 }
 
-.status {
-  padding: 8px 16px 12px;
-  font-size: 12px;
+/* The shown account's name, and its sync status under it. */
+.sidebar .account {
+  padding: 6px 22px 18px;
+  font-size: 14px;
+  flex: none;
+}
+
+.sidebar .account h1 {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sidebar .account p {
+  margin: 3px 0 0;
+  font-weight: 600;
   color: var(--text-3);
 }
 
-.status.error {
+.sidebar .account p.failed {
   color: var(--error);
 }
 
