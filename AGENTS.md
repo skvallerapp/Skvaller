@@ -17,11 +17,16 @@ commit to it unless asked.
   UI. Same files and folders as the Tauri version, so its accounts carry over.
 - `skvaller`: the window, in Dioxus Native (Blitz). The article renders in an
   `<iframe srcdoc>`, its own document. `--import-opml <file>` adds test feeds to a
-  local account.
+  local account; `--seed-test <count>` adds synthetic articles.
 - `locales/`: the app's text, one JSON file per language, carried over from the Tauri
   version. `en.json` is the source.
 
 ## Architecture rules
+
+[ARCHITECTURE.md](ARCHITECTURE.md) says how the code keeps these rules: the data flow,
+a map of the crates and modules, and the runtime. Read it before a change that crosses
+crates or touches sync, the cache or untrusted HTML, and update it when one changes
+how the pieces fit.
 
 - **The UI never waits for the network.** The UI reads only from the local
   SQLite cache. Sync runs in the background and updates the cache.

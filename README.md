@@ -19,12 +19,14 @@ service it targets.
 
 ## Tech stack
 
-Skvaller is being rebuilt in Rust from end to end. The first version, built with Tauri 2
-and Svelte, is kept on the [`tauri`](../../tree/tauri) branch.
+Skvaller is written in Rust.
 
-- Rust core (`skvaller-core`): sync, storage and API client, with no UI code
-- [Dioxus Native](https://github.com/DioxusLabs/blitz) UI (planned)
-- SQLite local cache
+- `skvaller-core`: sync, storage and the API client, with no UI code
+- `skvaller-app`: accounts, settings and the background sync, with no UI code
+- `skvaller`: the window, in [Dioxus Native](https://github.com/DioxusLabs/blitz)
+- SQLite local cache, one per account
+
+[ARCHITECTURE.md](ARCHITECTURE.md) describes how the pieces fit together.
 
 ## Development
 
