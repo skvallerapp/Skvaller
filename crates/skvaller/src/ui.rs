@@ -20,7 +20,7 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::add_account::AddAccount;
 use crate::article;
 use crate::fonts;
-use crate::icons::{Icon, LAYERS};
+use crate::icons::{Icon, LAYERS, SETTINGS};
 use crate::i18n::{t, t_count, t_with};
 use crate::live::{Live, use_live};
 use crate::settings::{Pane as SettingsPane, SettingsWindow};
@@ -1034,6 +1034,14 @@ fn Sidebar() -> Element {
     let status = (reading.status)();
     let syncing = status.as_ref().is_some_and(|s| s.syncing);
     let sync_app = Arc::clone(&app);
+    let settings = use_context::<SettingsWindow>();
+    let windows = use_windows();
+    let settings_app = Arc::clone(&app);
+    let settings_key = if COMMAND_MODIFIER == Modifiers::META {
+        "⌘,".to_owned()
+    } else {
+        format!("{}+,", t("keys.ctrl"))
+    };
     let status_line = match status {
         // The Tauri version shows the reason on hover, but Blitz shows no titles yet.
         Some(SyncStatus {
@@ -1093,6 +1101,13 @@ fn Sidebar() -> Element {
                     AccountSwitcher {}
                 }
                 ConfirmRemove {}
+                button {
+                    class: "icon-button",
+                    aria_label: t("sidebar.settings"),
+                    title: t_with("sidebar.settingsWithKey", &[("key", settings_key.as_str())]),
+                    onclick: move |_| settings.open(&windows, &settings_app),
+                    Icon { size: 18, stroke: "2", paths: SETTINGS }
+                }
                 button {
                     class: if syncing { "icon-button sync syncing" } else { "icon-button sync" },
                     aria_label: t("sidebar.sync"),
