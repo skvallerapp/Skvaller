@@ -1404,12 +1404,34 @@ fn ScopeItem(scope: Scope, title: String, count: i64, nested: bool) -> Element {
     }
 }
 
+/// What the list shows: the view's label for every feed, else the feed's or folder's
+/// name. Empty for one gone from the library.
+fn list_title(lib: &Library, selection: &Selection) -> String {
+    match &selection.scope {
+        Scope::All => t(&format!("views.{}.all", view_key(selection.view))),
+        Scope::Feed { id } => lib
+            .feeds
+            .iter()
+            .find(|f| &f.id == id)
+            .map(|f| f.title.clone())
+            .unwrap_or_default(),
+        Scope::Folder { id } => lib
+            .folders
+            .iter()
+            .find(|f| &f.id == id)
+            .map(|f| f.title.clone())
+            .unwrap_or_default(),
+    }
+}
+
 #[component]
 fn ArticleList() -> Element {
     let app = use_context::<Arc<App>>();
     let reading = use_context::<Reading>();
     let unread = i64::try_from(reading.unread_count()).unwrap_or(i64::MAX);
-    let heading = if unread == 0 {
+    let selection = (reading.selection)();
+    let title = list_title(&(reading.library)(), &selection);
+    let unread_label = if unread == 0 {
         t("list.noUnread")
     } else {
         t_count("list.unread", unread)
@@ -1432,7 +1454,10 @@ fn ArticleList() -> Element {
     rsx! {
         section { class, aria_label: t("list.label"),
             div { class: "toolbar",
-                h1 { "{heading}" }
+                div { class: "list-title",
+                    h1 { "{title}" }
+                    p { "{unread_label}" }
+                }
                 div { class: "mark-all",
                     // The window closes the question on any click that reaches it.
                     onclick: move |e| e.stop_propagation(),
@@ -1547,6 +1572,7 @@ fn Viewport() -> Element {
         ThumbnailSize::None => (None, false, thumbs::Fit::Square),
     };
     let selected = reading.article.read().as_ref().map(|a| a.id.clone());
+    let empty = t(&format!("views.{}.empty", view_key(reading.selection.read().view)));
     let lib = reading.library.read();
     let feed_title = |id: &str| {
         lib.feeds
@@ -1572,7 +1598,7 @@ fn Viewport() -> Element {
                 }
             },
             if list.is_empty() {
-                p { class: "empty", {t("list.noUnread")} }
+                p { class: "empty", "{empty}" }
             }
             div { class: "spacer", style: "height: {total}px",
                 for (i , a) in list.iter().enumerate().take(last).skip(first) {
