@@ -12,6 +12,7 @@
   --active: rgb(0 0 0 / 0.07);
   --switch-knob: #ffffff;
   --thumb-edge: rgb(0 0 0 / 0.15);
+  --segment-bg: #ffffff;
   --accent: #9a5136;
   --accent-text: #ffffff;
   --destructive: #c4352b;
@@ -33,6 +34,7 @@
     --active: rgb(255 255 255 / 0.08);
     --switch-knob: #d4d4d8;
     --thumb-edge: rgb(255 255 255 / 0.2);
+    --segment-bg: #4a4a4e;
     --accent: #52709c;
     --unread: #8aa4c8;
     --star: #f0b63a;
@@ -52,6 +54,7 @@
   --active: rgb(255 255 255 / 0.08);
   --switch-knob: #d4d4d8;
   --thumb-edge: rgb(255 255 255 / 0.2);
+  --segment-bg: #4a4a4e;
   --accent: #52709c;
   --unread: #8aa4c8;
   --star: #f0b63a;
@@ -70,6 +73,7 @@
   --active: rgb(255 236 224 / 0.09);
   --switch-knob: #dcd2cc;
   --thumb-edge: rgb(255 236 224 / 0.2);
+  --segment-bg: #4f3c36;
   --accent: #9a6342;
   --unread: #cfa080;
   --star: #f0b63a;
@@ -267,6 +271,44 @@ button {
 
 .sidebar .account p.failed {
   color: var(--error);
+}
+
+/* The view switcher at the bottom of the sidebar, a segmented control. Blitz runs no
+   transitions, so the checked button takes the raised look itself, where the Tauri
+   version slides an indicator under it. */
+.views {
+  /* Positioned, as the feeds are, so it stays over their hidden rows for clicks. */
+  position: relative;
+  display: flex;
+  gap: 2px;
+  margin: 8px 8px 12px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--active);
+  flex: none;
+}
+
+.views button {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--text-2);
+}
+
+.views button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.views button[aria-checked='true'] {
+  background: var(--segment-bg);
+  box-shadow:
+    0 0 0 0.5px var(--thumb-edge),
+    0 0.5px 2px rgb(0 0 0 / 0.15);
+  color: var(--text);
 }
 
 /* Article list */

@@ -20,6 +20,7 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::add_account::AddAccount;
 use crate::article;
 use crate::fonts;
+use crate::icons::{Icon, LAYERS};
 use crate::i18n::{t, t_count, t_with};
 use crate::live::{Live, use_live};
 use crate::settings::{Pane as SettingsPane, SettingsWindow};
@@ -250,6 +251,14 @@ impl Reading {
         self.confirming.set(false);
         // A delayed mark of the article left is off.
         self.mark_generation += 1;
+    }
+
+    /// Shows `view`, keeping the scope.
+    fn select_view(self, view: View) {
+        let scope = self.selection.peek().scope.clone();
+        if self.selection.peek().view != view {
+            self.select(Selection { view, scope });
+        }
     }
 
     /// Selects `scope` in the sidebar, keeping the view.
@@ -1013,11 +1022,11 @@ fn Sidebar() -> Element {
         reading.pane.set(Pane::Sidebar);
         reading.select(next);
     };
-    let views = [
-        (View::Unread, t("views.unread.label"), unread_total),
-        (View::Starred, t("views.starred.label"), starred_total),
-        (View::All, t("views.all.label"), 0),
-    ];
+    let all_label = t(&format!("views.{}.all", view_key(current.view)));
+    let all_count = match current.view {
+        View::Starred => starred_total,
+        View::Unread | View::All => unread_total,
+    };
     let counts_for = |view: View, id: &str| match view {
         View::Unread | View::All => lib.counts.unread_by_feed.get(id).copied().unwrap_or(0),
         View::Starred => lib.counts.starred_by_feed.get(id).copied().unwrap_or(0),
@@ -1059,7 +1068,7 @@ fn Sidebar() -> Element {
         .map(|a| a.description)
         .unwrap_or_default();
     let FeedsPane(mut feeds_pane) = use_context_provider(|| FeedsPane(Signal::new(None)));
-    // The views are at the top: one selected, as by the arrow keys, shows the top.
+    // Every feed is at the top: selected, as by the arrow keys, it shows the top.
     use_effect(move || {
         if reading.selection.read().scope != Scope::All {
             return;
@@ -1102,13 +1111,11 @@ fn Sidebar() -> Element {
             }
             div { class: "feeds",
                 onmounted: move |e: MountedEvent| feeds_pane.set(Some(e.data())),
-                for (view , label , count) in views {
-                    div {
-                        class: if current.view == view && current.scope == Scope::All { "item selected" } else { "item" },
-                        onclick: move |_| select(Selection { view, scope: Scope::All }),
-                        span { class: "name", "{label}" }
-                        if count > 0 { span { class: "count", "{count}" } }
-                    }
+                div {
+                    class: if current.scope == Scope::All { "item selected" } else { "item" },
+                    onclick: move |_| select(Selection { view: current.view, scope: Scope::All }),
+                    span { class: "name", "{all_label}" }
+                    if all_count > 0 { span { class: "count", "{all_count}" } }
                 }
                 div { class: "heading", {t("sidebar.feeds")} }
                 for folder in lib.folders.clone() {
@@ -1128,7 +1135,92 @@ fn Sidebar() -> Element {
                     FeedItem { key: "{feed.id}", count: counts_for(current.view, &feed.id), feed, nested: false }
                 }
             }
+            ViewSwitcher {}
             ManageMenu {}
+        }
+    }
+}
+
+/// The views, in the order of the sidebar's switcher.
+const VIEWS: [View; 3] = [View::Unread, View::Starred, View::All];
+
+/// The view's name in its text keys: `views.<name>.label` and the like.
+fn view_key(view: View) -> &'static str {
+    match view {
+        View::Unread => "unread",
+        View::Starred => "starred",
+        View::All => "all",
+    }
+}
+
+/// The switcher at the bottom of the sidebar: one button per view, which filters the
+/// feeds' counts and the article list. The arrow keys move between them, as in a radio
+/// group.
+#[component]
+fn ViewSwitcher() -> Element {
+    let reading = use_context::<Reading>();
+    let mut buttons = use_signal(|| [const { None::<Rc<MountedData>> }; VIEWS.len()]);
+    let shown = (reading.selection)().view;
+
+    rsx! {
+        div {
+            class: "views",
+            role: "radiogroup",
+            aria_label: t("sidebar.viewPicker"),
+            onkeydown: move |e: Event<KeyboardData>| {
+                // Back a step is round the other way.
+                let step = match e.key() {
+                    Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) => VIEWS.len() - 1,
+                    Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) => 1,
+                    _ => return,
+                };
+                // The window's own arrow keys would step the sidebar as well.
+                e.stop_propagation();
+                e.prevent_default();
+                let view = reading.selection.peek().view;
+                let at = VIEWS.iter().position(|v| *v == view).unwrap_or(0);
+                let next = (at + step) % VIEWS.len();
+                reading.select_view(VIEWS[next]);
+                let Some(button) = buttons.peek()[next].clone() else {
+                    return;
+                };
+                spawn(async move {
+                    if let Err(e) = button.set_focus(true).await {
+                        tracing::warn!("focusing the view's button failed: {e}");
+                    }
+                });
+            },
+            for (i , view) in VIEWS.into_iter().enumerate() {
+                button {
+                    key: "{view_key(view)}",
+                    role: "radio",
+                    aria_label: t(&format!("views.{}.label", view_key(view))),
+                    title: t(&format!("views.{}.label", view_key(view))),
+                    "aria-checked": "{view == shown}",
+                    tabindex: if view == shown { "0" } else { "-1" },
+                    onmounted: move |e: MountedEvent| buttons.write()[i] = Some(e.data()),
+                    onclick: move |_| {
+                        reading.select_view(view);
+                        // As in the Tauri version, a clicked button lets the arrow keys
+                        // go back to the sidebar and the list. Tab still reaches it.
+                        reading.refocus();
+                    },
+                    match view {
+                        // The unread mark, as on the reader's toolbar.
+                        View::Unread => rsx! {
+                            svg { width: "16", height: "16", view_box: "0 0 24 24", fill: "currentColor", stroke: "currentColor", stroke_width: "1.6", "aria-hidden": "true",
+                                circle { cx: "12", cy: "12", r: "7.5" }
+                            }
+                        },
+                        View::Starred => rsx! {
+                            svg { width: "16", height: "16", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round", "aria-hidden": "true",
+                                path { d: STAR_PATH }
+                            }
+                        },
+                        View::All => rsx! { Icon { size: 16, stroke: "2", paths: LAYERS } },
+                    }
+                }
+            }
         }
     }
 }
