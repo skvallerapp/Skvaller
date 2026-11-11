@@ -1436,7 +1436,7 @@ fn Viewport() -> Element {
     let (beside, below, fit) = match size {
         ThumbnailSize::Small => (Some("thumb small"), false, thumbs::Fit::Square),
         ThumbnailSize::Medium => (Some("thumb medium"), false, thumbs::Fit::Square),
-        ThumbnailSize::Large => (None, true, thumbs::Fit::Full),
+        ThumbnailSize::Large => (None, true, thumbs::Fit::Wide),
         ThumbnailSize::None => (None, false, thumbs::Fit::Square),
     };
     let selected = reading.article.read().as_ref().map(|a| a.id.clone());

@@ -4,9 +4,9 @@
 //! never the network: reading and decoding run off the UI thread, and the URL stays
 //! short, unlike a `data:` URL of the whole JPEG.
 //!
-//! A small thumbnail beside the headline is served cropped and shrunk to [`SQUARE`]:
-//! Blitz decodes an image whole and keeps it decoded, and a stored one can take over a
-//! megabyte that way.
+//! A thumbnail is served cropped and shrunk to its box, by its [`Fit`]: Blitz decodes
+//! an image whole and keeps it decoded, and a stored one can take over a megabyte that
+//! way.
 //!
 //! The article's frame shares the window's providers, so its untrusted HTML could ask
 //! for these URLs too. Each URL carries a token made at launch, which that HTML can't
@@ -19,40 +19,46 @@ use std::sync::{Arc, LazyLock};
 
 use dioxus_native::net::{Bytes, NetHandler, NetProvider, Request, Url};
 use skvaller_app::App;
-use skvaller_core::square_thumbnail;
+use skvaller_core::fill_thumbnail;
 
 /// The URL scheme of cached thumbnails.
 pub const SCHEME: &str = "thumb";
 
-/// The side, in pixels, of the square a small thumbnail is served as.
+/// The box a thumbnail is served for, in pixels: its CSS box on a 2× screen.
 ///
-/// The Medium size is a 64 px box, so 128 is sharp up to a 2× screen; the Small 40 px
-/// box gets the same, to keep one variant. Decoded, a square takes 64 KB in Blitz's
-/// image cache and as much on the GPU.
-const SQUARE: u32 = 128;
-
-/// How a thumbnail is served.
+/// Decoded, an image takes four bytes a pixel in Blitz's image cache and as much on the
+/// GPU: 64 KB for a square, 0.9 MB for the wide box.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fit {
-    /// Cropped and shrunk to [`SQUARE`], for the Small and Medium boxes.
+    /// 128 × 128, for the Small and Medium boxes beside the headline. Medium is 64 px,
+    /// Small 40 px; both get the same, to keep one variant.
     Square,
-    /// As stored, for the Large size that spans the row.
-    Full,
+    /// 638 × 360, for the Large box below the headline, 319 × 180 CSS px (`.thumb.large`
+    /// and `LARGE_THUMB_EXTRA`). A resizable list would make its width vary.
+    Wide,
 }
 
 impl Fit {
+    /// The box's width and height in pixels.
+    fn size(self) -> (u32, u32) {
+        match self {
+            Self::Square => (128, 128),
+            Self::Wide => (638, 360),
+        }
+    }
+
     /// The fit's path segment in a [`url`].
     fn segment(self) -> &'static str {
         match self {
             Self::Square => "square",
-            Self::Full => "full",
+            Self::Wide => "wide",
         }
     }
 
     /// The fit whose [`Fit::segment`] is `segment`. The URL test catches a variant
     /// missing here.
     fn from_segment(segment: &str) -> Option<Self> {
-        [Self::Square, Self::Full]
+        [Self::Square, Self::Wide]
             .into_iter()
             .find(|fit| fit.segment() == segment)
     }
@@ -83,15 +89,13 @@ impl NetProvider for Thumbnails {
     fn fetch(&self, _doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
         let app = Arc::clone(&self.0);
         let url = request.url;
-        // A database read, the squaring, and then the decode in `bytes`: none on the UI
+        // A database read, the crop, and then the decode in `bytes`: none on the UI
         // thread.
         tokio::task::spawn_blocking(move || {
             let jpeg = parse(&url).and_then(|(fit, account, article)| {
                 let jpeg = app.thumbnail(&account, &article).ok().flatten()?;
-                match fit {
-                    Fit::Square => square_thumbnail(&jpeg, SQUARE),
-                    Fit::Full => Some(jpeg),
-                }
+                let (width, height) = fit.size();
+                fill_thumbnail(&jpeg, width, height)
             });
             match jpeg {
                 Some(jpeg) => handler.bytes(url.to_string(), Bytes::from(jpeg)),
@@ -142,7 +146,7 @@ mod tests {
     #[test]
     fn ids_and_fit_go_through_the_url_unchanged() {
         let article = "tag:google.com,2005:reader/item/0000/ä?#";
-        for fit in [Fit::Square, Fit::Full] {
+        for fit in [Fit::Square, Fit::Wide] {
             let url = Url::parse(&url("1", article, fit)).unwrap();
             assert_eq!(url.scheme(), SCHEME);
             assert_eq!(parse(&url), Some((fit, "1".into(), article.into())));
@@ -154,11 +158,11 @@ mod tests {
         );
         assert_eq!(parse(&at("31/32")), None);
         assert_eq!(parse(&at("huge/31/32")), None);
-        assert_eq!(parse(&at("full/31")), None);
-        assert_eq!(parse(&at("full/3/31")), None);
-        assert_eq!(parse(&at("full/31/32/33")), None);
-        assert_eq!(parse(&at("full/+f/32")), None);
+        assert_eq!(parse(&at("wide/31")), None);
+        assert_eq!(parse(&at("wide/3/31")), None);
+        assert_eq!(parse(&at("wide/31/32/33")), None);
+        assert_eq!(parse(&at("wide/+f/32")), None);
         // Another launch's URL, or one made up by an article.
-        assert_eq!(parse(&Url::parse("thumb://t/full/31/32").unwrap()), None);
+        assert_eq!(parse(&Url::parse("thumb://t/wide/31/32").unwrap()), None);
     }
 }

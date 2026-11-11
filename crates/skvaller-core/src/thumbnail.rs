@@ -24,11 +24,10 @@ use crate::{Db, Result, html};
 
 /// The longest side of a stored thumbnail, in pixels.
 ///
-/// The Large size fills a box of about 320 × 180 CSS pixels (`LARGE_THUMB_EXTRA` in the
-/// app's `ui.rs`), twice that on a HiDPI screen, and 800 covers its width for a
-/// landscape image. It is a compromise with the space the
-/// cache takes: a thumbnail is about 40–60 KB, so 5,000 cached articles take about
-/// 250 MB.
+/// The Large size spans the list: 319 CSS pixels at its default width, up to about 520
+/// once the list can be widened, and twice that on a HiDPI screen. 800 is a compromise
+/// with the space the cache takes: a thumbnail is about 40–60 KB, so 5,000 cached
+/// articles take about 250 MB. What is shown is cropped from it to the box, by [`fill`].
 const MAX_SIDE: u32 = 800;
 /// JPEG quality of a stored thumbnail. Artifacts don't show at thumbnail size.
 const JPEG_QUALITY: u8 = 75;
@@ -374,30 +373,43 @@ fn shrink(bytes: &[u8]) -> Option<Vec<u8>> {
     encode(&on_white(&image))
 }
 
-/// A cached thumbnail cropped and shrunk to a square of `side` pixels.
+/// A cached thumbnail cropped and shrunk to fill a `width` × `height` box.
 ///
 /// What shows a thumbnail decodes it whole, at four bytes a pixel: a stored one of
-/// [`MAX_SIDE`] takes over a megabyte, a square of 128 pixels 64 KB. The crop is
-/// centered, as CSS `object-fit: cover` crops. One whose shorter side is under `side`
-/// is cropped but not enlarged; a square no larger comes back as it is.
+/// [`MAX_SIDE`] takes over a megabyte, a square of 128 pixels 64 KB. The crop is the
+/// box's shape, centered, as CSS `object-fit: cover` crops. A thumbnail smaller than
+/// the box is cropped but not enlarged; one already the box's shape and no larger comes
+/// back as it is.
 ///
-/// Returns `None` if `jpeg` can't be decoded or encoded.
+/// Returns `None` if `jpeg` can't be decoded or encoded, or the box is empty.
 #[must_use]
-pub fn square(jpeg: &[u8], side: u32) -> Option<Vec<u8>> {
+pub fn fill(jpeg: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return None;
+    }
     let image = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg).ok()?;
-    let (width, height) = (image.width(), image.height());
-    let short = width.min(height);
-    if width == height && short <= side {
+    let (w, h) = (image.width(), image.height());
+    // The largest part of the image with the box's shape. Each side is at most the
+    // image's, so it fits back in a u32.
+    let (box_w, box_h) = (u64::from(width), u64::from(height));
+    let (crop_w, crop_h) = if u64::from(w) * box_h > u64::from(h) * box_w {
+        (u64::from(h) * box_w / box_h, u64::from(h))
+    } else {
+        (u64::from(w), u64::from(w) * box_h / box_w)
+    };
+    let crop_w = u32::try_from(crop_w).ok()?.max(1);
+    let crop_h = u32::try_from(crop_h).ok()?.max(1);
+    if (crop_w, crop_h) == (w, h) && w <= width {
         return Some(jpeg.to_vec());
     }
-    let square = image.crop_imm((width - short) / 2, (height - short) / 2, short, short);
+    let crop = image.crop_imm((w - crop_w) / 2, (h - crop_h) / 2, crop_w, crop_h);
     // An area average: faster than `resize`, and as good for shrinking.
-    let square = if short > side {
-        square.thumbnail_exact(side, side)
+    let crop = if crop_w > width {
+        crop.thumbnail_exact(width, height)
     } else {
-        square
+        crop
     };
-    encode(&square.to_rgb8())
+    encode(&crop.to_rgb8())
 }
 
 /// `image` as a thumbnail JPEG, or `None` if encoding fails.

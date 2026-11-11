@@ -133,35 +133,63 @@ fn a_large_image_shrinks_to_fit_and_a_small_one_stays_its_size() {
     assert_eq!((small.width(), small.height()), (320, 200));
 }
 
-#[test]
-fn a_thumbnail_squares_to_the_middle_and_is_never_enlarged() {
-    // Red, blue, red; the blue middle is wider than the square in the middle. Any crop
-    // but the centered one takes in red at an edge.
-    let wide = RgbaImage::from_fn(600, 200, |x, _| {
-        Rgba(if (150..450).contains(&x) {
+/// A stored thumbnail of `width` × `height`: blue in the middle `inner` pixels along
+/// its longer side, red at both ends. Any crop but the centered one takes in red.
+fn striped(width: u32, height: u32, inner: u32) -> Vec<u8> {
+    let long = width.max(height);
+    let (from, to) = ((long - inner) / 2, (long + inner) / 2);
+    let image = RgbaImage::from_fn(width, height, |x, y| {
+        let along = if width >= height { x } else { y };
+        Rgba(if (from..to).contains(&along) {
             [0, 0, 255, 255]
         } else {
             [255, 0, 0, 255]
         })
     });
     let mut encoded = Cursor::new(Vec::new());
-    wide.write_to(&mut encoded, ImageFormat::Png).unwrap();
-    let jpeg = shrink(encoded.get_ref()).unwrap();
-    let squared = decoded(&square(&jpeg, 128).unwrap()).to_rgb8();
-    assert_eq!(squared.dimensions(), (128, 128));
+    image.write_to(&mut encoded, ImageFormat::Png).unwrap();
+    shrink(encoded.get_ref()).unwrap()
+}
+
+/// Whether the pixel at `x`, `y` is blue rather than red.
+fn blue(image: &RgbImage, x: u32, y: u32) -> bool {
+    let [r, _, b] = image.get_pixel(x, y).0;
+    r < 40 && b > 200
+}
+
+#[test]
+fn a_thumbnail_fills_its_box_from_the_middle() {
+    // 3:1, blue in the middle 300: the centered square, 200 wide, is all blue.
+    let square = decoded(&fill(&striped(600, 200, 300), 128, 128).unwrap()).to_rgb8();
+    assert_eq!(square.dimensions(), (128, 128));
     for x in [4, 64, 123] {
-        let [r, _, b] = squared.get_pixel(x, 64).0;
-        assert!(r < 40 && b > 200, "red at x {x}: the crop isn't centered");
+        assert!(
+            blue(&square, x, 64),
+            "red at x {x}: the crop isn't centered"
+        );
     }
 
-    // Narrower than the square: cropped, not enlarged.
+    // Portrait into a wide box: 400 × 225 from the middle of 400 × 800, blue in the
+    // middle 400 of the height.
+    let wide = decoded(&fill(&striped(400, 800, 400), 320, 180).unwrap()).to_rgb8();
+    assert_eq!(wide.dimensions(), (320, 180));
+    for y in [4, 90, 175] {
+        assert!(blue(&wide, 160, y), "red at y {y}: the crop isn't centered");
+    }
+}
+
+#[test]
+fn a_thumbnail_is_never_enlarged_to_fill_its_box() {
+    // Narrower than the square: cropped to 110 × 110, not enlarged.
     let narrow = shrink(&png(110, 330, [10, 120, 200, 255])).unwrap();
-    let squared = decoded(&square(&narrow, 128).unwrap());
+    let squared = decoded(&fill(&narrow, 128, 128).unwrap());
     assert_eq!((squared.width(), squared.height()), (110, 110));
 
-    let small = shrink(&png(120, 120, [10, 120, 200, 255])).unwrap();
-    assert_eq!(square(&small, 128), Some(small));
-    assert_eq!(square(b"not a jpeg", 128), None);
+    // Already the box's shape and smaller: as it is.
+    let small = shrink(&png(319, 180, [10, 120, 200, 255])).unwrap();
+    assert_eq!(fill(&small, 638, 360), Some(small.clone()));
+    assert_eq!(fill(&small, 0, 360), None);
+    assert_eq!(fill(b"not a jpeg", 128, 128), None);
 }
 
 #[test]
