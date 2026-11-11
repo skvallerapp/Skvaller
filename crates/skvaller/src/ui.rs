@@ -533,21 +533,40 @@ impl Reading {
         }
     }
 
-    /// Marks every article in the list read. The Unread list then empties at once,
-    /// except for the article being read.
+    /// Marks every article in the list read.
+    ///
+    /// In Unread, the next row with unread articles is then selected, or All Unread,
+    /// as in the Tauri version, and the open article closes. With All Unread already
+    /// selected, the list empties at once, except for the article being read.
     fn mark_all_read(mut self, app: &App) {
         self.close_confirm();
+        // Read, not peek: `is_read` reads the list too, and a recompute under a peek's
+        // guard panics.
         let ids: Vec<String> = self
             .articles
-            .peek()
+            .read()
             .rows
             .iter()
             .filter(|a| !self.is_read(a))
             .map(|a| a.id.clone())
             .collect();
         self.set_read(app, &ids, true);
-        if self.selection.peek().view == View::Unread {
-            self.cleared += 1;
+        let Selection { view, scope } = self.selection.peek().clone();
+        if view != View::Unread {
+            return;
+        }
+        self.cleared += 1;
+        // Before the library's guard: reading `pinned` may recompute it, which reads
+        // the library. Read, not peek: a peek can return the library from before these
+        // counts.
+        let pinned = (self.pinned)();
+        let next = {
+            let lib = self.library.read();
+            let collapsed = self.collapsed_folders();
+            next_with_articles(&lib, view, &pinned, &collapsed, &scope)
+        };
+        if let Some(scope) = next {
+            self.select(Selection { view, scope });
         }
     }
 
@@ -1145,6 +1164,43 @@ fn step_scope(
         .and_then(|i| i.checked_add_signed(delta))
         .and_then(|i| scopes.get(i))
         .cloned()
+}
+
+/// The next row below `scope` with articles in `view`, else All.
+/// `None` when `scope` has no row: All, or a feed in a collapsed folder.
+fn next_with_articles(
+    lib: &Library,
+    view: View,
+    pinned: &HashSet<String>,
+    collapsed: &HashSet<String>,
+    scope: &Scope,
+) -> Option<Scope> {
+    if *scope == Scope::All {
+        return None;
+    }
+    let counts = counts_by_feed(&lib.counts, view);
+    let tree = sidebar_tree(lib, view, pinned, scope);
+    // Every feed with articles is in the tree, collapsed or not.
+    let folders: HashSet<&str> = tree
+        .folders
+        .iter()
+        .filter(|(_, feeds)| feeds.iter().any(|f| counts.contains_key(&f.id)))
+        .map(|(folder, _)| folder.id.as_str())
+        .collect();
+    let has_articles = |row: &Scope| match row {
+        Scope::Feed { id } => counts.contains_key(id),
+        Scope::Folder { id } => folders.contains(id.as_str()),
+        Scope::All => false,
+    };
+    let rows = sidebar_scopes(&tree, collapsed);
+    let at = rows.iter().position(|row| row == scope)?;
+    Some(
+        rows[at + 1..]
+            .iter()
+            .find(|row| has_articles(row))
+            .cloned()
+            .unwrap_or(Scope::All),
+    )
 }
 
 /// The sidebar's scopes from top to bottom, as the arrow keys step through them: all
@@ -2305,5 +2361,44 @@ mod tests {
         let collapsed = HashSet::from(["d".to_owned()]);
         assert_eq!(step(&collapsed, &feed_scope("a"), 1), Some(feed_scope("y")));
         assert_eq!(step(&collapsed, &feed_scope("a"), -1), Some(Scope::All));
+    }
+
+    #[test]
+    fn mark_all_read_moves_on_to_the_next_row_below_with_articles() {
+        let mut lib = Library {
+            folders: vec![folder("d"), folder("e")],
+            feeds: vec![
+                feed("a", Some("d")),
+                feed("b", Some("d")),
+                feed("c", Some("e")),
+                feed("x", None),
+                feed("y", None),
+            ],
+            ..Default::default()
+        };
+        // "a" and "b" were just marked read; both are still pinned.
+        lib.counts.unread_by_feed.insert("c".into(), 1);
+        lib.counts.unread_by_feed.insert("y".into(), 2);
+        let pinned = HashSet::from(["a", "b", "c", "x", "y"].map(String::from));
+        let none = HashSet::new();
+        let next = |collapsed: &HashSet<String>, from: &Scope| {
+            next_with_articles(&lib, View::Unread, &pinned, collapsed, from)
+        };
+        // Past "b", which has none: folder "e" comes first, as its feed has some.
+        assert_eq!(next(&none, &feed_scope("a")), Some(folder_scope("e")));
+        assert_eq!(next(&none, &folder_scope("d")), Some(folder_scope("e")));
+        // Only rows below count: "x" has none, "y" has some.
+        assert_eq!(next(&none, &feed_scope("c")), Some(feed_scope("y")));
+        // None left below: All.
+        assert_eq!(next(&none, &feed_scope("y")), Some(Scope::All));
+        let collapsed = HashSet::from(["d".to_owned()]);
+        // No row to move on from.
+        assert_eq!(next(&none, &Scope::All), None);
+        assert_eq!(next(&collapsed, &feed_scope("a")), None);
+        // A collapsed folder's feeds have no rows: the folder below is next.
+        assert_eq!(
+            next(&collapsed, &folder_scope("d")),
+            Some(folder_scope("e"))
+        );
     }
 }
