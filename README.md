@@ -37,6 +37,11 @@ cargo run --release -p skvaller   # run the app
 cargo test --workspace
 ```
 
+On macOS, `cargo run` signs the app with your Apple Development certificate if you
+have one (Xcode → Settings → Accounts → Manage Certificates; a free account works).
+The keychain then keeps trusting each new build, and stops asking for your password
+after every rebuild.
+
 ## License
 
 [GPL-3.0](LICENSE)

@@ -1,0 +1,3 @@
+# On macOS, `cargo run` signs the app before starting it: see scripts/macos-run.sh.
+[target.'cfg(target_os = "macos")']
+runner = "scripts/macos-run.sh"
