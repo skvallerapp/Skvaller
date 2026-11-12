@@ -87,7 +87,7 @@ pub(crate) fn plain_text(html: &str, max: usize) -> String {
 fn tag_name(s: &str) -> String {
     s.trim_start_matches('/')
         .chars()
-        .take_while(|c| c.is_ascii_alphanumeric())
+        .take_while(char::is_ascii_alphanumeric)
         .map(|c| c.to_ascii_lowercase())
         .collect()
 }

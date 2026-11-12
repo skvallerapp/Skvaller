@@ -60,6 +60,12 @@ impl SyncReport {
 /// unread or starred article not cached yet. Articles come by ID, and only those not
 /// cached yet: Miniflux has no `stream/contents`. A flag with a queued local change is
 /// never overwritten.
+///
+/// # Errors
+///
+/// Returns `Error::Unauthorized` when the token is no longer accepted, `Error::Http`
+/// or `Error::Protocol` when the server fails or answers unexpectedly, and `Error::Db`
+/// if the cache can't be written. Changes not sent stay queued for the next sync.
 pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Result<SyncReport> {
     // A push the server refuses doesn't hold back the pull, since queued changes are kept
     // and win anyway. Its error is returned once the pull is done.
@@ -185,7 +191,7 @@ pub(crate) async fn fetch_icons(
             db.set_icon(&feed_id, &url, None)?;
             continue;
         };
-        let (http, limit) = (http.clone(), limit.clone());
+        let (http, limit) = (http.clone(), Arc::clone(&limit));
         fetches.spawn(async move {
             let _permit = limit.acquire_owned().await;
             (feed_id, url, fetch_icon(&http, resolved).await)

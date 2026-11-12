@@ -53,6 +53,11 @@ impl Client {
     /// Miniflux and The Old Reader, `https://rss.example.com/api/greader.php` for
     /// FreshRSS. An address without FreshRSS's path is tried as typed, then with it.
     /// [`Client::base`] tells which one answered.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::BadUrl` for an address that isn't http or https, `Error::Http`
+    /// when the server can't be reached, and `Error::Protocol` for an unexpected answer.
     pub async fn login(base: &str, username: &str, password: &str) -> Result<Self> {
         let base = base.trim_end_matches('/');
         let redirect = match Self::login_at(base, username, password).await? {
@@ -119,12 +124,21 @@ impl Client {
         else {
             return Ok(Err(None));
         };
-        client.token = token.to_owned();
+        token.clone_into(&mut client.token);
         Ok(Ok(client))
     }
 
     /// Builds a client from a token saved by an earlier [`Client::login`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::BadUrl` for an address that isn't http or https or holds a
+    /// username or password, and `Error::Http` if the HTTP client can't be built.
     pub fn new(base: &str, token: &str) -> Result<Self> {
+        #[expect(
+            clippy::map_err_ignore,
+            reason = "BadUrl is what the user needs; the parser's error adds nothing"
+        )]
         let url = Url::parse(base).map_err(|_| Error::BadUrl)?;
         // A username or password in the URL would end up in error messages.
         let has_credentials = !url.username().is_empty() || url.password().is_some();
@@ -147,11 +161,13 @@ impl Client {
     }
 
     /// The access token, to save in the keychain.
+    #[must_use]
     pub fn token(&self) -> &str {
         &self.token
     }
 
     /// The API URL, without a trailing slash.
+    #[must_use]
     pub fn base(&self) -> &str {
         &self.base
     }
@@ -207,7 +223,7 @@ impl Client {
                 return Ok(ids);
             }
             ids.extend(page.item_refs.iter().filter_map(|r| parse_item_id(&r.id)));
-            match next_page(page.continuation, &continuation) {
+            match next_page(page.continuation, continuation.as_ref()) {
                 Some(c) => continuation = Some(c),
                 None => return Ok(ids),
             }
@@ -323,8 +339,8 @@ fn check(status: StatusCode) -> Result<()> {
 
 /// The continuation for the next page, or `None` at the end. A server that repeats the
 /// same continuation would otherwise loop forever.
-pub(crate) fn next_page(next: Option<String>, current: &Option<String>) -> Option<String> {
-    next.filter(|c| !c.is_empty() && Some(c) != current.as_ref())
+pub(crate) fn next_page(next: Option<String>, current: Option<&String>) -> Option<String> {
+    next.filter(|c| !c.is_empty() && Some(c) != current)
 }
 
 /// An item ID as the cache keeps it. Servers send IDs in a short and a long form, and a
@@ -352,7 +368,7 @@ fn decimal_id(id: &str) -> Option<i64> {
     id.parse::<u64>()
         .ok()
         .filter(|v| v.to_string() == id)
-        .map(|v| v as i64)
+        .map(u64::cast_signed)
 }
 
 fn hex_id(hex: &str) -> Option<String> {
@@ -361,7 +377,7 @@ fn hex_id(hex: &str) -> Option<String> {
     }
     if hex.len() <= 16 {
         let v = u64::from_str_radix(hex, 16).ok()?;
-        return Some((v as i64).to_string());
+        return Some(v.cast_signed().to_string());
     }
     Some(format!("{HEX_ID}{}", hex.to_ascii_lowercase()))
 }
@@ -373,7 +389,7 @@ fn long_item_id(id: &str) -> Option<String> {
         Some(hex) => hex_id(hex)
             .is_some()
             .then(|| format!("{LONG_ID_PREFIX}{hex}")),
-        None => decimal_id(id).map(|v| format!("{LONG_ID_PREFIX}{:016x}", v as u64)),
+        None => decimal_id(id).map(|v| format!("{LONG_ID_PREFIX}{:016x}", v.cast_unsigned())),
     }
 }
 
@@ -577,9 +593,9 @@ mod tests {
 
     #[test]
     fn rejects_credentials_in_the_url() {
-        assert!(Client::new("https://carl:pw@rss.example.com/api/greader.php", "").is_err());
-        assert!(Client::new("ftp://rss.example.com", "").is_err());
-        assert!(Client::new("rss.example.com", "").is_err());
-        assert!(Client::new("http://192.168.1.2/api/greader.php", "").is_ok());
+        Client::new("https://carl:pw@rss.example.com/api/greader.php", "").unwrap_err();
+        Client::new("ftp://rss.example.com", "").unwrap_err();
+        Client::new("rss.example.com", "").unwrap_err();
+        Client::new("http://192.168.1.2/api/greader.php", "").unwrap();
     }
 }

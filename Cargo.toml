@@ -43,7 +43,7 @@ tracing-subscriber = { version = "0.3.23", default-features = false }
 webbrowser = "1.2.6"
 writeable = "0.6.4"
 
-# The guideline set (M-STATIC-VERIFICATION). skvaller-core opts in with TASK-7.
+# The guideline set (M-STATIC-VERIFICATION).
 [workspace.lints.rust]
 ambiguous_negative_literals = "warn"
 missing_debug_implementations = "warn"

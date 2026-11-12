@@ -18,8 +18,9 @@ const IMAGE_SIZE: (u32, u32) = (800, 450);
 /// Time between two test articles.
 const SPACING_MS: i64 = 15 * 60 * 1000;
 
-/// Adds 20 test feeds to a local account's cache, and `articles` articles spread over
-/// them, the newest at `now_ms` and each next one 15 minutes older; two in three have a
+/// Adds 20 test feeds to a local account's cache, and `articles` articles to them.
+///
+/// The articles are spread over the feeds, the newest at `now_ms` and each next one 15 minutes older; two in three have a
 /// thumbnail. Returns how many were stored. Safe to run again: each run adds feeds and
 /// articles of its own.
 ///

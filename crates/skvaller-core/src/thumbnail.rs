@@ -422,6 +422,10 @@ fn encode(image: &RgbImage) -> Option<Vec<u8>> {
 }
 
 /// `image` without transparency: see-through pixels blend into white.
+#[expect(
+    clippy::many_single_char_names,
+    reason = "r, g, b and a are the channels' usual names"
+)]
 fn on_white(image: &DynamicImage) -> RgbImage {
     if !image.color().has_alpha() {
         return image.to_rgb8();

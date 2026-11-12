@@ -78,13 +78,13 @@ fn depth(doc: &Document) -> usize {
     max
 }
 
-/// dom_query's document, as html5ever builds it, noting when a node is attached deeper
+/// `dom_query`'s document, as html5ever builds it, noting when a node is attached deeper
 /// than `MAX_DEPTH`.
 #[derive(Default)]
 struct Bounded {
     doc: Document,
     too_deep: Cell<bool>,
-    /// Each template's contents, which dom_query keeps outside the tree, to its template.
+    /// Each template's contents, which `dom_query` keeps outside the tree, to its template.
     templates: RefCell<HashMap<NodeId, NodeId>>,
     merged_attrs: Cell<usize>,
 }
@@ -92,10 +92,10 @@ struct Bounded {
 impl Bounded {
     /// How many ancestors `node` has, up to `MAX_DEPTH`, counting through templates. The
     /// walk stops at the limit, so it costs no more than that however deep the page goes.
-    fn ancestors(&self, node: &NodeId) -> usize {
+    fn ancestors(&self, node: NodeId) -> usize {
         let templates = self.templates.borrow();
         let mut count = 0;
-        let mut top = *node;
+        let mut top = node;
         while count < MAX_DEPTH {
             for id in self
                 .doc
@@ -117,7 +117,7 @@ impl Bounded {
     }
 
     /// Notes if a child of `parent` would be deeper than `MAX_DEPTH`.
-    fn check(&self, parent: &NodeId) {
+    fn check(&self, parent: NodeId) {
         if !self.too_deep.get() && self.ancestors(parent) >= MAX_DEPTH {
             self.too_deep.set(true);
         }
@@ -168,7 +168,7 @@ impl TreeSink for Bounded {
     }
 
     fn append(&self, parent: &NodeId, child: NodeOrText<NodeId>) {
-        self.check(parent);
+        self.check(*parent);
         self.doc.append(parent, child);
     }
 
@@ -179,8 +179,8 @@ impl TreeSink for Bounded {
         child: NodeOrText<NodeId>,
     ) {
         // The child goes under `element`'s parent, or else under `prev_element`.
-        self.check(element);
-        self.check(prev_element);
+        self.check(*element);
+        self.check(*prev_element);
         self.doc
             .append_based_on_parent_node(element, prev_element, child);
     }
@@ -217,7 +217,7 @@ impl TreeSink for Bounded {
 
     fn append_before_sibling(&self, sibling: &NodeId, new_node: NodeOrText<NodeId>) {
         // A sibling's parent is the new node's parent.
-        self.check(sibling);
+        self.check(*sibling);
         self.doc.append_before_sibling(sibling, new_node);
     }
 
@@ -367,6 +367,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::format_collect, reason = "test input, built once")]
     fn repeated_html_and_body_tags_are_merged_only_so_far() {
         let page = format!(
             "<html a=1><body b=1><html a=2 c=1>{}",

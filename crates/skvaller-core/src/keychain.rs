@@ -14,11 +14,24 @@ use crate::Result;
 /// stored under it.
 pub const KEYCHAIN_SERVICE: &str = "io.github.skvallerapp.Skvaller";
 
-/// `account` identifies the sign-in, such as `"carl@https://rss.example.com/api/greader.php"`.
+/// Saves the access token in the OS keychain.
+///
+/// `account` identifies the sign-in, such as
+/// `"carl@https://rss.example.com/api/greader.php"`.
+///
+/// # Errors
+///
+/// Returns `Error::Keychain` if the OS keychain refuses or can't be reached.
 pub fn save_token(account: &str, token: &str) -> Result<()> {
     Ok(Entry::new(KEYCHAIN_SERVICE, account)?.set_password(token)?)
 }
 
+/// The access token saved for `account`, if any.
+///
+/// # Errors
+///
+/// Returns `Error::Keychain` if the OS keychain refuses or can't be reached. A missing
+/// token is `Ok(None)`.
 pub fn load_token(account: &str) -> Result<Option<String>> {
     match Entry::new(KEYCHAIN_SERVICE, account)?.get_password() {
         Ok(token) => Ok(Some(token)),
@@ -27,6 +40,12 @@ pub fn load_token(account: &str) -> Result<Option<String>> {
     }
 }
 
+/// Deletes the access token saved for `account`.
+///
+/// # Errors
+///
+/// Returns `Error::Keychain` if the OS keychain refuses or can't be reached. A missing
+/// token is not an error.
 pub fn delete_token(account: &str) -> Result<()> {
     match Entry::new(KEYCHAIN_SERVICE, account)?.delete_credential() {
         Ok(()) | Err(KeyringError::NoEntry) => Ok(()),

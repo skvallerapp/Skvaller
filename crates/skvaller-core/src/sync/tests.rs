@@ -5,7 +5,6 @@ use wiremock::matchers::{body_string_contains, header, method, path, query_param
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
-use crate::Error;
 
 const API: &str = "/api/greader.php";
 const NOW: i64 = 1_800_000_000;
@@ -31,12 +30,20 @@ impl Fake {
         mock.mount(&self.server).await;
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "reads as fake.get(..), beside fake.mount(..)"
+    )]
     fn get(&self, endpoint: &str) -> wiremock::MockBuilder {
         Mock::given(method("GET"))
             .and(path(format!("{API}/reader/api/0/{endpoint}")))
             .and(header("authorization", "GoogleLogin auth=tok"))
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "reads as fake.post(..), beside fake.mount(..)"
+    )]
     fn post(&self, endpoint: &str) -> wiremock::MockBuilder {
         Mock::given(method("POST"))
             .and(path(format!("{API}/reader/api/0/{endpoint}")))
@@ -82,6 +89,10 @@ impl Fake {
         .await;
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "takes numbers and strings alike"
+    )]
     fn flags(&self, id: impl ToString) -> Option<(bool, bool)> {
         self.db.with_conn(|c| {
             c.query_row(
@@ -102,8 +113,8 @@ fn ok_json(body: Value) -> ResponseTemplate {
 struct ById(Vec<Value>);
 
 impl wiremock::Respond for ById {
-    fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
-        let body = String::from_utf8_lossy(&req.body);
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let body = String::from_utf8_lossy(&request.body);
         let asked = |item: &&Value| {
             let id = item["id"].as_str().unwrap();
             body.split('&').any(|field| field == form_field(id))
@@ -500,7 +511,7 @@ async fn queued_changes_are_sent_then_cleared() {
             subscriptions: 0
         }
     );
-    assert!(fake.db.pending().unwrap().is_empty());
+    assert_eq!(fake.db.pending().unwrap(), []);
     assert_eq!(fake.flags(1), Some((true, false)));
     assert_eq!(fake.flags(2), Some((true, false)));
 }
@@ -543,11 +554,9 @@ async fn failed_push_keeps_the_queue_and_the_local_state() {
     )
     .await;
 
-    assert!(
-        sync(&fake.client, &fake.db, NOW + 900, DEFAULT_KEEP_READ_DAYS)
-            .await
-            .is_err()
-    );
+    sync(&fake.client, &fake.db, NOW + 900, DEFAULT_KEEP_READ_DAYS)
+        .await
+        .unwrap_err();
     assert_eq!(
         fake.db.pending().unwrap(),
         [("1".to_owned(), Flag::Read, true)]
@@ -612,10 +621,11 @@ async fn live_client() -> Client {
 }
 
 fn unix_now() -> i64 {
-    std::time::SystemTime::now()
+    let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_secs() as i64
+        .as_secs();
+    i64::try_from(secs).unwrap()
 }
 
 /// Syncs twice. Read-only: nothing is queued, so nothing is sent.
@@ -696,7 +706,7 @@ async fn live_write() {
         .unwrap();
     assert_eq!(report.pushed, 2);
     assert_eq!(on_server().await, (false, false), "restored on the server");
-    assert!(db.pending().unwrap().is_empty());
+    assert_eq!(db.pending().unwrap(), []);
 }
 
 #[tokio::test]

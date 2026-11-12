@@ -16,12 +16,12 @@ fn rss(items: &str) -> String {
     )
 }
 
-const TWO_ITEMS: &str = r#"
+const TWO_ITEMS: &str = r"
     <item><guid>a1</guid><title>First</title><link>/posts/1</link>
           <pubDate>Mon, 02 Nov 2026 10:00:00 GMT</pubDate>
           <description>&lt;p&gt;Hello &lt;b&gt;there&lt;/b&gt;&lt;/p&gt;</description></item>
     <item><guid>a2</guid><title>Second</title><link>https://kernel.example/posts/2</link>
-          <pubDate>Tue, 03 Nov 2026 10:00:00 GMT</pubDate></item>"#;
+          <pubDate>Tue, 03 Nov 2026 10:00:00 GMT</pubDate></item>";
 
 fn xml(body: String) -> ResponseTemplate {
     ResponseTemplate::new(200)
@@ -142,7 +142,7 @@ async fn a_page_without_a_feed_is_an_error() {
 
     let err = subscribe(&db, &server.uri(), None, NOW).await.unwrap_err();
     assert!(matches!(err, Error::NoFeed), "{err:?}");
-    assert!(db.feeds().unwrap().is_empty());
+    assert_eq!(db.feeds().unwrap(), []);
     assert!(matches!(
         subscribe(&db, "ftp://x", None, NOW).await.unwrap_err(),
         Error::BadUrl
@@ -218,7 +218,7 @@ async fn a_refresh_keeps_what_the_user_did_and_asks_only_for_changes() {
     assert!(articles[0].starred);
     assert_eq!(db.feeds().unwrap()[0].title, "My Kernel");
     // Nothing to send to anyone.
-    assert!(db.pending().unwrap().is_empty());
+    assert_eq!(db.pending().unwrap(), []);
 
     // Unchanged now.
     Mock::given(method("GET"))
@@ -357,8 +357,8 @@ async fn folders_keep_their_id_and_a_deleted_ones_feeds_stay() {
     assert_eq!(db.folders().unwrap().len(), 1);
 
     db.unsubscribe(&feed).unwrap();
-    assert!(db.feeds().unwrap().is_empty());
-    assert!(all(&db).is_empty());
+    assert_eq!(db.feeds().unwrap(), []);
+    assert_eq!(all(&db), []);
 }
 
 #[test]
@@ -392,7 +392,7 @@ async fn a_feed_unsubscribed_while_fetched_is_skipped_and_one_redirected_to_is_f
     };
     let parsed = parse(&page).unwrap();
     assert_eq!(store(&db, &feed, &parsed, &page, NOW).unwrap(), 0);
-    assert!(all(&db).is_empty());
+    assert_eq!(all(&db), []);
 
     // Subscribed by its address after redirects; asked for by the one before.
     let feed = subscribe(&db, &url, None, NOW).await.unwrap();
@@ -462,11 +462,11 @@ async fn a_refresh_that_reaches_no_feed_fails_and_one_without_feeds_works() {
 #[tokio::test]
 async fn repeated_entry_id_keeps_the_first_and_its_reader_view_text() {
     let server = MockServer::start().await;
-    let items = r#"
+    let items = r"
         <item><guid>dup</guid><title>One</title><link>https://kernel.example/1</link>
               <pubDate>Mon, 02 Nov 2026 10:00:00 GMT</pubDate></item>
         <item><guid>dup</guid><title>Two</title><link>https://kernel.example/2</link>
-              <pubDate>Mon, 02 Nov 2026 11:00:00 GMT</pubDate></item>"#;
+              <pubDate>Mon, 02 Nov 2026 11:00:00 GMT</pubDate></item>";
     serve(&server, "/feed.xml", xml(rss(items))).await;
     let db = Db::open_in_memory().unwrap();
     subscribe(&db, &format!("{}/feed.xml", server.uri()), None, NOW)

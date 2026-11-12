@@ -262,16 +262,16 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
 }
 
 /// The IPv4 address an IPv6 one reaches: IPv4-mapped, IPv4-compatible, NAT64
-/// (64:ff9b::/96) and 6to4 (2002::/16).
+/// (`64:ff9b::/96`) and 6to4 (`2002::/16`).
 fn embedded_v4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
     let s = ip.segments();
     let v4 = |hi: u16, lo: u16| Some(Ipv4Addr::from((u32::from(hi) << 16) | u32::from(lo)));
     match s {
-        [0, 0, 0, 0, 0, 0xffff, hi, lo] => v4(hi, lo),
+        [0, 0, 0, 0, 0, 0xffff, hi, lo]
+        | [0x64, 0xff9b, 0, 0, 0, 0, hi, lo]
+        | [0x2002, hi, lo, ..] => v4(hi, lo),
         // :: and ::1 are IPv6's own.
         [0, 0, 0, 0, 0, 0, hi, lo] if (hi, lo) > (0, 1) => v4(hi, lo),
-        [0x64, 0xff9b, 0, 0, 0, 0, hi, lo] => v4(hi, lo),
-        [0x2002, hi, lo, ..] => v4(hi, lo),
         _ => None,
     }
 }

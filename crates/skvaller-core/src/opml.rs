@@ -55,6 +55,10 @@ pub struct ImportReport {
 }
 
 /// The account's subscriptions, in their folders, as an OPML 2.0 document.
+///
+/// # Errors
+///
+/// Returns `Error::Db` if the cache can't be read.
 pub fn export(db: &Db, title: &str) -> Result<String> {
     let feeds: Vec<_> = db
         .feeds()?
@@ -130,6 +134,11 @@ fn declared(bytes: &[u8]) -> Option<&'static Encoding> {
 ///
 /// The file is decoded by its byte order mark, else by the encoding its XML declaration
 /// names, else as UTF-8: older readers export in ISO-8859-1 or UTF-16.
+///
+/// # Errors
+///
+/// Returns `Error::Local` for a file that isn't OPML or nests too deeply, and
+/// `Error::Db` if the cache can't be written.
 pub fn import(db: &Db, bytes: &[u8]) -> Result<ImportReport> {
     let xml = &decode(bytes);
     // The parser recurses per level: a crafted file nested thousands deep would
@@ -137,6 +146,10 @@ pub fn import(db: &Db, bytes: &[u8]) -> Result<ImportReport> {
     if depth(xml) > MAX_DEPTH {
         return Err(Error::Local("the OPML file nests too deeply".into()));
     }
+    #[expect(
+        clippy::map_err_ignore,
+        reason = "the parser's error is not worded for the user"
+    )]
     let document = OPML::from_str(xml).map_err(|_| Error::Local("not an OPML file".into()))?;
     let mut import = Import {
         db,
@@ -194,14 +207,15 @@ impl Import<'_> {
             let icon = site.as_ref().and_then(|s| s.join("/favicon.ico").ok());
             let title = Some(name()).filter(|t| !t.is_empty());
             let folder_id = match folder {
-                Some(folder) => match self.folders.get(folder) {
-                    Some(id) => Some(id.clone()),
-                    None => {
+                Some(folder) => {
+                    if let Some(id) = self.folders.get(folder) {
+                        Some(id.clone())
+                    } else {
                         let id = db.create_folder(folder)?;
                         self.folders.insert(folder.to_owned(), id.clone());
                         Some(id)
                     }
-                },
+                }
                 None => None,
             };
             let added = db.add_local_feed(&NewFeed {
@@ -297,10 +311,11 @@ mod tests {
                 skipped: 4
             }
         );
-        assert!(import(&db, b"<html></html>").is_err());
+        import(&db, b"<html></html>").unwrap_err();
     }
 
     #[test]
+    #[expect(clippy::format_collect, reason = "test input, built once")]
     fn a_file_nested_too_deeply_is_refused_before_parsing() {
         let deep = format!(
             "<opml version=\"2.0\"><body>{}{}</body></opml>",
@@ -333,7 +348,7 @@ mod tests {
         let empty = r#"<opml version="2.0"><body><outline text="Empty"><outline text=""/></outline>
             <outline text="Bad"><outline xmlUrl="file:///x"/></outline></body></opml>"#;
         import(&other, empty.as_bytes()).unwrap();
-        assert!(other.folders().unwrap().is_empty());
+        assert_eq!(other.folders().unwrap(), []);
         // Many feeds side by side are not deep.
         let flat = format!(
             "<opml version=\"2.0\"><body><outline text=\"F\">{}</outline></body></opml>",

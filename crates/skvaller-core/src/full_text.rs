@@ -1,5 +1,5 @@
 //! Reader View: the full text of an article, extracted from its web page with
-//! dom_smoothie, a port of Mozilla's Readability.js. It is as untrusted as the page.
+//! `dom_smoothie`, a port of Mozilla's Readability.js. It is as untrusted as the page.
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -28,8 +28,15 @@ pub(crate) const USER_AGENT: &str = concat!(
 );
 
 /// The article's full text: from the cache, or else fetched from its web page and
-/// cached. `Ok(None)`: the page has nothing readable, or the article is gone. A page
+/// cached.
+///
+/// `Ok(None)`: the page has nothing readable, or the article is gone. A page
 /// given up on is fetched again only with `retry`. `Err`: try again later.
+///
+/// # Errors
+///
+/// Returns `Error::Http` when the page can't be fetched, and `Error::Db` when the
+/// cache can't be read or written.
 pub async fn load(db: &Db, id: &str, retry: bool) -> Result<Option<String>> {
     match db.full_text(id)? {
         Some(FullText::Html(html)) => return Ok(Some(html)),
@@ -65,6 +72,10 @@ pub async fn load(db: &Db, id: &str, retry: bool) -> Result<Option<String>> {
 
 /// Fetches the full text of unread articles in Reader View feeds, so it is there
 /// offline. Pages that fail are skipped; only cache errors stop it.
+///
+/// # Errors
+///
+/// Returns `Error::Db` if the cache can't be read or written.
 pub async fn prefetch(db: &Db) -> Result<()> {
     for id in db.full_text_wanted(PREFETCH_PAGES)? {
         if let Err(e @ crate::Error::Db(_)) = load(db, &id, false).await {
@@ -422,16 +433,16 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(path("/post"))
             .respond_with(ResponseTemplate::new(503))
-            .expect(MAX_ATTEMPTS as u64 + 1)
+            .expect(u64::from(MAX_ATTEMPTS) + 1)
             .mount(&server)
             .await;
         let db = db_with_page(&format!("{}/post", server.uri()));
 
         for _ in 0..MAX_ATTEMPTS {
-            assert!(load(&db, "1", false).await.is_err());
+            load(&db, "1", false).await.unwrap_err();
         }
         assert_eq!(load(&db, "1", false).await.unwrap(), None);
-        assert!(load(&db, "1", true).await.is_err());
+        load(&db, "1", true).await.unwrap_err();
     }
 
     #[tokio::test]

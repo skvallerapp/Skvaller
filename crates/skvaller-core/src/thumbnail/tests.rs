@@ -120,7 +120,7 @@ fn the_first_images_in_the_html_are_picked_without_tiny_ones_or_trackers() {
             "https://cdn.example/photo.jpg",
         ]
     );
-    assert!(from_html("<p>No images</p>", PAGE).is_empty());
+    assert_eq!(from_html("<p>No images</p>", PAGE), Vec::<String>::new());
 }
 
 #[test]
@@ -137,7 +137,7 @@ fn a_large_image_shrinks_to_fit_and_a_small_one_stays_its_size() {
 /// its longer side, red at both ends. Any crop but the centered one takes in red.
 fn striped(width: u32, height: u32, inner: u32) -> Vec<u8> {
     let long = width.max(height);
-    let (from, to) = ((long - inner) / 2, (long + inner) / 2);
+    let (from, to) = ((long - inner) / 2, u32::midpoint(long, inner));
     let image = RgbaImage::from_fn(width, height, |x, y| {
         let along = if width >= height { x } else { y };
         Rgba(if (from..to).contains(&along) {

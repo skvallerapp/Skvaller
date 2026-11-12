@@ -44,10 +44,17 @@ fn http() -> Result<reqwest::Client> {
     Ok(CLIENT.get_or_init(|| client).clone())
 }
 
-/// Fetches every feed, stores what is new or changed, then removes unstarred articles
-/// published more than `keep_read_days` ago if read, or `keep_unread_days` ago if
-/// unread; `None` keeps unread ones. `now` is Unix seconds. A feed that fails keeps its
-/// articles and records why, for the sidebar; the others go on.
+/// Fetches every feed, stores what is new or changed, then prunes old articles.
+///
+/// Pruning removes unstarred articles published more than `keep_read_days` ago if
+/// read, or `keep_unread_days` ago if unread; `None` keeps unread ones. `now` is Unix
+/// seconds. A feed that fails keeps its articles and records why, for the sidebar; the
+/// others go on.
+///
+/// # Errors
+///
+/// Returns `Error::Local` when no feed could be reached, which is more likely the
+/// network than every site down, and `Error::Db` if the cache can't be written.
 pub async fn refresh(
     db: &Db,
     now: i64,
@@ -57,7 +64,7 @@ pub async fn refresh(
     db.clear_all_pending()?;
     let http = http()?;
     let limit = Arc::new(Semaphore::new(PARALLEL));
-    let mut fetches = JoinSet::new();
+    let mut jobs = JoinSet::new();
     let feeds = db.local_feeds()?;
     // The user subscribed to these, LAN or not: their icons may come from them.
     let trusted: Vec<Url> = feeds
@@ -65,8 +72,8 @@ pub async fn refresh(
         .filter_map(|f| Url::parse(&f.url).ok())
         .collect();
     for feed in feeds {
-        let (http, limit) = (http.clone(), limit.clone());
-        fetches.spawn(async move {
+        let (http, limit) = (http.clone(), Arc::clone(&limit));
+        jobs.spawn(async move {
             // Held until the feed is stored, so only so many bodies wait in memory.
             let permit = limit.acquire_owned().await;
             let fetched = fetch(&http, &feed.url, Some(&feed)).await;
@@ -74,7 +81,7 @@ pub async fn refresh(
         });
     }
     let (mut fetched, mut tried, mut reached) = (0, 0, 0);
-    while let Some(done) = fetches.join_next().await {
+    while let Some(done) = jobs.join_next().await {
         let Ok((feed, result, _permit)) = done else {
             continue;
         };
@@ -115,9 +122,16 @@ pub async fn refresh(
     })
 }
 
-/// Subscribes to the feed at `url`, or to the one a web page there links to, and
-/// stores its entries. Returns the feed's ID; a feed subscribed to already keeps its
+/// Subscribes to the feed at `url`, or to the one a web page there links to.
+///
+/// Stores its entries and returns the feed's ID; a feed subscribed to already keeps its
 /// folder. `now` is Unix seconds, the date of entries that have none.
+///
+/// # Errors
+///
+/// Returns `Error::BadUrl` for an unusable address, `Error::NoFeed` when there is no
+/// feed there or linked from there, `Error::Local` when it can't be fetched, said for
+/// the user, and `Error::Db` if the cache can't be written.
 pub async fn subscribe(db: &Db, url: &str, folder_id: Option<&str>, now: i64) -> Result<String> {
     let http = http()?;
     let url = with_scheme(url).ok_or(Error::BadUrl)?;
@@ -125,17 +139,16 @@ pub async fn subscribe(db: &Db, url: &str, folder_id: Option<&str>, now: i64) ->
         .await
         .map_err(|e| Error::Local(e.message()))?
         .ok_or(Error::NoFeed)?;
-    let (page, parsed) = match parse(&page) {
-        Some(parsed) => (page, parsed),
-        None => {
-            let link = discover_off_runtime(&page).await.ok_or(Error::NoFeed)?;
-            let page = fetch(&http, link.as_str(), None)
-                .await
-                .map_err(|e| Error::Local(e.message()))?
-                .ok_or(Error::NoFeed)?;
-            let parsed = parse(&page).ok_or(Error::NoFeed)?;
-            (page, parsed)
-        }
+    let (page, parsed) = if let Some(parsed) = parse(&page) {
+        (page, parsed)
+    } else {
+        let link = discover_off_runtime(&page).await.ok_or(Error::NoFeed)?;
+        let page = fetch(&http, link.as_str(), None)
+            .await
+            .map_err(|e| Error::Local(e.message()))?
+            .ok_or(Error::NoFeed)?;
+        let parsed = parse(&page).ok_or(Error::NoFeed)?;
+        (page, parsed)
     };
 
     // Subscribed already, maybe under the address before redirects.
@@ -185,6 +198,10 @@ async fn fetch(
     url: &str,
     known: Option<&LocalFeed>,
 ) -> Result<Option<Page>, FetchError> {
+    #[expect(
+        clippy::map_err_ignore,
+        reason = "the parser's error is not worded for the user"
+    )]
     let url = Url::parse(url).map_err(|_| FetchError::Refused("not a valid address".to_owned()))?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err(FetchError::Refused("not an http or https address".into()));
@@ -284,6 +301,10 @@ fn parse(page: &Page) -> Option<model::Feed> {
 
 /// What tells an entry without an ID apart: its link and title. Empty if it has
 /// neither; such entries are skipped.
+#[expect(
+    clippy::ref_option,
+    reason = "the signature feed-rs's id_generator takes"
+)]
 fn entry_key(links: &[model::Link], title: &Option<model::Text>, _uri: Option<&str>) -> String {
     let link = links.first().map_or("", |l| l.href.as_str());
     let title = title.as_ref().map_or("", |t| t.content.as_str());
@@ -451,7 +472,7 @@ fn article_id(feed_id: &str, entry_id: &str) -> i64 {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
-    (hash & i64::MAX as u64) as i64
+    (hash & i64::MAX.cast_unsigned()).cast_signed()
 }
 
 #[cfg(test)]

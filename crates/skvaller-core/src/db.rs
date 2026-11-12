@@ -318,16 +318,21 @@ impl std::fmt::Debug for Db {
 }
 
 impl Db {
+    /// Opens the cache at `path`, creating it if missing.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::CacheTooNew` for a cache a newer version wrote, and `Error::Db` for
+    /// one that can't be opened or is damaged: see [`crate::Error::is_corrupt`].
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let mut db = Self::init(Connection::open(path)?)?;
-        {
-            let conn = db.lock();
-            conn.pragma_update(None, "journal_mode", "WAL")?;
-            conn.pragma_update(None, "synchronous", "NORMAL")?;
-            // A checkpoint truncates the log back to this, after a large sync grew it.
-            conn.pragma_update(None, "journal_size_limit", 16 * 1024 * 1024)?;
-        }
+        let conn = db.lock();
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // A checkpoint truncates the log back to this, after a large sync grew it.
+        conn.pragma_update(None, "journal_size_limit", 16 * 1024 * 1024)?;
+        drop(conn);
         let reader = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -341,6 +346,11 @@ impl Db {
         Ok(db)
     }
 
+    /// A cache that lives only in memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if `SQLite` can't set up the database.
     pub fn open_in_memory() -> Result<Self> {
         Self::init(Connection::open_in_memory()?)
     }
@@ -375,6 +385,11 @@ impl Db {
         })
     }
 
+    /// The folders, by title.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be read.
     pub fn folders(&self) -> Result<Vec<Folder>> {
         let conn = self.read();
         let mut stmt =
@@ -388,6 +403,11 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// The feeds, by title.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be read.
     pub fn feeds(&self) -> Result<Vec<Feed>> {
         let conn = self.read();
         let mut stmt = conn.prepare(
@@ -411,6 +431,10 @@ impl Db {
     }
 
     /// Articles for `selection`, newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be read.
     pub fn articles(&self, selection: &Selection) -> Result<Vec<ArticleSummary>> {
         let view = match selection.view {
             View::Unread => "NOT read",
@@ -449,6 +473,10 @@ impl Db {
     }
 
     /// The article's thumbnail JPEG, if one is cached.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be read.
     pub fn thumbnail(&self, id: &str) -> Result<Option<Vec<u8>>> {
         Ok(self
             .read()
@@ -467,7 +495,7 @@ impl Db {
             "SELECT a.id, s.url, a.url FROM thumbnail_sources s JOIN articles a ON a.id = s.article_id
              ORDER BY a.published DESC, a.id DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map([limit as i64], |r| {
+        let rows = stmt.query_map([i64::try_from(limit).unwrap_or(i64::MAX)], |r| {
             Ok(ThumbnailWanted {
                 id: r.get(0)?,
                 source: r.get(1)?,
@@ -517,6 +545,10 @@ impl Db {
     }
 
     /// The article's untrusted HTML, if it is cached.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be read.
     pub fn article_html(&self, id: &str) -> Result<Option<String>> {
         Ok(self
             .read()
@@ -581,6 +613,11 @@ impl Db {
         Ok(())
     }
 
+    /// Turns Reader View on or off for a feed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be written.
     pub fn set_feed_reader_view(&self, feed_id: &str, on: bool) -> Result<()> {
         self.lock().execute(
             "UPDATE feeds SET reader_view = ?2 WHERE id = ?1",
@@ -589,6 +626,11 @@ impl Db {
         Ok(())
     }
 
+    /// Unread and starred counts, by feed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be read.
     pub fn counts(&self) -> Result<Counts> {
         let conn = self.read();
         let by_feed = |filter: &str| -> Result<HashMap<String, i64>> {
@@ -605,6 +647,10 @@ impl Db {
     }
 
     /// Unread articles in the whole cache, for the account switcher.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be read.
     pub fn unread_total(&self) -> Result<i64> {
         Ok(self
             .read()
@@ -614,16 +660,28 @@ impl Db {
     }
 
     /// When the last sync finished, in Unix milliseconds.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be read.
     pub fn last_sync(&self) -> Result<Option<i64>> {
         self.meta(LAST_SYNC)
     }
 
     /// Marks articles read or unread locally, and queues the changes for the server.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be written.
     pub fn set_read(&self, ids: &[impl AsRef<str>], read: bool) -> Result<()> {
         self.set_flag(ids, Flag::Read, read)
     }
 
     /// Stars or unstars articles locally, and queues the changes for the server.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be written.
     pub fn set_starred(&self, ids: &[impl AsRef<str>], starred: bool) -> Result<()> {
         self.set_flag(ids, Flag::Starred, starred)
     }
@@ -793,7 +851,10 @@ impl Db {
              )
              ORDER BY a.published DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map(params![limit as i64, MAX_ATTEMPTS], |r| r.get(0))?;
+        let rows = stmt.query_map(
+            params![i64::try_from(limit).unwrap_or(i64::MAX), MAX_ATTEMPTS],
+            |r| r.get(0),
+        )?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -1084,12 +1145,21 @@ impl Db {
     }
 
     /// Removes a feed with its articles, starred ones too.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be written.
     pub fn unsubscribe(&self, feed_id: &str) -> Result<()> {
         self.lock()
             .execute("DELETE FROM feeds WHERE id = ?1", [feed_id])?;
         Ok(())
     }
 
+    /// Gives a feed a title of the user's own.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be written.
     pub fn rename_feed(&self, feed_id: &str, title: &str) -> Result<()> {
         self.lock().execute(
             "UPDATE feeds SET title = ?2 WHERE id = ?1",
@@ -1099,6 +1169,10 @@ impl Db {
     }
 
     /// Moves a feed into a folder, or out of any with `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be written.
     pub fn move_feed(&self, feed_id: &str, folder_id: Option<&str>) -> Result<()> {
         self.lock().execute(
             "UPDATE feeds SET folder_id = ?2 WHERE id = ?1",
@@ -1110,6 +1184,10 @@ impl Db {
     /// The folder with this title, ignoring case, or else a new one. Returns its ID.
     /// IDs are `folder/<n>`, never change and are never reused, so a rename keeps what
     /// refers to them and a deleted folder's don't pass to a new one.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be written.
     pub fn create_folder(&self, title: &str) -> Result<String> {
         let mut conn = self.lock();
         let tx = write(&mut conn)?;
@@ -1120,27 +1198,31 @@ impl Db {
                 |r| r.get(0),
             )
             .optional()?;
-        let id = match existing {
-            Some(id) => id,
-            None => {
-                let n: i64 = tx.query_row(
-                    "SELECT coalesce((SELECT value FROM meta WHERE key = ?1), 1)",
-                    [NEXT_FOLDER],
-                    |r| r.get(0),
-                )?;
-                set_meta(&tx, NEXT_FOLDER, n + 1)?;
-                let id = format!("folder/{n}");
-                tx.execute(
-                    "INSERT INTO folders (id, title) VALUES (?1, ?2)",
-                    params![id, title],
-                )?;
-                id
-            }
+        let id = if let Some(id) = existing {
+            id
+        } else {
+            let n: i64 = tx.query_row(
+                "SELECT coalesce((SELECT value FROM meta WHERE key = ?1), 1)",
+                [NEXT_FOLDER],
+                |r| r.get(0),
+            )?;
+            set_meta(&tx, NEXT_FOLDER, n + 1)?;
+            let id = format!("folder/{n}");
+            tx.execute(
+                "INSERT INTO folders (id, title) VALUES (?1, ?2)",
+                params![id, title],
+            )?;
+            id
         };
         tx.commit()?;
         Ok(id)
     }
 
+    /// Renames a folder.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be written.
     pub fn rename_folder(&self, folder_id: &str, title: &str) -> Result<()> {
         self.lock().execute(
             "UPDATE folders SET title = ?2 WHERE id = ?1",
@@ -1150,6 +1232,10 @@ impl Db {
     }
 
     /// Removes a folder. Its feeds stay, in no folder.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be written.
     pub fn delete_folder(&self, folder_id: &str) -> Result<()> {
         let mut conn = self.lock();
         let tx = write(&mut conn)?;
@@ -1312,19 +1398,18 @@ mod tests {
         use std::io::{Seek, SeekFrom, Write};
 
         let path = std::env::temp_dir().join(format!("skvaller-corrupt-{}.db", std::process::id()));
-        {
-            let db = Db::open(&path).unwrap();
-            db.replace_subscriptions(&[feed("feed/1", None)]).unwrap();
-            let many: Vec<ArticleRow> = (1..2000)
-                .map(|id| ArticleRow {
-                    html: "x".repeat(500),
-                    ..article(id, "feed/1", false, false)
-                })
-                .collect();
-            db.upsert_articles(&many).unwrap();
-            db.with_conn(|c| c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)"))
-                .unwrap();
-        }
+        let db = Db::open(&path).unwrap();
+        db.replace_subscriptions(&[feed("feed/1", None)]).unwrap();
+        let many: Vec<ArticleRow> = (1..2000)
+            .map(|id| ArticleRow {
+                html: "x".repeat(500),
+                ..article(id, "feed/1", false, false)
+            })
+            .collect();
+        db.upsert_articles(&many).unwrap();
+        db.with_conn(|c| c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)"))
+            .unwrap();
+        drop(db);
         // The header stays, so it opens; the pages after it are garbage.
         let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
         file.seek(SeekFrom::Start(4096)).unwrap();
@@ -1414,7 +1499,7 @@ mod tests {
     fn setting_the_current_value_queues_nothing() {
         let db = db_with_article();
         db.set_read(&["1"], false).unwrap();
-        assert!(db.pending().unwrap().is_empty());
+        assert_eq!(db.pending().unwrap(), []);
     }
 
     #[test]
@@ -1451,7 +1536,7 @@ mod tests {
         db.clear_pending(Flag::Read, true, &["1"]).unwrap();
         assert_eq!(db.pending().unwrap(), [("1".to_owned(), Flag::Read, false)]);
         db.clear_pending(Flag::Read, false, &["1"]).unwrap();
-        assert!(db.pending().unwrap().is_empty());
+        assert_eq!(db.pending().unwrap(), []);
     }
 
     fn counts(db: &Db) -> (i64, i64, i64, i64) {
@@ -1556,7 +1641,7 @@ mod tests {
     #[test]
     fn empty_subscription_list_does_not_wipe_the_cache() {
         let db = db_with_article();
-        assert!(db.replace_subscriptions(&[]).is_err());
+        db.replace_subscriptions(&[]).unwrap_err();
         assert_eq!(counts(&db), (0, 1, 1, 0));
         // A new account with no feeds is fine.
         Db::open_in_memory()
@@ -1660,7 +1745,7 @@ mod tests {
             .unwrap();
         db.full_text_failed("6", false).unwrap();
         db.full_text_failed("7", true).unwrap();
-        assert!(db.full_text_wanted(10).unwrap().is_empty());
+        assert_eq!(db.full_text_wanted(10).unwrap(), Vec::<String>::new());
 
         db.set_feed_reader_view("feed/1", true).unwrap();
         // A sync keeps the local setting.
@@ -1672,8 +1757,8 @@ mod tests {
         assert_eq!(db.full_text_wanted(1).unwrap(), ["6"]);
     }
 
-    fn ids(db: &Db, selection: Selection) -> Vec<String> {
-        db.articles(&selection)
+    fn ids(db: &Db, selection: &Selection) -> Vec<String> {
+        db.articles(selection)
             .unwrap()
             .into_iter()
             .map(|a| a.id)
@@ -1708,15 +1793,15 @@ mod tests {
             view,
             scope: Scope::Folder { id: "tech".into() },
         };
-        assert_eq!(ids(&db, all(View::Unread)), ["1"]);
-        assert_eq!(ids(&db, all(View::Starred)), ["2"]);
-        assert_eq!(ids(&db, all(View::All)), ["3", "2", "1"]);
-        assert_eq!(ids(&db, feed2(View::All)), ["3", "2"]);
-        assert_eq!(ids(&db, feed2(View::Starred)), ["2"]);
-        assert!(ids(&db, feed2(View::Unread)).is_empty());
-        assert_eq!(ids(&db, tech(View::All)), ["1"]);
-        assert_eq!(ids(&db, tech(View::Unread)), ["1"]);
-        assert!(ids(&db, tech(View::Starred)).is_empty());
+        assert_eq!(ids(&db, &all(View::Unread)), ["1"]);
+        assert_eq!(ids(&db, &all(View::Starred)), ["2"]);
+        assert_eq!(ids(&db, &all(View::All)), ["3", "2", "1"]);
+        assert_eq!(ids(&db, &feed2(View::All)), ["3", "2"]);
+        assert_eq!(ids(&db, &feed2(View::Starred)), ["2"]);
+        assert_eq!(ids(&db, &feed2(View::Unread)), Vec::<String>::new());
+        assert_eq!(ids(&db, &tech(View::All)), ["1"]);
+        assert_eq!(ids(&db, &tech(View::Unread)), ["1"]);
+        assert_eq!(ids(&db, &tech(View::Starred)), Vec::<String>::new());
         let counts = db.counts().unwrap();
         assert_eq!(counts.unread_by_feed.get("feed/1"), Some(&1));
         assert_eq!(counts.unread_by_feed.get("feed/2"), None);
