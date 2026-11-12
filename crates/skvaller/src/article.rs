@@ -16,6 +16,8 @@ pub struct Look {
     pub theme: Theme,
     pub article_font: Font,
     pub headline_font: Font,
+    /// Settings → Animations: the article fades in as it opens.
+    pub animations: bool,
 }
 
 impl From<&Settings> for Look {
@@ -24,6 +26,7 @@ impl From<&Settings> for Look {
             theme: settings.theme,
             article_font: settings.article_font,
             headline_font: settings.headline_font,
+            animations: settings.animations,
         }
     }
 }
@@ -38,6 +41,7 @@ pub fn document(
     look: Look,
 ) -> String {
     let theme = theme_name(look.theme);
+    let motion = if look.animations { "on" } else { "off" };
     let fonts = format!(
         "--article-font: {}; --headline-font: {}",
         fonts::stack(look.article_font),
@@ -49,7 +53,7 @@ pub fn document(
     let source = feed.map_or_else(String::new, |f| linked(&f.title, f.site_url.as_deref()));
     let body = ready_article(html, &article.url);
     format!(
-        "<!doctype html><html data-theme=\"{theme}\" style=\"{fonts}\"><head><meta charset=\"utf-8\">\
+        "<!doctype html><html data-theme=\"{theme}\" data-motion=\"{motion}\" style=\"{fonts}\"><head><meta charset=\"utf-8\">\
          <style>{FRAME_CSS}</style></head><body><article><header>\
          <div class=\"date\">{date}</div><h1>{title}</h1>\
          <div class=\"source\">{author}<br>{source}</div></header>{body}</article></body></html>"

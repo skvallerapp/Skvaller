@@ -110,6 +110,44 @@ body {
   user-select: none;
 }
 
+/* Settings → Animations off: no animation or transition plays. ui.rs reads the same
+   setting for the motion it drives itself. */
+.root[data-motion='off'] *,
+.root[data-motion='off'] *::before,
+.root[data-motion='off'] *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
+/* A popover or confirmation appearing. */
+@keyframes appear {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+/* An icon showing work going on, as a sync. */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* An icon showing a load going on, as Reader View's. */
+@keyframes pulse {
+  to {
+    opacity: 0.35;
+  }
+}
+
+/* Marking an article unread or starring it. */
+@keyframes pop {
+  50% {
+    transform: scale(1.25);
+  }
+}
+
 button {
   font: inherit;
   color: inherit;
@@ -185,6 +223,19 @@ button {
 
 /* Sidebar */
 
+/* Holds the sidebar while it slides open or closed: ui.rs sets its width, from 0 to
+   the sidebar's. The sidebar inside keeps its own width, so its rows don't reflow. */
+.sidebar-slot {
+  display: flex;
+  flex: none;
+  overflow: hidden;
+  transition: width 180ms ease;
+}
+
+.root.resizing .sidebar-slot {
+  transition: none;
+}
+
 /* The sidebar's and list's widths are set inline from the layout. */
 .sidebar {
   display: flex;
@@ -211,19 +262,46 @@ button {
   height: 28px;
   padding: 0 8px;
   border-radius: 6px;
+  /* Positioned, so it paints over the highlight, which is positioned too. */
+  position: relative;
+  transition: color 120ms ease-out;
 }
 
-.item:hover {
+/* The selected row shows the highlight under it instead. */
+.item:hover:not(.selected) {
   background: var(--hover);
 }
 
-.item.selected {
-  background: var(--active);
+.active .item.selected {
+  color: var(--accent-text);
 }
 
-.active .item.selected {
+/* The selection's background, one for the whole list, which slides from row to row.
+   ui.rs places it; `settling` moves it at once, as when rows above it come or go. */
+.highlight {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  background: var(--active);
+  transition:
+    transform 120ms ease-out,
+    height 120ms ease-out;
+}
+
+.highlight.settling {
+  transition: none;
+}
+
+.active .highlight {
   background: var(--accent);
-  color: var(--accent-text);
+}
+
+/* In the sidebar, the highlight is inside the feeds' padding, as the rows are. */
+.feeds .highlight {
+  left: 8px;
+  right: 8px;
+  border-radius: 6px;
 }
 
 .item .name {
@@ -258,6 +336,14 @@ button {
   border: 0;
   background: none;
   color: inherit;
+}
+
+.item .disclosure svg {
+  transition: transform 120ms ease;
+}
+
+.item .disclosure.open svg {
+  transform: rotate(90deg);
 }
 
 .heading {
@@ -296,9 +382,8 @@ button {
   color: var(--error);
 }
 
-/* The view switcher at the bottom of the sidebar, a segmented control. Blitz runs no
-   transitions, so the checked button takes the raised look itself, where the Tauri
-   version slides an indicator under it. */
+/* The view switcher at the bottom of the sidebar, a segmented control: one button
+   per view, over an indicator that slides to the checked one. */
 .views {
   /* Positioned, as the feeds are, so it stays over their hidden rows for clicks. */
   position: relative;
@@ -311,7 +396,25 @@ button {
   flex: none;
 }
 
+.views .indicator {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  /* A third of the inside, less the two 2 px gaps: ui.rs has three views. */
+  width: calc((100% - 8px) / 3);
+  /* ui.rs moves it under the checked button with `transform`. */
+  border-radius: 6px;
+  background: var(--segment-bg);
+  box-shadow:
+    0 0 0 0.5px var(--thumb-edge),
+    0 0.5px 2px rgb(0 0 0 / 0.15);
+  transition: transform 180ms ease;
+}
+
 .views button {
+  /* Positioned, so it paints over the indicator. */
+  position: relative;
   display: flex;
   flex: 1;
   align-items: center;
@@ -321,16 +424,12 @@ button {
   color: var(--text-2);
 }
 
-.views button:hover {
+.views button:hover:not([aria-checked='true']) {
   background: var(--hover);
   color: var(--text);
 }
 
 .views button[aria-checked='true'] {
-  background: var(--segment-bg);
-  box-shadow:
-    0 0 0 0.5px var(--thumb-edge),
-    0 0.5px 2px rgb(0 0 0 / 0.15);
   color: var(--text);
 }
 
@@ -398,9 +497,12 @@ button {
   border-radius: 10px;
   background: var(--reader-bg);
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+  animation: appear 140ms ease-out;
+  transform-origin: top;
 }
 
 .confirm {
+  transform-origin: top right;
   top: 34px;
   right: 0;
   width: 240px;
@@ -426,6 +528,7 @@ button {
   gap: 12px;
   padding: 11px 20px 0;
   overflow: hidden;
+  transition: color 120ms ease-out;
 }
 
 /* The meta line and headline, and a Large thumbnail at the bottom, so every one sits
@@ -468,16 +571,11 @@ button {
   margin-bottom: 11px;
 }
 
-.row:hover {
+.row:hover:not(.selected) {
   background: var(--hover);
 }
 
-.row.selected {
-  background: var(--active);
-}
-
 .active .row.selected {
-  background: var(--accent);
   color: var(--accent-text);
 }
 
@@ -488,6 +586,7 @@ button {
   font-size: 12px;
   line-height: 1.3;
   color: var(--text-3);
+  transition: color 120ms ease-out;
 }
 
 .active .row.selected .meta {
@@ -508,6 +607,7 @@ button {
   font-size: 14.5px;
   line-height: 1.3;
   font-weight: 600;
+  transition: color 120ms ease-out;
 }
 
 .meta .star {
@@ -656,19 +756,28 @@ button {
   justify-content: flex-end;
 }
 
-/* Blitz doesn't run CSS animations yet: a dimmed icon shows the sync, as the Tauri
-   version's does with animations off. */
 .sync.syncing svg {
-  opacity: 0.5;
+  animation: spin 0.9s linear infinite;
 }
 
-/* Reader View: on, in the accent; loading, dimmed, as the sync. */
+/* Reader View: on, in the accent; loading, pulsing. */
 .icon-button.reader-view {
   color: var(--accent);
 }
 
 .icon-button.loading svg {
+  animation: pulse 1s ease-in-out infinite alternate;
+}
+
+/* Without the spin or the pulse, a dimmed icon shows the work. */
+.root[data-motion='off'] .sync.syncing svg,
+.root[data-motion='off'] .icon-button.loading svg {
   opacity: 0.5;
+}
+
+/* Marking the open article unread or starring it, not opening one that already is. */
+.icon-button.pop svg {
+  animation: pop 220ms ease-out;
 }
 
 /* Why Reader View turned itself off, at the start of the reader's toolbar. */
@@ -754,7 +863,9 @@ button {
   padding: 0 8px;
 }
 
+/* Drawn as a native list, which shows at once. */
 .dropdown-list {
+  animation: none;
   position: static;
   flex: none;
   max-width: 100%;
@@ -777,6 +888,7 @@ button {
 }
 
 .confirm.sidebar-popover {
+  transform-origin: top;
   width: auto;
 }
 
@@ -851,6 +963,7 @@ input.rename {
 
 /* At the pointer: its place is set on the element. */
 .menu.context-menu {
+  animation: none;
   width: 220px;
   z-index: 20;
 }

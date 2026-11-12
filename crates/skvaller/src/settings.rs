@@ -187,6 +187,7 @@ fn SettingsRoot() -> Element {
     };
     let ui_font = format!("--ui-font: {}", fonts::stack(settings.ui_font));
     let theme = article::theme_name(settings.theme);
+    let motion = crate::ui::motion(settings.animations);
 
     rsx! {
         style { {APP_CSS} }
@@ -194,6 +195,7 @@ fn SettingsRoot() -> Element {
         div {
             class: "root settings",
             "data-theme": theme,
+            "data-motion": motion,
             style: ui_font,
             tabindex: "-1",
             onmounted: move |e: MountedEvent| async move {

@@ -25,7 +25,7 @@ use crate::add_account::AddAccount;
 use crate::article;
 use crate::fonts;
 use crate::i18n::{t, t_count, t_with};
-use crate::icons::{CHECK, CHEVRON_DOWN, CHEVRON_RIGHT, Icon, LAYERS, PANEL_LEFT, SETTINGS};
+use crate::icons::{CHECK, CHEVRON_RIGHT, Icon, LAYERS, PANEL_LEFT, SETTINGS};
 use crate::live::{Live, use_live};
 use crate::settings::{Pane as SettingsPane, SettingsWindow};
 use crate::shortcuts::{ARROWS, Action, key_name};
@@ -64,6 +64,24 @@ const READER_VIEW_HOLD: Duration = Duration::from_millis(400);
 /// How much of the article's height reading on scrolls: a page, less some lines to keep
 /// the place, as in the Tauri version.
 const READ_ON_PAGE: f64 = 0.9;
+
+/// How long the sidebar takes to slide open or closed: app.css's `.sidebar-slot`
+/// transition. Closing, the sidebar stays in the document this long.
+const SIDEBAR_SLIDE: Duration = Duration::from_millis(180);
+
+/// About one frame at 60 Hz. Opening, the sidebar's slot is drawn this long at no width,
+/// so the change to its width is one Blitz transitions.
+const FRAME: Duration = Duration::from_millis(16);
+
+/// How many frames a sidebar row waits to be laid out before its highlight gives up on
+/// it: a row removed meanwhile never is.
+const MEASURE_TRIES: usize = 5;
+
+/// The `data-motion` of a window's root: `off` stops app.css's animations and
+/// transitions, as Settings → Animations asks.
+pub(crate) fn motion(animations: bool) -> &'static str {
+    if animations { "on" } else { "off" }
+}
 
 /// How near the end, in CSS pixels, counts as the end: scroll offsets can fall short of
 /// it by a rounded fraction.
@@ -231,6 +249,41 @@ impl Edge {
 /// pixel changes nothing.
 fn differs(a: f64, b: f64) -> bool {
     (a - b).abs() >= 0.5
+}
+
+/// Whether a selection highlight moves at once rather than sliding.
+///
+/// It slides to a new selection, and moves at once when the same selection's row moved,
+/// as when rows above it come or go.
+#[derive(Debug)]
+struct Settle<K> {
+    last: Option<(K, f64)>,
+}
+
+impl<K: PartialEq> Settle<K> {
+    const fn new() -> Self {
+        Self { last: None }
+    }
+
+    /// Takes in the selection `key` with its highlight at `top`, and returns whether the
+    /// highlight moves there at once (app.css's `.highlight.settling`).
+    fn settles(&mut self, key: K, top: f64) -> bool {
+        let settles = self
+            .last
+            .as_ref()
+            .is_some_and(|(k, t)| *k == key && differs(*t, top));
+        self.last = Some((key, top));
+        settles
+    }
+}
+
+/// The class of a selection highlight, as [`Settle::settles`] has it.
+const fn highlight_class(settles: bool) -> &'static str {
+    if settles {
+        "highlight settling"
+    } else {
+        "highlight"
+    }
 }
 
 /// A drag of an [`Edge`]: where the pointer and the pane were at its start.
@@ -1147,11 +1200,11 @@ pub fn Root() -> Element {
     // Each part reads only what it shows, so a drag re-renders only what it resizes.
     let dragging = use_memo(move || reading.drag.read().is_some())();
     let root_class = if dragging { "root resizing" } else { "root" };
-    let sidebar_open = use_memo(move || reading.layout.read().sidebar_open)();
     let drag_app = Arc::clone(&app);
     let settings_now = live.settings.read();
     let theme = article::theme_name(settings_now.theme);
     let ui_font = format!("--ui-font: {}", fonts::stack(settings_now.ui_font));
+    let motion = motion(settings_now.animations);
     drop(settings_now);
 
     rsx! {
@@ -1162,6 +1215,7 @@ pub fn Root() -> Element {
         div {
             class: root_class,
             "data-theme": theme,
+            "data-motion": motion,
             style: ui_font,
             tabindex: "-1",
             onmounted: move |e: MountedEvent| {
@@ -1220,12 +1274,7 @@ pub fn Root() -> Element {
             if (reading.account)().is_none() || signed_out {
                 AddAccountScreen {}
             } else {
-                // Removed while hidden, not hidden with CSS: Blitz's layout keeps stale
-                // children of nodes removed under `display: none`.
-                if sidebar_open {
-                    Sidebar {}
-                    Resizer { edge: Edge::Sidebar }
-                }
+                SidebarSlot {}
                 ArticleList {}
                 Resizer { edge: Edge::List }
                 Reader {}
@@ -1464,14 +1513,10 @@ fn Sidebar() -> Element {
     let app = use_context::<Arc<App>>();
     let live = use_context::<Live>();
     let dates = (live.dates)();
-    let mut reading = use_context::<Reading>();
+    let reading = use_context::<Reading>();
     let lib = (reading.library)();
     let current = (reading.selection)();
     let counts = counts_by_feed(&lib.counts, current.view);
-    let mut select = move |next: Selection| {
-        reading.pane.set(Pane::Sidebar);
-        reading.select(next);
-    };
     let all_label = t(&format!("views.{}.all", view_key(current.view)));
     let all_count: i64 = counts.values().sum();
     let count_of = |id: &str| counts.get(id).copied().unwrap_or(0);
@@ -1529,6 +1574,14 @@ fn Sidebar() -> Element {
     );
     let sidebar_width = use_memo(move || reading.layout.read().sidebar_width)();
     let FeedsPane(mut feeds_pane) = use_context_provider(|| FeedsPane(Signal::new(None)));
+    let SidebarHighlight(highlight) = use_context_provider(|| SidebarHighlight(Signal::new(None)));
+    let settle = use_hook(|| Rc::new(RefCell::new(Settle::<Scope>::new())));
+    // None while the selection has no row, as in a collapsed folder.
+    let row_shown = sidebar_scopes(&entries, &reading.collapsed_folders()).contains(&current.scope);
+    let highlight = highlight().filter(|_| row_shown).map(|(scope, place)| {
+        let settles = settle.borrow_mut().settles(scope, place.top);
+        (highlight_class(settles), place)
+    });
     // Every feed is at the top: selected, as by the arrow keys, it shows the top.
     use_effect(move || {
         if reading.selection.read().scope != Scope::All {
@@ -1579,12 +1632,10 @@ fn Sidebar() -> Element {
             }
             div { class: "feeds",
                 onmounted: move |e: MountedEvent| feeds_pane.set(Some(e.data())),
-                div {
-                    class: if current.scope == Scope::All { "item selected" } else { "item" },
-                    onclick: move |_| select(Selection { view: current.view, scope: Scope::All }),
-                    span { class: "name", "{all_label}" }
-                    if all_count > 0 { span { class: "count", "{all_count}" } }
+                if let Some((class, place)) = highlight {
+                    div { class, style: "transform: translateY({place.top}px); height: {place.height}px" }
                 }
+                ScopeItem { scope: Scope::All, title: all_label, count: all_count, nested: false, expanded: None }
                 if !entries.is_empty() {
                     div { class: "heading", {t("sidebar.feeds")} }
                 }
@@ -1618,6 +1669,63 @@ fn Sidebar() -> Element {
             }
             ViewSwitcher {}
             ManageMenu {}
+        }
+    }
+}
+
+/// The sidebar and its border while it shows, sliding open and closed.
+///
+/// Closed, it is removed rather than hidden with CSS: Blitz's layout keeps stale
+/// children of nodes removed under `display: none`. It stays in the document while it
+/// slides closed, and its border goes at once.
+#[component]
+fn SidebarSlot() -> Element {
+    let reading = use_context::<Reading>();
+    let live = use_context::<Live>();
+    let open = use_memo(move || reading.layout.read().sidebar_open);
+    let width = use_memo(move || reading.layout.read().sidebar_width)();
+    // In the document, and at its width rather than none.
+    let open_now = open();
+    let mut present = use_signal(move || open_now);
+    let mut wide = use_signal(move || open_now);
+    use_effect(move || {
+        let open = open();
+        if *present.peek() == open && *wide.peek() == open {
+            return;
+        }
+        if !live.settings.peek().animations {
+            present.set(open);
+            wide.set(open);
+            return;
+        }
+        if open {
+            present.set(true);
+        } else {
+            wide.set(false);
+        }
+        spawn(async move {
+            tokio::time::sleep(if open { FRAME } else { SIDEBAR_SLIDE }).await;
+            // Toggled back meanwhile: that toggle's own task finishes.
+            if reading.layout.peek().sidebar_open != open {
+                return;
+            }
+            if open {
+                wide.set(true);
+            } else {
+                present.set(false);
+            }
+        });
+    });
+    let shown_width = if wide() { width } else { 0.0 };
+
+    rsx! {
+        if present() {
+            div { class: "sidebar-slot", style: "width: {shown_width}px",
+                Sidebar {}
+            }
+            if open() {
+                Resizer { edge: Edge::Sidebar }
+            }
         }
     }
 }
@@ -1711,6 +1819,7 @@ fn ViewSwitcher() -> Element {
     let reading = use_context::<Reading>();
     let mut buttons = use_signal(|| [const { None::<Rc<MountedData>> }; VIEWS.len()]);
     let shown = (reading.selection)().view;
+    let index = VIEWS.iter().position(|v| *v == shown).unwrap_or(0);
 
     rsx! {
         div {
@@ -1740,6 +1849,8 @@ fn ViewSwitcher() -> Element {
                     }
                 });
             },
+            // Under the checked button, a button's width and a gap further per view.
+            span { class: "indicator", style: "transform: translateX(calc({index} * (100% + 2px)))" }
             for (i , view) in VIEWS.into_iter().enumerate() {
                 button {
                     key: "{view_key(view)}",
@@ -1875,6 +1986,18 @@ fn FeedItem(feed: skvaller_core::Feed, count: i64, nested: bool) -> Element {
 #[derive(Clone, Copy)]
 struct FeedsPane(Signal<Option<Rc<MountedData>>>);
 
+/// Where a highlight is drawn, in CSS pixels down its list's content.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Place {
+    top: f64,
+    height: f64,
+}
+
+/// The selected sidebar row and its place, as last measured, for the highlight under
+/// it. The row measures itself, since the sidebar's rows are laid out, not placed.
+#[derive(Clone, Copy)]
+struct SidebarHighlight(Signal<Option<(Scope, Place)>>);
+
 /// A folder or feed in the sidebar. Selected, as by the arrow keys, it scrolls into view.
 /// A folder, with `expanded`, has a disclosure button that shows or hides its feeds.
 #[component]
@@ -1901,6 +2024,58 @@ fn ScopeItem(
         (false, false) => "item",
     };
     let FeedsPane(pane) = use_context::<FeedsPane>();
+    let SidebarHighlight(mut highlight) = use_context::<SidebarHighlight>();
+    let live = use_context::<Live>();
+    // Measured for the highlight when selected, and again when the rows above it may
+    // have come or gone.
+    use_effect({
+        let scope = scope.clone();
+        move || {
+            if reading.selection.read().scope != scope {
+                return;
+            }
+            // Read only to run again on their changes: they decide the rows.
+            let _ = (
+                reading.library.read(),
+                reading.pinned.read(),
+                reading.collapsed.read(),
+            );
+            let _ = live.settings.read().sort_subscriptions;
+            // Subscribed: a row that just came back, as in a folder opened again, gets
+            // its element after this first runs.
+            let (Some(item), Some(pane)) = (mounted.read().clone(), pane.peek().clone()) else {
+                return;
+            };
+            let scope = scope.clone();
+            spawn(async move {
+                // After a frame: the render that ran this isn't laid out before it. A
+                // row just mounted may take longer, and one just removed never will be:
+                // both measure 0 high.
+                for _ in 0..MEASURE_TRIES {
+                    tokio::time::sleep(FRAME).await;
+                    let (Ok(item), Ok(view)) =
+                        (item.get_client_rect().await, pane.get_client_rect().await)
+                    else {
+                        return;
+                    };
+                    if item.height() <= 0.0 {
+                        continue;
+                    }
+                    // Both count the pane's scroll, so the difference is the place in its
+                    // content, where the highlight scrolls along with the rows.
+                    let place = Place {
+                        top: item.min_y() - view.min_y(),
+                        height: item.height(),
+                    };
+                    let next = Some((scope, place));
+                    if *highlight.peek() != next {
+                        highlight.set(next);
+                    }
+                    return;
+                }
+            });
+        }
+    });
     // After the render, when the item has its place. Blitz scrolls only the window into
     // view, not the feeds' own scroll: done here.
     use_effect({
@@ -1955,7 +2130,7 @@ fn ScopeItem(
                     let key = if expanded { "sidebar.collapse" } else { "sidebar.expand" };
                     rsx! {
                         button {
-                            class: "disclosure",
+                            class: if expanded { "disclosure open" } else { "disclosure" },
                             aria_label: t_with(key, &[("folder", title.as_str())]),
                             "aria-expanded": "{expanded}",
                             onclick: move |e| {
@@ -1963,7 +2138,8 @@ fn ScopeItem(
                                 e.stop_propagation();
                                 reading.set_collapsed(&id, expanded);
                             },
-                            Icon { size: 16, stroke: "2", paths: if expanded { CHEVRON_DOWN } else { CHEVRON_RIGHT } }
+                            // Turned down by app.css while open.
+                            Icon { size: 16, stroke: "2", paths: CHEVRON_RIGHT }
                         }
                     }
                 }
@@ -2089,6 +2265,7 @@ fn Viewport() -> Element {
     let dates = (live.dates)();
     let mut reading = use_context::<Reading>();
     let size = live.settings.read().thumbnail_size;
+    let settle = use_hook(|| Rc::new(RefCell::new(Settle::<String>::new())));
     // Where each row starts: a Large thumbnail makes its row taller.
     let offsets = use_memo(move || {
         let size = live.settings.read().thumbnail_size;
@@ -2166,6 +2343,15 @@ fn Viewport() -> Element {
         ThumbnailSize::None => (None, false, thumbs::Fit::Square),
     };
     let selected = reading.article.read().as_ref().map(|a| a.id.clone());
+    let highlight = selected.as_ref().and_then(|id| {
+        let i = list.iter().position(|a| &a.id == id)?;
+        let place = Place {
+            top: offsets[i],
+            height: offsets[i + 1] - offsets[i],
+        };
+        let settles = settle.borrow_mut().settles(id.clone(), place.top);
+        Some((highlight_class(settles), place))
+    });
     let empty = t(&format!(
         "views.{}.empty",
         view_key(reading.selection.read().view)
@@ -2198,6 +2384,9 @@ fn Viewport() -> Element {
                 p { class: "empty", "{empty}" }
             }
             div { class: "spacer", style: "height: {total}px",
+                if let Some((class, place)) = highlight {
+                    div { class, style: "transform: translateY({place.top}px); height: {place.height}px" }
+                }
                 for (i , a) in list.iter().enumerate().take(last).skip(first) {
                     {
                         let summary = a.clone();
@@ -2310,6 +2499,53 @@ fn Reader() -> Element {
     }
 }
 
+/// Which of the reader's toolbar icons pop: the unread mark or the star, when it turns
+/// on for the article shown, not when an article opens with it on.
+#[derive(Debug, Default)]
+struct Pops {
+    id: String,
+    unread: Pop,
+    star: Pop,
+}
+
+/// One icon of [`Pops`]: whether it is on, and whether it popped turning on.
+#[derive(Clone, Copy, Debug, Default)]
+struct Pop {
+    on: bool,
+    pops: bool,
+}
+
+impl Pop {
+    /// Takes in `on` for the same article: an icon pops when it turns on, and stays
+    /// popped until it turns off, so a re-render doesn't replay it.
+    fn update(&mut self, on: bool) -> bool {
+        if on != self.on {
+            self.pops = on;
+        }
+        self.on = on;
+        self.pops
+    }
+}
+
+impl Pops {
+    /// Takes in what the toolbar shows now, and returns whether the unread mark and the
+    /// star pop.
+    fn update(&mut self, id: &str, read: bool, starred: bool) -> (bool, bool) {
+        if self.id != id {
+            id.clone_into(&mut self.id);
+            self.unread = Pop {
+                on: !read,
+                pops: false,
+            };
+            self.star = Pop {
+                on: starred,
+                pops: false,
+            };
+        }
+        (self.unread.update(!read), self.star.update(starred))
+    }
+}
+
 /// The open article's read, star and browser buttons.
 #[component]
 fn ReaderButtons(article: ArticleSummary) -> Element {
@@ -2317,6 +2553,8 @@ fn ReaderButtons(article: ArticleSummary) -> Element {
     let reading = use_context::<Reading>();
     let read = reading.is_read(&article);
     let starred = reading.is_starred(&article);
+    let pops = use_hook(|| Rc::new(RefCell::new(Pops::default())));
+    let (unread_pops, star_pops) = pops.borrow_mut().update(&article.id, read, starred);
     let read_label = if read {
         t("reader.markUnread")
     } else {
@@ -2350,7 +2588,11 @@ fn ReaderButtons(article: ArticleSummary) -> Element {
             }
         }
         button {
-            class: if read { "icon-button" } else { "icon-button unread" },
+            class: match (read, unread_pops) {
+                (true, _) => "icon-button",
+                (false, false) => "icon-button unread",
+                (false, true) => "icon-button unread pop",
+            },
             aria_label: read_label.clone(),
             title: read_label,
             onclick: move |_| reading.toggle_read(&app),
@@ -2360,7 +2602,11 @@ fn ReaderButtons(article: ArticleSummary) -> Element {
             }
         }
         button {
-            class: if starred { "icon-button starred" } else { "icon-button" },
+            class: match (starred, star_pops) {
+                (false, _) => "icon-button",
+                (true, false) => "icon-button starred",
+                (true, true) => "icon-button starred pop",
+            },
             aria_label: star_label.clone(),
             title: star_label,
             onclick: move |_| reading.toggle_starred(&star_app),
@@ -2820,5 +3066,21 @@ mod tests {
             ..drag
         };
         assert_eq!(roomy.width_at(620.0), 360.0);
+    }
+
+    #[test]
+    fn icons_pop_when_turned_on_not_when_opened_on() {
+        let mut pops = Pops::default();
+        // Opened unread and starred: nothing pops.
+        assert_eq!(pops.update("a", false, true), (false, false));
+        // Marked read, then unread again: the mark pops, and stays popped.
+        assert_eq!(pops.update("a", true, true), (false, false));
+        assert_eq!(pops.update("a", false, true), (true, false));
+        assert_eq!(pops.update("a", false, true), (true, false));
+        // Unstarred, then starred.
+        assert_eq!(pops.update("a", false, false), (true, false));
+        assert_eq!(pops.update("a", false, true), (true, true));
+        // Another article opens unread and starred: nothing pops.
+        assert_eq!(pops.update("b", false, true), (false, false));
     }
 }
