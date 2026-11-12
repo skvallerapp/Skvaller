@@ -707,6 +707,14 @@ button {
   min-width: 0;
 }
 
+/* Blitz takes a press that moves over 2px before its release for the start of a text
+   selection, and sends no click, unless the pressed element or its parent has
+   user-select: none. A trackpad click often moves that far. */
+.dropdown,
+.dropdown * {
+  user-select: none;
+}
+
 .dropdown-button {
   display: flex;
   align-items: center;
