@@ -212,8 +212,8 @@ enum Outcome {
 /// time. `stored` is called after each batch that stored any, so the UI can show them.
 ///
 /// Each article is tried once per run. One whose image fails for a reason that may pass
-/// is tried again next run, [`MAX_ATTEMPTS`] runs at most; one with no usable image is
-/// given up on at once.
+/// is tried again next run, three runs at most (`MAX_ATTEMPTS`); one with no usable
+/// image is given up on at once.
 ///
 /// # Errors
 ///
@@ -376,10 +376,10 @@ fn shrink(bytes: &[u8]) -> Option<Vec<u8>> {
 /// A cached thumbnail cropped and shrunk to fill a `width` × `height` box.
 ///
 /// What shows a thumbnail decodes it whole, at four bytes a pixel: a stored one of
-/// [`MAX_SIDE`] takes over a megabyte, a square of 128 pixels 64 KB. The crop is the
-/// box's shape, centered, as CSS `object-fit: cover` crops. A thumbnail smaller than
-/// the box is cropped but not enlarged; one already the box's shape and no larger comes
-/// back as it is.
+/// 800 pixels a side (`MAX_SIDE`) takes over a megabyte, a square of 128 pixels 64 KB.
+/// The crop is the box's shape, centered, as CSS `object-fit: cover` crops. A thumbnail
+/// smaller than the box is cropped but not enlarged; one already the box's shape and no
+/// larger comes back as it is.
 ///
 /// Returns `None` if `jpeg` can't be decoded or encoded, or the box is empty.
 #[must_use]
