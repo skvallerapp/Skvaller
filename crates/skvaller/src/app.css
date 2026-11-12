@@ -279,7 +279,8 @@ button {
 }
 
 /* The selection's background, one for the whole list, which slides from row to row.
-   ui.rs places it; `settling` moves it at once, as when rows above it come or go. */
+   ui.rs places it; `settling` moves it at once, as when a sync adds or removes rows
+   above it, and `folding` slides it with a folder's rows opening or closing above it. */
 .highlight {
   position: absolute;
   left: 0;
@@ -293,6 +294,12 @@ button {
 
 .highlight.settling {
   transition: none;
+}
+
+/* A folder opening or closing above the selection: its highlight moves with the rows,
+   as .folder-feeds does. */
+.highlight.folding {
+  transition: transform 160ms ease;
 }
 
 .active .highlight {
@@ -325,6 +332,20 @@ button {
 /* Lines the feed's name up with its folder's, after the disclosure button. */
 .item.nested {
   padding-left: 32px;
+}
+
+/* A folder's feeds, which slide open and closed: ui.rs sets the height, from 0 to its
+   rows', keeps the rows in it until a close's slide ends (FOLDER_SLIDE), and adds
+   `sliding` only for an open or close, not for a feed a sync adds or removes. */
+.folder-feeds {
+  overflow: hidden;
+  /* Positioned, so its rows paint over the selection's highlight: Blitz paints an
+     unpositioned box that clips, and its positioned rows, under it. */
+  position: relative;
+}
+
+.folder-feeds.sliding {
+  transition: height 160ms ease;
 }
 
 /* A folder's chevron, which shows or hides its feeds. */

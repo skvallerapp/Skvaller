@@ -69,6 +69,10 @@ const READ_ON_PAGE: f64 = 0.9;
 /// transition. Closing, the sidebar stays in the document this long.
 const SIDEBAR_SLIDE: Duration = Duration::from_millis(180);
 
+/// How long a folder's feeds take to slide open or closed: app.css's `.folder-feeds`
+/// and `.highlight.folding` transitions. Closing, the rows stay in the document this long.
+const FOLDER_SLIDE: Duration = Duration::from_millis(160);
+
 /// One turn of the sync icon: app.css's `spin` on `.sync.spinning`.
 const SPIN_TURN: Duration = Duration::from_millis(900);
 
@@ -266,7 +270,8 @@ fn differs(a: f64, b: f64) -> bool {
 /// Whether a selection highlight moves at once rather than sliding.
 ///
 /// It slides to a new selection, and moves at once when the same selection's row moved,
-/// as when rows above it come or go.
+/// as when a sync adds or removes rows above it. A folder opening or closing above it
+/// slides it along with the rows instead (app.css's `.highlight.folding`).
 #[derive(Debug)]
 struct Settle<K> {
     last: Option<(K, f64)>,
@@ -1443,25 +1448,29 @@ fn step_scope(
     delta: isize,
     sort: SortSubscriptions,
 ) -> Option<Scope> {
-    // A feed in a collapsed folder has no row: step from its folder's.
-    let collapsed_folder = match scope {
+    let row = row_scope(lib, scope, collapsed);
+    let scopes = sidebar_scopes(&sidebar_tree(lib, view, pinned, scope, sort), collapsed);
+    scopes
+        .iter()
+        .position(|s| *s == row)
+        .and_then(|i| i.checked_add_signed(delta))
+        .and_then(|i| scopes.get(i))
+        .cloned()
+}
+
+/// The sidebar row that stands for `scope`: a feed in a collapsed folder has no row of
+/// its own, so its folder's stands for it, for the arrow keys and the highlight.
+fn row_scope(lib: &Library, scope: &Scope, collapsed: &HashSet<String>) -> Scope {
+    match scope {
         Scope::Feed { id } => lib
             .feeds
             .iter()
             .find(|f| &f.id == id)
             .and_then(|f| f.folder_id.clone())
             .filter(|folder| collapsed.contains(folder))
-            .map(|id| Scope::Folder { id }),
-        _ => None,
-    };
-    let row = collapsed_folder.as_ref().unwrap_or(scope);
-    let scopes = sidebar_scopes(&sidebar_tree(lib, view, pinned, scope, sort), collapsed);
-    scopes
-        .iter()
-        .position(|s| s == row)
-        .and_then(|i| i.checked_add_signed(delta))
-        .and_then(|i| scopes.get(i))
-        .cloned()
+            .map_or_else(|| scope.clone(), |id| Scope::Folder { id }),
+        _ => scope.clone(),
+    }
 }
 
 /// The next row below `scope` with articles in `view`, else All.
@@ -1593,22 +1602,34 @@ fn Sidebar() -> Element {
     let sidebar_width = use_memo(move || reading.layout.read().sidebar_width)();
     let mut feeds_pane = use_signal(|| None::<Rc<MountedData>>);
     let settle = use_hook(|| Rc::new(RefCell::new(Settle::<Scope>::new())));
-    // The selection's row, for the scroll after this render too. None while the selection
-    // has no row, as in a collapsed folder.
+    // The selection's row, for the scroll after this render too: a feed in a collapsed
+    // folder's is its folder's.
     let selected_row = use_hook(|| Rc::new(std::cell::Cell::new(None::<usize>)));
     // Counts the scrolls asked for: one still waiting for a layout must not land after a
     // newer one.
     let scrolls = use_hook(|| Rc::new(std::cell::Cell::new(0_u64)));
-    let row = sidebar_scopes(&entries, &reading.collapsed_folders())
+    // The collapsed folders the last render had: a folder opening or closing above the
+    // selection slides its highlight along with the rows, instead of moving it at once.
+    let last_collapsed = use_hook(|| Rc::new(RefCell::new(HashSet::new())));
+    let collapsed = reading.collapsed_folders();
+    let row_scope = row_scope(&lib, &current.scope, &collapsed);
+    let row = sidebar_scopes(&entries, &collapsed)
         .iter()
-        .position(|s| *s == current.scope);
+        .position(|s| *s == row_scope);
     selected_row.set(row);
+    let folded = *last_collapsed.borrow() != collapsed;
+    last_collapsed.replace(collapsed);
     let highlight = row.map(|i| {
         let place = sidebar_place(i);
         let settles = settle
             .borrow_mut()
             .settles(current.scope.clone(), place.top);
-        (highlight_class(settles), place)
+        let class = if settles && folded {
+            "highlight folding"
+        } else {
+            highlight_class(settles)
+        };
+        (class, place)
     });
     // The selection, as by the arrow keys, scrolls into view; every feed, at the top,
     // shows the top. Blitz scrolls only the window into view, not the feeds' own scroll:
@@ -1674,16 +1695,11 @@ fn Sidebar() -> Element {
                             let scope = Scope::Folder { id: folder.id.clone() };
                             let count: i64 = feeds.iter().map(|f| count_of(&f.id)).sum();
                             let expanded = !reading.is_collapsed(&folder.id);
-                            let feeds: Vec<_> = if expanded {
-                                feeds.into_iter().cloned().collect()
-                            } else {
-                                Vec::new()
-                            };
+                            let feeds: Vec<_> =
+                                feeds.into_iter().map(|f| (f.clone(), count_of(&f.id))).collect();
                             rsx! {
                                 ScopeItem { key: "folder-{folder.id}", scope, title: folder.title.clone(), count, nested: false, expanded }
-                                for feed in feeds {
-                                    FeedItem { key: "{feed.id}", count: count_of(&feed.id), feed, nested: true }
-                                }
+                                FolderFeeds { feeds, expanded }
                             }
                         }
                         Entry::Feed(feed) => rsx! {
@@ -1767,38 +1783,14 @@ fn rest_of_turn(elapsed: Duration) -> Duration {
 #[component]
 fn SidebarSlot() -> Element {
     let reading = use_context::<Reading>();
-    let live = use_context::<Live>();
-    let open = use_memo(move || reading.layout.read().sidebar_open);
+    let open = use_memo(move || reading.layout.read().sidebar_open)();
     let width = use_memo(move || reading.layout.read().sidebar_width)();
-    // In the slot: while open, and while sliding closed.
-    let open_now = open();
-    let mut present = use_signal(move || open_now);
-    // Counts the toggles, so a close's delayed removal knows a later one came.
-    let toggles = use_hook(|| Rc::new(std::cell::Cell::new(0_u64)));
-    use_effect(move || {
-        let open = open();
-        let toggle = toggles.get() + 1;
-        toggles.set(toggle);
-        if open || !live.settings.peek().animations {
-            if *present.peek() != open {
-                present.set(open);
-            }
-            return;
-        }
-        let toggles = Rc::clone(&toggles);
-        spawn(async move {
-            tokio::time::sleep(SIDEBAR_SLIDE).await;
-            if toggles.get() == toggle {
-                present.set(false);
-            }
-        });
-    });
-    let open = open();
+    let shown = use_closing(open, SIDEBAR_SLIDE);
     let slot_width = if open { width } else { 0.0 };
 
     rsx! {
         div { class: "sidebar-slot", style: "width: {slot_width}px",
-            if present() {
+            if shown {
                 Sidebar {}
             }
         }
@@ -1806,6 +1798,37 @@ fn SidebarSlot() -> Element {
             Resizer { edge: Edge::Sidebar }
         }
     }
+}
+
+/// Whether something `open` is still in the document: while open, and for `slide` after
+/// it closes, so its closing transition plays. With Settings → Animations off, only
+/// while open.
+fn use_closing(open: bool, slide: Duration) -> bool {
+    let live = use_context::<Live>();
+    // Shown at the last change: true from an open until its close's slide ends.
+    let mut present = use_signal(move || open);
+    // Counts the changes, so a close's delayed removal knows a later one came.
+    let changes = use_hook(|| Rc::new(std::cell::Cell::new(0_u64)));
+    use_effect(use_reactive!(|open| {
+        let change = changes.get() + 1;
+        changes.set(change);
+        let was = *present.peek();
+        if open == was {
+            return;
+        }
+        if open || !live.settings.peek().animations {
+            present.set(open);
+            return;
+        }
+        let changes = Rc::clone(&changes);
+        spawn(async move {
+            tokio::time::sleep(slide).await;
+            if changes.get() == change {
+                present.set(false);
+            }
+        });
+    }));
+    open || present()
 }
 
 /// The border after a pane, dragged or moved with ← and → to resize that pane.
@@ -2048,6 +2071,37 @@ fn AccountSwitcher() -> Element {
                         span { class: "name", {t("accounts.add")} }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// A folder's feeds, with their unread counts, under its row. They slide open and
+/// closed, as in the Tauri version: the box's height goes from 0 to its rows' or back,
+/// and closing, the rows stay in it until the slide ends.
+#[component]
+fn FolderFeeds(feeds: Vec<(skvaller_core::Feed, i64)>, expanded: bool) -> Element {
+    let shown = use_closing(expanded, FOLDER_SLIDE);
+    // Whether the folder last opened or closed, and when: only that slides the box, not
+    // a sync adding or removing a feed, which moves the rows and highlight at once.
+    let last = use_hook(|| Rc::new(std::cell::Cell::new((expanded, None::<Instant>))));
+    let (was, mut toggled) = last.get();
+    if was != expanded {
+        toggled = Some(Instant::now());
+        last.set((expanded, toggled));
+    }
+    let class = if toggled.is_some_and(|t| t.elapsed() < FOLDER_SLIDE) {
+        "folder-feeds sliding"
+    } else {
+        "folder-feeds"
+    };
+    let rows = if expanded { feeds.len() } else { 0 };
+    let height = f64::from(u32::try_from(rows).unwrap_or(u32::MAX)) * SIDEBAR_ROW;
+    let feeds = if shown { feeds } else { Vec::new() };
+    rsx! {
+        div { class, style: "height: {height}px",
+            for (feed, count) in feeds {
+                FeedItem { key: "{feed.id}", count, feed, nested: true }
             }
         }
     }
