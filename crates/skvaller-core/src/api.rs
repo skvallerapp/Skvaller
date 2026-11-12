@@ -56,8 +56,10 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns `Error::BadUrl` for an address that isn't http or https, `Error::Http`
-    /// when the server can't be reached, and `Error::Protocol` for an unexpected answer.
+    /// Returns `Error::Unauthorized` for a wrong username or password, `Error::BadUrl`
+    /// for an address that isn't http or https or holds a username or password,
+    /// `Error::Http` when the server can't be reached, and `Error::Protocol` for an
+    /// unexpected answer.
     pub async fn login(base: &str, username: &str, password: &str) -> Result<Self> {
         let base = base.trim_end_matches('/');
         let redirect = match Self::login_at(base, username, password).await? {

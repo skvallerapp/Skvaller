@@ -1,2 +1,2 @@
 # Proper names in doc comments, not code.
-doc-valid-idents = ["FreshRSS", "HiDPI", "ObjectIds", ".."]
+doc-valid-idents = ["FreshRSS", "HiDPI", "ObjectIds", "SQLite", ".."]

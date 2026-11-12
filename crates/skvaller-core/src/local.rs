@@ -54,7 +54,8 @@ fn http() -> Result<reqwest::Client> {
 /// # Errors
 ///
 /// Returns `Error::Local` when no feed could be reached, which is more likely the
-/// network than every site down, and `Error::Db` if the cache can't be written.
+/// network than every site down, `Error::Http` if the HTTP client can't be built, and
+/// `Error::Db` if the cache can't be written.
 pub async fn refresh(
     db: &Db,
     now: i64,
@@ -131,7 +132,8 @@ pub async fn refresh(
 ///
 /// Returns `Error::BadUrl` for an unusable address, `Error::NoFeed` when there is no
 /// feed there or linked from there, `Error::Local` when it can't be fetched, said for
-/// the user, and `Error::Db` if the cache can't be written.
+/// the user, `Error::Http` if the HTTP client can't be built, and `Error::Db` if the
+/// cache can't be written.
 pub async fn subscribe(db: &Db, url: &str, folder_id: Option<&str>, now: i64) -> Result<String> {
     let http = http()?;
     let url = with_scheme(url).ok_or(Error::BadUrl)?;

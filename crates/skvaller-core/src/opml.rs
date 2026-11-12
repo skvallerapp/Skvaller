@@ -206,18 +206,16 @@ impl Import<'_> {
                 .filter(|u| matches!(u.scheme(), "http" | "https"));
             let icon = site.as_ref().and_then(|s| s.join("/favicon.ico").ok());
             let title = Some(name()).filter(|t| !t.is_empty());
-            let folder_id = match folder {
-                Some(folder) => {
+            let folder_id = folder
+                .map(|folder| -> Result<String> {
                     if let Some(id) = self.folders.get(folder) {
-                        Some(id.clone())
-                    } else {
-                        let id = db.create_folder(folder)?;
-                        self.folders.insert(folder.to_owned(), id.clone());
-                        Some(id)
+                        return Ok(id.clone());
                     }
-                }
-                None => None,
-            };
+                    let id = db.create_folder(folder)?;
+                    self.folders.insert(folder.to_owned(), id.clone());
+                    Ok(id)
+                })
+                .transpose()?;
             let added = db.add_local_feed(&NewFeed {
                 id: &format!("feed/{url}"),
                 url: url.as_str(),

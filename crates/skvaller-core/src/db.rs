@@ -350,7 +350,7 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// Returns `Error::Db` if `SQLite` can't set up the database.
+    /// Returns `Error::Db` if SQLite can't set up the database.
     pub fn open_in_memory() -> Result<Self> {
         Self::init(Connection::open_in_memory()?)
     }

@@ -27,8 +27,7 @@ pub(crate) const USER_AGENT: &str = concat!(
     "; +https://github.com/skvallerapp/Skvaller)"
 );
 
-/// The article's full text: from the cache, or else fetched from its web page and
-/// cached.
+/// The article's full text, from the cache or else fetched from its web page and cached.
 ///
 /// `Ok(None)`: the page has nothing readable, or the article is gone. A page
 /// given up on is fetched again only with `retry`. `Err`: try again later.
