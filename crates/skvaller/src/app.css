@@ -101,6 +101,15 @@ body {
   background: var(--reader-bg);
 }
 
+/* The app's own text isn't selectable, as in native apps: a click that moves over a
+   label would otherwise leave a stray highlight. Blitz checks only the pressed element
+   and its parent, so every element needs it. Text fields select on their own, and the
+   article is a document of its own. */
+.root,
+.root * {
+  user-select: none;
+}
+
 button {
   font: inherit;
   color: inherit;
@@ -559,7 +568,6 @@ button {
 
 .root.resizing {
   cursor: col-resize;
-  user-select: none;
 }
 
 /* While dragging, only the root takes the pointer: the article's frame doesn't swallow
@@ -705,14 +713,6 @@ button {
 .dropdown {
   display: inline-flex;
   min-width: 0;
-}
-
-/* Blitz takes a press that moves over 2px before its release for the start of a text
-   selection, and sends no click, unless the pressed element or its parent has
-   user-select: none. A trackpad click often moves that far. */
-.dropdown,
-.dropdown * {
-  user-select: none;
 }
 
 .dropdown-button {
