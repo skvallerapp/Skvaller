@@ -793,7 +793,6 @@ input.rename:focus {
 .add-feed-form .select select {
   flex: 1;
   height: 28px;
-  line-height: 28px;
   font-weight: 400;
 }
 

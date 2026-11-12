@@ -19,10 +19,11 @@ skvaller-core = { path = "crates/skvaller-core", version = "0.1.0" }
 # the bullet font kept with an embedder's fonts, a redraw on a system theme change, and
 # opening more windows, and upstream PR #1321 (single-select <select>), with the upstream
 # main it merged, with the open list in the options' colors, keeping its keys from the
-# page (an iframe's list too), and closing on outside clicks, scrolling and window blur;
+# page (an iframe's list too), closing on outside clicks, scrolling and window blur, and
+# its label centered in its box;
 # <input type=password> masked; the HTTP client, a request filter and URL schemes set by
 # the app; and the decoded image cache capped at 32 MB.
-dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "3b0ec5ff", default-features = false }
+dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "34d50182", default-features = false }
 
 dirs = "6.0.0"
 icu_calendar = { version = "2.4.0", default-features = false }
