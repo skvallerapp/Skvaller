@@ -12,8 +12,9 @@ use skvaller_app::{AccountKind, App, Library};
 use skvaller_core::Scope;
 
 use super::{ACCOUNT_MODIFIER, COMMAND_MODIFIER, Reading};
+use crate::dropdown::Dropdown;
 use crate::i18n::{sentence, t, t_with};
-use crate::icons::{CHEVRONS_UP_DOWN, Icon, PLUS};
+use crate::icons::{CHECK, Icon, PLUS};
 
 /// Heights in a menu, in CSS pixels, as app.css draws it: an item, a line between
 /// groups with its margins, the Move To heading, and the menu's padding and borders.
@@ -385,9 +386,7 @@ pub(super) fn ManageMenu() -> Element {
                             onclick: move |_| reading.pick(&app, target.clone(), &item),
                             span { class: "check",
                                 if checked {
-                                    svg { width: "14", height: "14", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2.5", stroke_linecap: "round", stroke_linejoin: "round",
-                                        path { d: "M20 6 9 17l-5-5" }
-                                    }
+                                    Icon { size: 14, stroke: "2.5", paths: CHECK }
                                 }
                             }
                             span { class: "name", "{label}" }
@@ -490,6 +489,15 @@ pub(super) fn AddFeed() -> Element {
     let mut new_folder = use_signal(String::new);
     let mut error = use_signal(|| None::<String>);
     let folders = (reading.library)().folders;
+    // The folder dropdown's choices: none, the folders, and a new one.
+    let folder_ids: Vec<String> = std::iter::once(String::new())
+        .chain(folders.iter().map(|f| f.id.clone()))
+        .chain(std::iter::once(NEW_FOLDER.to_owned()))
+        .collect();
+    let folder_labels: Vec<String> = std::iter::once(t("addFeed.noFolder"))
+        .chain(folders.iter().map(|f| f.title.clone()))
+        .chain(std::iter::once(t("addFeed.newFolderOption")))
+        .collect();
 
     let mut submit = move |app: Arc<App>| {
         let Some(account) = reading.account.peek().clone() else {
@@ -598,16 +606,15 @@ pub(super) fn AddFeed() -> Element {
                     }
                     label {
                         span { {t("addFeed.folder")} }
-                        div { class: "select",
-                            select {
-                                onchange: move |e| folder.set(e.value()),
-                                option { value: "", selected: folder().is_empty(), {t("addFeed.noFolder")} }
-                                for f in folders {
-                                    option { key: "{f.id}", value: "{f.id}", selected: folder() == f.id, "{f.title}" }
+                        Dropdown {
+                            label: t("addFeed.folder"),
+                            choices: folder_labels,
+                            selected: folder_ids.iter().position(|id| *id == folder()).unwrap_or(0),
+                            onchange: move |i: usize| {
+                                if let Some(id) = folder_ids.get(i) {
+                                    folder.set(id.clone());
                                 }
-                                option { value: NEW_FOLDER, selected: folder() == NEW_FOLDER, {t("addFeed.newFolderOption")} }
-                            }
-                            Icon { size: 14, stroke: "2", paths: CHEVRONS_UP_DOWN }
+                            },
                         }
                     }
                     if folder() == NEW_FOLDER {

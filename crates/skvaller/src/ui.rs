@@ -25,7 +25,7 @@ use crate::add_account::AddAccount;
 use crate::article;
 use crate::fonts;
 use crate::i18n::{t, t_count, t_with};
-use crate::icons::{CHEVRON_DOWN, CHEVRON_RIGHT, Icon, LAYERS, PANEL_LEFT, SETTINGS};
+use crate::icons::{CHECK, CHEVRON_DOWN, CHEVRON_RIGHT, Icon, LAYERS, PANEL_LEFT, SETTINGS};
 use crate::live::{Live, use_live};
 use crate::settings::{Pane as SettingsPane, SettingsWindow};
 use crate::shortcuts::{ARROWS, Action, key_name};
@@ -1818,7 +1818,7 @@ fn AccountSwitcher() -> Element {
                 }
             }
             if let Some(at) = menu {
-                div { class: "menu popover", role: "menu", aria_label: t("accounts.menu"),
+                div { class: "menu popover sidebar-popover", role: "menu", aria_label: t("accounts.menu"),
                     onclick: move |e| e.stop_propagation(),
                     for (i , account) in accounts.into_iter().enumerate() {
                         {
@@ -1836,9 +1836,7 @@ fn AccountSwitcher() -> Element {
                                     onclick: move |_| reading.switch_account(&app, &id),
                                     span { class: "check",
                                         if checked {
-                                            svg { width: "14", height: "14", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2.5", stroke_linecap: "round", stroke_linejoin: "round",
-                                                path { d: "M20 6 9 17l-5-5" }
-                                            }
+                                            Icon { size: 14, stroke: "2.5", paths: CHECK }
                                         }
                                     }
                                     span { class: "name", "{account.description}" }

@@ -10,6 +10,7 @@
 mod add_account;
 mod article;
 mod dates;
+mod dropdown;
 mod fonts;
 mod i18n;
 mod icons;

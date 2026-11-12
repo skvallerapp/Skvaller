@@ -588,12 +588,9 @@ button {
   margin: auto;
 }
 
-/* Account switcher */
+/* Menus: the account menu, the feed and folder menus, and a dropdown's list. */
 
 .menu {
-  top: 40px;
-  left: 8px;
-  right: 8px;
   padding: 5px;
 }
 
@@ -625,6 +622,7 @@ button {
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
+  text-overflow: ellipsis;
   font-weight: 500;
 }
 
@@ -702,18 +700,20 @@ button {
 }
 
 
-/* Drawn with the theme's colors instead of the platform's. */
-.select {
-  position: relative;
+/* A dropdown, drawn like the app's menus instead of with Blitz's own <select> list.
+   dropdown.rs places the list from these sizes: keep them in step. */
+.dropdown {
   display: inline-flex;
   min-width: 0;
 }
 
-.select select {
-  appearance: none;
+.dropdown-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
   height: 26px;
-  padding: 0 28px 0 10px;
+  padding: 0 8px 0 10px;
   border: 0;
   border-radius: 6px;
   background: var(--active);
@@ -721,21 +721,46 @@ button {
   color: var(--text);
 }
 
-.select option {
-  background: var(--reader-bg);
-  color: var(--text);
+.dropdown-button .label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: left;
 }
 
-.select svg {
-  position: absolute;
-  top: 6px;
-  right: 8px;
+.dropdown-button svg {
+  flex: none;
   color: var(--text-2);
-  pointer-events: none;
+}
+
+/* Over the whole window: a click or wheel turn outside the list closes it. Its row
+   holds a spacer and the list, inside the side margins (dropdown.rs MARGIN). */
+.dropdown-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: flex-start;
+  padding: 0 8px;
+}
+
+.dropdown-list {
+  position: static;
+  flex: none;
+  max-width: 100%;
+  overflow-y: auto;
+}
+
+/* The rows in the button's weight. */
+.dropdown-list .menu-item .name {
+  font-weight: inherit;
 }
 
 /* Add Feed, the question before removing a feed or folder, and the feed and folder
-   menus. The first two hang from the sidebar's toolbar, as the account menu does. */
+   menus. The first two hang from the sidebar's toolbar, as the account menu does,
+   with the same class. */
 
 .sidebar-popover {
   top: 40px;
@@ -790,14 +815,13 @@ input.rename:focus {
   outline-offset: -1px;
 }
 
-.add-feed-form .select select {
-  flex: 1;
-  height: 28px;
+.add-feed-form .dropdown {
   font-weight: 400;
 }
 
-.add-feed-form .select svg {
-  top: 7px;
+.add-feed-form .dropdown-button {
+  flex: 1;
+  height: 28px;
 }
 
 .add-feed-form .error {
@@ -819,7 +843,6 @@ input.rename {
 
 /* At the pointer: its place is set on the element. */
 .menu.context-menu {
-  right: auto;
   width: 220px;
   z-index: 20;
 }

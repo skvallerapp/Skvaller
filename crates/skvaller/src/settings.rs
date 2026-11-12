@@ -23,11 +23,11 @@ use tokio::sync::Notify;
 use crate::add_account::AddAccount;
 use crate::article;
 use crate::dates::Dates;
+use crate::dropdown::Dropdown;
 use crate::fonts;
 use crate::i18n::{sentence, t, t_count, t_with};
 use crate::icons::{
-    BOOK_OPEN, CHEVRON_LEFT, CHEVRON_RIGHT, CHEVRONS_UP_DOWN, CIRCLE_USER, Icon, KEYBOARD, PALETTE,
-    PLUS,
+    BOOK_OPEN, CHEVRON_LEFT, CHEVRON_RIGHT, CIRCLE_USER, Icon, KEYBOARD, PALETTE, PLUS,
 };
 use crate::live::use_live;
 use crate::shortcuts::{self, Action, Capture, Refusal};
@@ -1167,23 +1167,22 @@ fn Select(
     #[props(default)] other: String,
     onchange: EventHandler<usize>,
 ) -> Element {
+    // `other` goes first, so the choices' indexes are one further along. Picking it
+    // again doesn't reach `onchange`, as it is the current choice.
+    let (choices, selected, shift) = match selected {
+        Some(i) => (choices, i, 0),
+        None => (std::iter::once(other).chain(choices).collect(), 0, 1),
+    };
     rsx! {
-        div { class: "select",
-            select {
-                aria_label: label,
-                onchange: move |e| {
-                    if let Ok(i) = e.value().parse::<usize>() {
-                        onchange.call(i);
-                    }
-                },
-                if selected.is_none() {
-                    option { value: "other", selected: true, "{other}" }
+        Dropdown {
+            label,
+            choices,
+            selected,
+            onchange: move |i: usize| {
+                if let Some(i) = i.checked_sub(shift) {
+                    onchange.call(i);
                 }
-                for (i , choice) in choices.iter().enumerate() {
-                    option { key: "{i}", value: "{i}", selected: Some(i) == selected, "{choice}" }
-                }
-            }
-            Icon { size: 14, stroke: "2", paths: CHEVRONS_UP_DOWN }
+            },
         }
     }
 }

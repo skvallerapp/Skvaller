@@ -165,7 +165,7 @@
 }
 
 /* A setting's dropdown leaves room for its label. */
-.settings .select {
+.settings .dropdown {
   max-width: 60%;
 }
 

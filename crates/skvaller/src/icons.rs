@@ -39,6 +39,7 @@ pub const CIRCLE_USER: &[&str] = &[
     "M15 10a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
     "M7 20.662V19a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v1.662",
 ];
+pub const CHECK: &[&str] = &["M20 6 9 17l-5-5"];
 pub const CHEVRONS_UP_DOWN: &[&str] = &["m7 15 5 5 5-5", "m7 9 5-5 5 5"];
 pub const CHEVRON_DOWN: &[&str] = &["m6 9 6 6 6-6"];
 pub const CHEVRON_LEFT: &[&str] = &["m15 18-6-6 6-6"];
