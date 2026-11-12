@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn feeds_and_folders_change_in_the_cache_and_its_backup() {
         let (_tmp, dirs) = dirs();
-        import_local(&dirs, OPML).unwrap();
+        import_local(&dirs, OPML.as_bytes()).unwrap();
         let app = App::load(&dirs).unwrap();
         let (id, feed) = local(&app);
         let watch = app.watch_config();
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn an_empty_title_is_refused() {
         let (_tmp, dirs) = dirs();
-        import_local(&dirs, OPML).unwrap();
+        import_local(&dirs, OPML.as_bytes()).unwrap();
         let app = App::load(&dirs).unwrap();
         let (id, feed) = local(&app);
 

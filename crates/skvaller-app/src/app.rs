@@ -662,15 +662,15 @@ impl App {
     }
 }
 
-/// Adds feeds from OPML to the local account, adding that account if there is none.
+/// Adds feeds from an OPML file to the local account, adding that account if there is none.
 ///
 /// For testing on a machine without accounts. Run it before [`App::load`], with no app
 /// running on the same folders.
 ///
 /// # Errors
 ///
-/// As [`App::load`], and [`Error::Core`] when the OPML can't be read or stored.
-pub fn import_local(dirs: &Dirs, opml: &str) -> Result<ImportReport> {
+/// As [`App::load`], and [`Error::Core`] when the file isn't OPML or can't be stored.
+pub fn import_local(dirs: &Dirs, opml: &[u8]) -> Result<ImportReport> {
     Ok(import_opml(&local_db(dirs)?, opml)?)
 }
 
@@ -840,7 +840,9 @@ fn restore_feeds(dir: &Path, account_id: &str, db: &Db) {
     let restored = match std::fs::read_to_string(feeds_backup_path(dir, account_id)) {
         // A backup of no feeds, which the OPML reader doesn't take, restores nothing.
         Ok(xml) if !xml.contains("<outline") => Ok(()),
-        Ok(xml) => import_opml(db, &xml).map(drop).map_err(|e| e.to_string()),
+        Ok(xml) => import_opml(db, xml.as_bytes())
+            .map(drop)
+            .map_err(|e| e.to_string()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.to_string()),
     };
@@ -939,7 +941,7 @@ pub(crate) mod tests {
         let opml = r#"<opml version="2.0"><body>
             <outline text="A" type="rss" xmlUrl="https://a.example/feed"/>
         </body></opml>"#;
-        import_local(&dirs, opml).unwrap();
+        import_local(&dirs, opml.as_bytes()).unwrap();
         let app = App::load(&dirs).unwrap();
         let id = app.accounts()[0].id.clone();
         let change = |c: AccountChange| app.update_account(&id, &c).unwrap();
@@ -969,8 +971,8 @@ pub(crate) mod tests {
             <outline text="A" type="rss" xmlUrl="https://a.example/feed"/>
         </body></opml>"#;
 
-        import_local(&dirs, opml).unwrap();
-        import_local(&dirs, opml).unwrap();
+        import_local(&dirs, opml.as_bytes()).unwrap();
+        import_local(&dirs, opml.as_bytes()).unwrap();
 
         let app = App::load(&dirs).unwrap();
         let accounts = app.accounts();

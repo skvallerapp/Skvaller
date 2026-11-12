@@ -59,8 +59,7 @@ fn run() -> Result<(), String> {
             eprintln!("seeded {stored} test articles");
         } else if flag == "--import-opml" {
             let path = args.next().ok_or("--import-opml needs a file")?;
-            let opml = std::fs::read_to_string(&path)
-                .map_err(|e| format!("reading {path} failed: {e}"))?;
+            let opml = std::fs::read(&path).map_err(|e| format!("reading {path} failed: {e}"))?;
             let report = import_local(&dirs, &opml).map_err(|e| e.to_string())?;
             eprintln!("imported from {path}: {report:?}");
         } else {

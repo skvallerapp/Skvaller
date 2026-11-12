@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use encoding_rs::{Encoding, UTF_8};
 use opml::{Body, Head, OPML, Outline};
 use reqwest::Url;
 use serde::Serialize;
@@ -98,10 +99,39 @@ pub fn export(db: &Db, title: &str) -> Result<String> {
         .map_err(|e| Error::Local(format!("writing OPML failed: {e}")))
 }
 
-/// Adds the feeds of an OPML document, in their folders. Folders inside folders count
-/// as the outermost one: Skvaller has one level. Feeds are not fetched here; the next
+/// The text of an XML file: decoded by its byte order mark, else by the encoding its
+/// `<?xml?>` declaration names, else as UTF-8.
+fn decode(bytes: &[u8]) -> String {
+    // `decode` lets a byte order mark win over the encoding given and strips it, and
+    // replaces bytes that aren't the encoding's with U+FFFD.
+    declared(bytes)
+        .unwrap_or(UTF_8)
+        .decode(bytes)
+        .0
+        .into_owned()
+}
+
+/// The encoding the `<?xml?>` declaration at the start of `bytes` names, if it names one.
+fn declared(bytes: &[u8]) -> Option<&'static Encoding> {
+    let rest = bytes.strip_prefix(b"<?xml")?;
+    let end = rest.windows(2).position(|w| w == b"?>")?;
+    let declaration = std::str::from_utf8(&rest[..end]).ok()?;
+    let value = declaration.split_once("encoding")?.1.trim_start();
+    let value = value.strip_prefix('=')?.trim_start();
+    let quote = value.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+    let name = value[1..].split(quote).next()?;
+    // A declaration that reads as ASCII isn't in UTF-16: such a file is UTF-8.
+    Encoding::for_label(name.as_bytes()).map(Encoding::output_encoding)
+}
+
+/// Adds the feeds of an OPML file, in their folders. Folders inside folders count as
+/// the outermost one: Skvaller has one level. Feeds are not fetched here; the next
 /// refresh does that.
-pub fn import(db: &Db, xml: &str) -> Result<ImportReport> {
+///
+/// The file is decoded by its byte order mark, else by the encoding its XML declaration
+/// names, else as UTF-8: older readers export in ISO-8859-1 or UTF-16.
+pub fn import(db: &Db, bytes: &[u8]) -> Result<ImportReport> {
+    let xml = &decode(bytes);
     // The parser recurses per level: a crafted file nested thousands deep would
     // overflow the stack and end the app.
     if depth(xml) > MAX_DEPTH {
@@ -225,7 +255,7 @@ mod tests {
     fn importing_adds_feeds_in_one_level_of_folders() {
         let db = Db::open_in_memory().unwrap();
 
-        let report = import(&db, DOC).unwrap();
+        let report = import(&db, DOC.as_bytes()).unwrap();
 
         assert_eq!(
             report,
@@ -261,13 +291,13 @@ mod tests {
 
         // Again: nothing new.
         assert_eq!(
-            import(&db, DOC).unwrap(),
+            import(&db, DOC.as_bytes()).unwrap(),
             ImportReport {
                 added: 0,
                 skipped: 4
             }
         );
-        assert!(import(&db, "<html></html>").is_err());
+        assert!(import(&db, b"<html></html>").is_err());
     }
 
     #[test]
@@ -278,14 +308,17 @@ mod tests {
             "</outline>".repeat(5000)
         );
         let db = Db::open_in_memory().unwrap();
-        assert!(matches!(import(&db, &deep), Err(Error::Local(_))));
+        assert!(matches!(import(&db, deep.as_bytes()), Err(Error::Local(_))));
         // End tags in comments don't hide the depth.
         let hidden = format!(
             "<opml version=\"2.0\"><body>{}{}</body></opml>",
             "<outline text=\"x\"><!--</outline>-->".repeat(5000),
             "</outline>".repeat(5000)
         );
-        assert!(matches!(import(&db, &hidden), Err(Error::Local(_))));
+        assert!(matches!(
+            import(&db, hidden.as_bytes()),
+            Err(Error::Local(_))
+        ));
         // A > in a value is no end of the tag.
         let arrows = format!(
             "<opml version=\"2.0\"><body>{}</body></opml>",
@@ -293,13 +326,13 @@ mod tests {
                 .map(|i| format!("<outline text=\"A > {i}\" xmlUrl=\"https://a.example/{i}\"/>"))
                 .collect::<String>()
         );
-        assert_eq!(import(&db, &arrows).unwrap().added, 150);
+        assert_eq!(import(&db, arrows.as_bytes()).unwrap().added, 150);
 
         // A folder only with a feed in it.
         let other = Db::open_in_memory().unwrap();
         let empty = r#"<opml version="2.0"><body><outline text="Empty"><outline text=""/></outline>
             <outline text="Bad"><outline xmlUrl="file:///x"/></outline></body></opml>"#;
-        import(&other, empty).unwrap();
+        import(&other, empty.as_bytes()).unwrap();
         assert!(other.folders().unwrap().is_empty());
         // Many feeds side by side are not deep.
         let flat = format!(
@@ -309,18 +342,18 @@ mod tests {
                 .collect::<String>()
         );
         assert_eq!(depth(&flat), 4);
-        assert_eq!(import(&db, &flat).unwrap().added, 500);
+        assert_eq!(import(&db, flat.as_bytes()).unwrap().added, 500);
     }
 
     #[test]
     fn an_export_imports_back_the_same() {
         let db = Db::open_in_memory().unwrap();
-        import(&db, DOC).unwrap();
+        import(&db, DOC.as_bytes()).unwrap();
 
         let xml = export(&db, "Local").unwrap();
         let other = Db::open_in_memory().unwrap();
         assert_eq!(
-            import(&other, &xml).unwrap(),
+            import(&other, xml.as_bytes()).unwrap(),
             ImportReport {
                 added: 3,
                 skipped: 0
@@ -346,5 +379,58 @@ mod tests {
         };
         assert_eq!(summary(&db), summary(&other));
         assert!(xml.contains("<title>Local</title>"));
+    }
+
+    #[test]
+    fn a_file_is_read_in_the_encoding_it_declares() {
+        let doc = |encoding: &str| {
+            format!(
+                "<?xml version=\"1.0\" encoding=\"{encoding}\"?><opml version=\"1.0\"><body>\
+                 <outline text=\"Café Ölstuga\" xmlUrl=\"https://cafe.example/rss\"/></body></opml>"
+            )
+        };
+        let title = |bytes: &[u8]| {
+            let db = Db::open_in_memory().unwrap();
+            assert_eq!(import(&db, bytes).unwrap().added, 1);
+            db.feeds().unwrap().remove(0).title
+        };
+
+        let latin1 = encoding_rs::WINDOWS_1252
+            .encode(&doc("ISO-8859-1"))
+            .0
+            .into_owned();
+        assert_eq!(title(&latin1), "Café Ölstuga");
+
+        let mut utf16 = vec![0xFF, 0xFE];
+        utf16.extend(doc("UTF-16").encode_utf16().flat_map(u16::to_le_bytes));
+        assert_eq!(title(&utf16), "Café Ölstuga");
+
+        let utf8_bom = [b"\xEF\xBB\xBF".as_slice(), doc("UTF-8").as_bytes()].concat();
+        assert_eq!(title(&utf8_bom), "Café Ölstuga");
+
+        // No BOM: the declaration's UTF-16 can't be right, so it's UTF-8.
+        assert_eq!(title(doc("UTF-16").as_bytes()), "Café Ölstuga");
+
+        // Bytes that aren't UTF-8, undeclared: imported, with U+FFFD in their place.
+        let undeclared = doc("ISO-8859-1").replace(r#" encoding="ISO-8859-1""#, "");
+        let bad = encoding_rs::WINDOWS_1252.encode(&undeclared).0.into_owned();
+        assert_eq!(title(&bad), "Caf\u{FFFD} \u{FFFD}lstuga");
+    }
+
+    #[test]
+    fn the_declaration_names_the_encoding() {
+        assert_eq!(
+            declared(b"<?xml version='1.0' encoding='windows-1252'?>"),
+            Some(encoding_rs::WINDOWS_1252)
+        );
+        assert_eq!(
+            declared(b"<?xml version=\"1.0\" encoding = \"latin1\" ?><opml/>"),
+            Some(encoding_rs::WINDOWS_1252)
+        );
+        assert_eq!(
+            declared(b"<?xml version=\"1.0\"?><opml encoding=\"latin1\"/>"),
+            None
+        );
+        assert_eq!(declared(b"<opml/>"), None);
     }
 }

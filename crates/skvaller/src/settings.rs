@@ -865,8 +865,7 @@ fn AccountPane(
                 else {
                     return;
                 };
-                let xml = String::from_utf8_lossy(&file.read().await).into_owned();
-                match app.import_opml(&id, &xml) {
+                match app.import_opml(&id, file.path()) {
                     Ok(report) => {
                         note.set(Some(import_note(&report)));
                         feedback.clear();

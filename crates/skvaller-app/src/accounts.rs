@@ -4,6 +4,8 @@
 //! Each change saves config.json first and only then takes, and tells every window
 //! through [`App::watch_config`].
 
+use std::io::Read;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -12,10 +14,10 @@ use tracing::Level;
 
 use crate::app::{App, Runtime, default_description, lock, read, remove_db_files, stop, write};
 use crate::config::{Account, AccountKind, Config, DEFAULT_KEEP_UNREAD_DAYS, SyncSchedule};
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, io};
 
 /// The largest OPML file read: far more than any real subscription list.
-const MAX_OPML_BYTES: usize = 10 * 1024 * 1024;
+const MAX_OPML_BYTES: u64 = 10 * 1024 * 1024;
 
 impl App {
     /// Signs in to a Google Reader API server, saves the token in the keychain, and
@@ -241,22 +243,27 @@ impl App {
         Ok(())
     }
 
-    /// Adds the feeds of an OPML file's text to the local account, then syncs it to
-    /// fetch them.
+    /// Adds the feeds of an OPML file to the local account, then syncs it to fetch them.
     ///
     /// # Errors
     ///
     /// [`Error::NotLocal`] for a sync account, whose server keeps its subscriptions;
-    /// [`Error::NoAccount`] or [`Error::Broken`] for an account without a cache; and
-    /// [`Error::Core`] for a file that is too large or not OPML.
-    pub fn import_opml(self: &Arc<Self>, account_id: &str, xml: &str) -> Result<ImportReport> {
+    /// [`Error::NoAccount`] or [`Error::Broken`] for an account without a cache;
+    /// [`Error::Io`] for a file that can't be read; and [`Error::Core`] for a file that
+    /// is too large or not OPML.
+    pub fn import_opml(self: &Arc<Self>, account_id: &str, path: &Path) -> Result<ImportReport> {
         let rt = self.local(account_id)?;
-        if xml.len() > MAX_OPML_BYTES {
+        // One byte past the limit tells a file that is too large, without reading it all.
+        let mut file = Vec::new();
+        let read = std::fs::File::open(path)
+            .and_then(|f| f.take(MAX_OPML_BYTES + 1).read_to_end(&mut file))
+            .map_err(io("Reading", path))?;
+        if read as u64 > MAX_OPML_BYTES {
             return Err(Error::Core(skvaller_core::Error::Local(
                 "the file is too large for an OPML file".into(),
             )));
         }
-        let report = import_opml(&rt.db, xml)?;
+        let report = import_opml(&rt.db, &file)?;
         self.back_up_feeds(&rt);
         if report.added > 0 {
             self.sync_soon(rt);
@@ -296,6 +303,13 @@ mod tests {
         <outline text="A" type="rss" xmlUrl="https://a.example/feed"/>
     </body></opml>"#;
 
+    /// `contents` written to a file in `dir`.
+    fn file(dir: &tempfile::TempDir, contents: &[u8]) -> std::path::PathBuf {
+        let path = dir.path().join("subscriptions.opml");
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
     #[test]
     fn the_local_account_is_added_once_and_made_active() {
         let (_tmp, dirs) = dirs();
@@ -314,11 +328,11 @@ mod tests {
 
     #[test]
     fn opml_goes_into_the_local_account_and_back_out() {
-        let (_tmp, dirs) = dirs();
+        let (tmp, dirs) = dirs();
         let app = Arc::new(App::load(&dirs).unwrap());
         let id = app.add_local_account().unwrap();
 
-        let report = app.import_opml(&id, OPML).unwrap();
+        let report = app.import_opml(&id, &file(&tmp, OPML.as_bytes())).unwrap();
         let (xml, name) = app.export_opml(&id).unwrap();
 
         assert_eq!(report.added, 1);
@@ -326,12 +340,27 @@ mod tests {
         assert_eq!(name, "Local Subscriptions.opml");
     }
 
-    #[tokio::test]
-    async fn a_removed_account_loses_its_cache_and_the_next_becomes_active() {
-        let (_tmp, dirs) = dirs();
+    #[test]
+    fn a_file_too_large_or_missing_is_refused() {
+        let (tmp, dirs) = dirs();
         let app = Arc::new(App::load(&dirs).unwrap());
         let id = app.add_local_account().unwrap();
-        app.import_opml(&id, OPML).unwrap();
+        let mut large = OPML.as_bytes().to_vec();
+        large.resize(usize::try_from(MAX_OPML_BYTES).unwrap() + 1, b' ');
+
+        let too_large = app.import_opml(&id, &file(&tmp, &large));
+        let missing = app.import_opml(&id, &tmp.path().join("missing.opml"));
+
+        assert!(matches!(too_large, Err(Error::Core(_))));
+        assert!(matches!(missing, Err(Error::Io { .. })));
+    }
+
+    #[tokio::test]
+    async fn a_removed_account_loses_its_cache_and_the_next_becomes_active() {
+        let (tmp, dirs) = dirs();
+        let app = Arc::new(App::load(&dirs).unwrap());
+        let id = app.add_local_account().unwrap();
+        app.import_opml(&id, &file(&tmp, OPML.as_bytes())).unwrap();
         let cache = db_path(&app.accounts_dir, &id);
         assert!(cache.exists());
 
