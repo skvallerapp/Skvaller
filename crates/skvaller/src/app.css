@@ -221,6 +221,44 @@ button {
   flex: none;
 }
 
+/* macOS: no title bar (chrome.rs). The window buttons sit in the top 52px, where
+   macOS's unified title bar centers them, so the toolbars are as tall. */
+.root.mac {
+  --toolbar-height: 52px;
+}
+
+/* The window drags from the toolbars' and headers' empty space: chrome.rs's layer,
+   first in each, over their text. Their controls are positioned too, so they paint
+   above it in tree order and a press on one stays the control's. No z-index: a
+   stacking context would trap the toolbars' popovers or escape the sidebar's clip. */
+.drag-area {
+  position: absolute;
+  inset: 0;
+}
+
+.mac .toolbar,
+.mac header.account,
+.mac.settings main > header,
+.mac .toolbar button,
+.mac.settings main > header button {
+  position: relative;
+}
+
+/* Where there is no toolbar: a strip where the title bar was, to drag by. */
+.drag-strip {
+  position: relative;
+  flex: none;
+  height: var(--toolbar-height);
+}
+
+/* Over the add-account screen, under its account switcher, which comes later. */
+.add-account-screen .drag-strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
 /* Sidebar */
 
 /* Holds the sidebar while it slides open or closed: ui.rs sets its width, from 0 to
@@ -475,6 +513,13 @@ button {
 
 .list .toolbar {
   border-bottom: 1px solid var(--separator);
+  /* Same timing as the sidebar, so the toggle never slides under the window buttons. */
+  transition: padding-left 180ms ease;
+}
+
+/* Room for macOS's window buttons while the sidebar is hidden. */
+.mac .list.no-sidebar .toolbar {
+  padding-left: 84px;
 }
 
 /* The list's title, with its unread count under it. */
@@ -956,9 +1001,14 @@ button {
    with the same class. */
 
 .sidebar-popover {
-  top: 40px;
+  top: calc(var(--toolbar-height) - 4px);
   left: 8px;
   right: 8px;
+}
+
+/* Under its button, which isn't in a toolbar there. */
+.other-accounts .sidebar-popover {
+  top: 40px;
 }
 
 .confirm.sidebar-popover {

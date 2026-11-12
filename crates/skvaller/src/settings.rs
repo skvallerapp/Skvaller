@@ -22,6 +22,7 @@ use tokio::sync::Notify;
 
 use crate::add_account::AddAccount;
 use crate::article;
+use crate::chrome::{self, DragArea, MAC};
 use crate::dates::Dates;
 use crate::dropdown::Dropdown;
 use crate::fonts;
@@ -60,10 +61,12 @@ impl SettingsWindow {
             window.focus_window();
             return;
         }
-        let attributes = WindowAttributes::default()
-            .with_title(t("settings.label"))
-            .with_surface_size(LogicalSize::new(720.0, 520.0))
-            .with_min_surface_size(LogicalSize::new(MIN_WIDTH, MIN_HEIGHT));
+        let attributes = chrome::frame(
+            WindowAttributes::default()
+                .with_title(t("settings.label"))
+                .with_surface_size(LogicalSize::new(720.0, 520.0))
+                .with_min_surface_size(LogicalSize::new(MIN_WIDTH, MIN_HEIGHT)),
+        );
         let vdom = VirtualDom::new(SettingsRoot)
             .with_root_context(Arc::clone(app))
             .with_root_context(self.clone());
@@ -194,6 +197,7 @@ fn SettingsRoot() -> Element {
         style { {SETTINGS_CSS} }
         div {
             class: "root settings",
+            class: if MAC { "mac" },
             "data-theme": theme,
             "data-motion": motion,
             style: ui_font,
@@ -210,6 +214,10 @@ fn SettingsRoot() -> Element {
                 }
             },
             nav { aria_label: t("settings.label"),
+                if MAC {
+                    // Where the title bar was: room for the window buttons, to drag by.
+                    div { class: "drag-strip", DragArea {} }
+                }
                 ul {
                     NavRow { pane: Pane::Appearance, current: pane, label: t("settings.appearance"), icon: PALETTE }
                     NavRow { pane: Pane::Reading, current: pane, label: t("settings.reading"), icon: BOOK_OPEN }
@@ -224,6 +232,7 @@ fn SettingsRoot() -> Element {
             }
             main {
                 header {
+                    DragArea {}
                     if let (Pane::ReaderView(id), Some(a)) = (&current, &account) {
                         button {
                             class: "back",
@@ -614,9 +623,6 @@ fn ReadingPane(settings: Settings, feedback: Feedback) -> Element {
         }
     }
 }
-
-/// Whether keys show as macOS names them, such as ⇧ for Shift.
-const MAC: bool = cfg!(target_os = "macos");
 
 /// Each action and its key, as the Tauri version's `ShortcutList`.
 ///

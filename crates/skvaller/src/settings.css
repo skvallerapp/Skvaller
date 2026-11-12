@@ -18,7 +18,7 @@
   list-style: none;
 }
 
-.settings nav ul:first-child {
+.settings nav ul:first-of-type {
   flex: 1;
 }
 
@@ -91,6 +91,16 @@
 .settings header {
   flex: none;
   padding: 20px 28px 8px;
+}
+
+/* Below where the title bar was, on macOS (chrome.rs). */
+.mac.settings main > header {
+  padding-top: var(--toolbar-height);
+}
+
+/* The nav's drag strip stands in for its top padding. */
+.mac.settings nav {
+  padding-top: 0;
 }
 
 .settings h1 {

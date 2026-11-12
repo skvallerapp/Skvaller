@@ -9,6 +9,7 @@ use std::sync::Arc;
 use dioxus_native::prelude::*;
 use skvaller_app::{Account, AccountKind, App};
 
+use crate::chrome::{DragArea, MAC};
 use crate::i18n::{sentence, t, t_with};
 use crate::icons::{CHEVRON_LEFT, CHEVRON_RIGHT, Icon, LAPTOP, RSS};
 
@@ -153,6 +154,11 @@ pub fn AddAccount(
 
     rsx! {
         style { {ADD_ACCOUNT_CSS} }
+        if !embedded && MAC {
+            // The title bar is hidden: an empty strip to drag the window by, over
+            // the top of the screen only, so the rest stays selectable and scrollable.
+            div { class: "drag-strip", DragArea {} }
+        }
         div { class: if embedded { "add-account embedded" } else { "add-account" },
             div { class: "column",
                 if let Some(service) = again_service {

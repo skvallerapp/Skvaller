@@ -23,6 +23,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::add_account::AddAccount;
 use crate::article;
+use crate::chrome::{DragArea, MAC};
 use crate::fonts;
 use crate::i18n::{t, t_count, t_with};
 use crate::icons::{CHECK, CHEVRON_RIGHT, Icon, LAYERS, PANEL_LEFT, SETTINGS};
@@ -1303,7 +1304,6 @@ pub fn Root() -> Element {
     let adding = !reading.panes_shown();
     // Each part reads only what it shows, so a drag re-renders only what it resizes.
     let dragging = use_memo(move || reading.drag.read().is_some())();
-    let root_class = if dragging { "root resizing" } else { "root" };
     let drag_app = Arc::clone(&app);
     let settings_now = live.settings.read();
     let theme = article::theme_name(settings_now.theme);
@@ -1317,7 +1317,9 @@ pub fn Root() -> Element {
         // and a click keeps focus on the nearest focusable ancestor, so every key the
         // window gets passes through here. -1 keeps the root out of the Tab order.
         div {
-            class: root_class,
+            class: "root",
+            class: if dragging { "resizing" },
+            class: if MAC { "mac" },
             "data-theme": theme,
             "data-motion": motion,
             style: ui_font,
@@ -1728,6 +1730,7 @@ fn Sidebar() -> Element {
     rsx! {
         nav { class, aria_label: t("sidebar.label"), style: "width: {sidebar_width}px",
             div { class: "toolbar",
+                DragArea {}
                 if local {
                     AddFeed {}
                 }
@@ -1755,6 +1758,7 @@ fn Sidebar() -> Element {
                 }
             }
             header { class: "account",
+                DragArea {}
                 h1 { "{title}" }
                 p { class: if status_line.1 { "failed" } else { "" }, "{status_line.0}" }
             }
@@ -2369,7 +2373,6 @@ fn ArticleList() -> Element {
     let sidebar_open = use_memo(move || reading.layout.read().sidebar_open)();
     let list_width = use_memo(move || reading.layout.read().list_width)();
     let active = use_memo(move || reading.active_pane())() == Pane::List;
-    let class = if active { "list active" } else { "list" };
     let confirm_app = Arc::clone(&app);
     let toggle_app = Arc::clone(&app);
     let toggle_label = if sidebar_open {
@@ -2379,9 +2382,16 @@ fn ArticleList() -> Element {
     };
 
     rsx! {
-        section { class, aria_label: t("list.label"), style: "width: {list_width}px",
+        section {
+            class: "list",
+            class: if active { "active" },
+            // Without the sidebar, the toolbar makes room for macOS's window buttons.
+            class: if MAC && !sidebar_open { "no-sidebar" },
+            aria_label: t("list.label"),
+            style: "width: {list_width}px",
             onmounted: move |e: MountedEvent| list_pane.set(Some(e.data())),
             div { class: "toolbar",
+                DragArea {}
                 button {
                     class: "icon-button",
                     aria_label: toggle_label.clone(),
@@ -2723,6 +2733,7 @@ fn Reader() -> Element {
     rsx! {
         section { class: "reader", aria_label: t("reader.label"),
             div { class: "toolbar",
+                DragArea {}
                 if let Some(a) = open {
                     ReaderButtons { article: a }
                 }

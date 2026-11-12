@@ -78,6 +78,9 @@ The windows, in Dioxus Native (Blitz).
 - `article`: the reader's `<iframe srcdoc>` document.
 - `thumbs`: serves cached thumbnails to `<img>` through `thumb:` URLs.
 - `live`: each window's view of the settings, following `watch_config()`.
+- `chrome`: the windows' frame. On macOS the title bar is hidden: the window buttons
+  sit over the toolbars, which grow to the title bar's 52px, and the window drags from
+  their empty space. Windows and Linux keep the system's title bar.
 - `i18n`, `dates`, `fonts`, `icons`, `shortcuts`: text, date formats, font stacks,
   icons and key bindings.
 
