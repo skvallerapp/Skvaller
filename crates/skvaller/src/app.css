@@ -249,9 +249,10 @@ button {
   /* A flex item grows to its content otherwise, and never scrolls. */
   min-height: 0;
   overflow-y: auto;
+  /* Its top is ui.rs's SIDEBAR_TOP: the highlight is placed from it. */
   padding: 4px 8px 12px;
-  /* Positioned, so Blitz counts its scroll in its items' places, which the arrow keys
-     need to scroll the selected one into view. */
+  /* Positioned, so the selection's highlight is placed in its content and scrolls with
+     its rows. */
   position: relative;
 }
 
@@ -259,6 +260,7 @@ button {
   display: flex;
   align-items: center;
   gap: 8px;
+  /* ui.rs's SIDEBAR_ROW: the highlight is placed from it. */
   height: 28px;
   padding: 0 8px;
   border-radius: 6px;
@@ -313,6 +315,7 @@ button {
 .item .count {
   color: var(--text-3);
   font-size: 12px;
+  transition: color 120ms ease-out;
 }
 
 .active .item.selected .count {
@@ -346,7 +349,11 @@ button {
   transform: rotate(90deg);
 }
 
+/* A fixed height: ui.rs's SIDEBAR_HEADING counts it and its margins to place the
+   selection's highlight. */
 .heading {
+  height: 14px;
+  line-height: 14px;
   margin: 14px 8px 4px;
   font-size: 11px;
   font-weight: 600;
@@ -401,9 +408,10 @@ button {
   top: 2px;
   bottom: 2px;
   left: 2px;
-  /* A third of the inside, less the two 2 px gaps: ui.rs has three views. */
-  width: calc((100% - 8px) / 3);
-  /* ui.rs moves it under the checked button with `transform`. */
+  /* ui.rs sets --count on .views and --index here: one button's width, less the 2 px
+     gaps, and a button and a gap further per view. */
+  width: calc((100% - 4px - (var(--count) - 1) * 2px) / var(--count));
+  transform: translateX(calc(var(--index) * (100% + 2px)));
   border-radius: 6px;
   background: var(--segment-bg);
   box-shadow:
@@ -502,11 +510,11 @@ button {
 }
 
 .confirm {
-  transform-origin: top right;
   top: 34px;
   right: 0;
   width: 240px;
   padding: 14px;
+  transform-origin: top right;
 }
 
 .confirm p {

@@ -69,16 +69,22 @@ const READ_ON_PAGE: f64 = 0.9;
 /// transition. Closing, the sidebar stays in the document this long.
 const SIDEBAR_SLIDE: Duration = Duration::from_millis(180);
 
-/// About one frame at 60 Hz. Opening, the sidebar's slot is drawn this long at no width,
-/// so the change to its width is one Blitz transitions.
-const FRAME: Duration = Duration::from_millis(16);
+/// A frame, at 60 Hz.
+pub(crate) const FRAME: Duration = Duration::from_millis(16);
+/// How many frames to wait at most for a layout Blitz hasn't run yet, as for an element
+/// just mounted: its size and scroll range are 0 until then.
+pub(crate) const LAYOUT_WAITS: u32 = 10;
 
-/// How many frames a sidebar row waits to be laid out before its highlight gives up on
-/// it: a row removed meanwhile never is.
-const MEASURE_TRIES: usize = 5;
+/// A sidebar row's height: app.css's `.item`. The selection's highlight is placed from
+/// these sizes, never by measuring: Blitz may answer a measure before its layout.
+const SIDEBAR_ROW: f64 = 28.0;
+/// The Feeds heading's height and its top and bottom margins: app.css's `.heading`.
+const SIDEBAR_HEADING: f64 = 14.0 + 14.0 + 4.0;
+/// The feeds' top padding: app.css's `.feeds`.
+const SIDEBAR_TOP: f64 = 4.0;
 
-/// The `data-motion` of a window's root: `off` stops app.css's animations and
-/// transitions, as Settings → Animations asks.
+/// The `data-motion` of a window's root or the article's document: `off` stops their
+/// CSS animations and transitions, as Settings → Animations asks.
 pub(crate) fn motion(animations: bool) -> &'static str {
     if animations { "on" } else { "off" }
 }
@@ -1047,7 +1053,11 @@ pub fn Root() -> Element {
                             if report.changed {
                                 revision += 1;
                             }
-                            status.set(Some(report));
+                            // The thumbnails' prefetch reports after each batch, most
+                            // often with nothing new to show: no render then.
+                            if status.peek().as_ref() != Some(&report) {
+                                status.set(Some(report));
+                            }
                         }
                         // Missed some: reload, the latest status follows.
                         Err(RecvError::Lagged(_)) => revision += 1,
@@ -1573,30 +1583,38 @@ fn Sidebar() -> Element {
         sort,
     );
     let sidebar_width = use_memo(move || reading.layout.read().sidebar_width)();
-    let FeedsPane(mut feeds_pane) = use_context_provider(|| FeedsPane(Signal::new(None)));
-    let SidebarHighlight(highlight) = use_context_provider(|| SidebarHighlight(Signal::new(None)));
+    let mut feeds_pane = use_signal(|| None::<Rc<MountedData>>);
     let settle = use_hook(|| Rc::new(RefCell::new(Settle::<Scope>::new())));
-    // None while the selection has no row, as in a collapsed folder.
-    let row_shown = sidebar_scopes(&entries, &reading.collapsed_folders()).contains(&current.scope);
-    let highlight = highlight().filter(|_| row_shown).map(|(scope, place)| {
-        let settles = settle.borrow_mut().settles(scope, place.top);
+    // The selection's row, for the scroll after this render too. None while the selection
+    // has no row, as in a collapsed folder.
+    let selected_row = use_hook(|| Rc::new(std::cell::Cell::new(None::<usize>)));
+    // Counts the scrolls asked for: one still waiting for a layout must not land after a
+    // newer one.
+    let scrolls = use_hook(|| Rc::new(std::cell::Cell::new(0_u64)));
+    let row = sidebar_scopes(&entries, &reading.collapsed_folders())
+        .iter()
+        .position(|s| *s == current.scope);
+    selected_row.set(row);
+    let highlight = row.map(|i| {
+        let place = sidebar_place(i);
+        let settles = settle
+            .borrow_mut()
+            .settles(current.scope.clone(), place.top);
         (highlight_class(settles), place)
     });
-    // Every feed is at the top: selected, as by the arrow keys, it shows the top.
+    // The selection, as by the arrow keys, scrolls into view; every feed, at the top,
+    // shows the top. Blitz scrolls only the window into view, not the feeds' own scroll:
+    // done here, from the row's place as this render found it.
     use_effect(move || {
-        if reading.selection.read().scope != Scope::All {
+        reading.selection.read();
+        let scroll = scrolls.get() + 1;
+        scrolls.set(scroll);
+        let (Some(index), Some(pane)) = (selected_row.get(), feeds_pane.peek().clone()) else {
             return;
-        }
-        if let Some(pane) = feeds_pane.peek().clone() {
-            spawn(async move {
-                let top = dioxus_html::geometry::PixelsVector2D::new(0.0, 0.0);
-                if let Err(e) = pane.scroll(top, ScrollBehavior::Instant).await {
-                    tracing::warn!("scrolling the sidebar failed: {e}");
-                }
-            });
-        }
+        };
+        let scrolls = Rc::clone(&scrolls);
+        spawn(async move { scroll_into_view(&pane, index, || scrolls.get() == scroll).await });
     });
-
     rsx! {
         nav { class, aria_label: t("sidebar.label"), style: "width: {sidebar_width}px",
             div { class: "toolbar",
@@ -1675,57 +1693,50 @@ fn Sidebar() -> Element {
 
 /// The sidebar and its border while it shows, sliding open and closed.
 ///
-/// Closed, it is removed rather than hidden with CSS: Blitz's layout keeps stale
-/// children of nodes removed under `display: none`. It stays in the document while it
-/// slides closed, and its border goes at once.
+/// The slot stays in the document, at no width while closed, so opening changes its
+/// width from one it had, which Blitz transitions. The sidebar in it is removed once
+/// closed rather than hidden with CSS: Blitz's layout keeps stale children of nodes
+/// removed under `display: none`. Its border goes at once.
 #[component]
 fn SidebarSlot() -> Element {
     let reading = use_context::<Reading>();
     let live = use_context::<Live>();
     let open = use_memo(move || reading.layout.read().sidebar_open);
     let width = use_memo(move || reading.layout.read().sidebar_width)();
-    // In the document, and at its width rather than none.
+    // In the slot: while open, and while sliding closed.
     let open_now = open();
     let mut present = use_signal(move || open_now);
-    let mut wide = use_signal(move || open_now);
+    // Counts the toggles, so a close's delayed removal knows a later one came.
+    let toggles = use_hook(|| Rc::new(std::cell::Cell::new(0_u64)));
     use_effect(move || {
         let open = open();
-        if *present.peek() == open && *wide.peek() == open {
-            return;
-        }
-        if !live.settings.peek().animations {
-            present.set(open);
-            wide.set(open);
-            return;
-        }
-        if open {
-            present.set(true);
-        } else {
-            wide.set(false);
-        }
-        spawn(async move {
-            tokio::time::sleep(if open { FRAME } else { SIDEBAR_SLIDE }).await;
-            // Toggled back meanwhile: that toggle's own task finishes.
-            if reading.layout.peek().sidebar_open != open {
-                return;
+        let toggle = toggles.get() + 1;
+        toggles.set(toggle);
+        if open || !live.settings.peek().animations {
+            if *present.peek() != open {
+                present.set(open);
             }
-            if open {
-                wide.set(true);
-            } else {
+            return;
+        }
+        let toggles = Rc::clone(&toggles);
+        spawn(async move {
+            tokio::time::sleep(SIDEBAR_SLIDE).await;
+            if toggles.get() == toggle {
                 present.set(false);
             }
         });
     });
-    let shown_width = if wide() { width } else { 0.0 };
+    let open = open();
+    let slot_width = if open { width } else { 0.0 };
 
     rsx! {
-        if present() {
-            div { class: "sidebar-slot", style: "width: {shown_width}px",
+        div { class: "sidebar-slot", style: "width: {slot_width}px",
+            if present() {
                 Sidebar {}
             }
-            if open() {
-                Resizer { edge: Edge::Sidebar }
-            }
+        }
+        if open {
+            Resizer { edge: Edge::Sidebar }
         }
     }
 }
@@ -1849,8 +1860,9 @@ fn ViewSwitcher() -> Element {
                     }
                 });
             },
-            // Under the checked button, a button's width and a gap further per view.
-            span { class: "indicator", style: "transform: translateX(calc({index} * (100% + 2px)))" }
+            style: "--count: {VIEWS.len()}",
+            // Under the checked button.
+            span { class: "indicator", style: "--index: {index}", "aria-hidden": "true" }
             for (i , view) in VIEWS.into_iter().enumerate() {
                 button {
                     key: "{view_key(view)}",
@@ -1982,10 +1994,6 @@ fn FeedItem(feed: skvaller_core::Feed, count: i64, nested: bool) -> Element {
     }
 }
 
-/// The sidebar's scrolling list of feeds, for its items to scroll themselves into.
-#[derive(Clone, Copy)]
-struct FeedsPane(Signal<Option<Rc<MountedData>>>);
-
 /// Where a highlight is drawn, in CSS pixels down its list's content.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Place {
@@ -1993,13 +2001,65 @@ struct Place {
     height: f64,
 }
 
-/// The selected sidebar row and its place, as last measured, for the highlight under
-/// it. The row measures itself, since the sidebar's rows are laid out, not placed.
-#[derive(Clone, Copy)]
-struct SidebarHighlight(Signal<Option<(Scope, Place)>>);
+/// Scrolls the sidebar's feeds `pane` the least that shows its row `index`, or to the
+/// top for every feed's row.
+///
+/// The effect that asks runs before Blitz lays out the render that changed the rows, and
+/// a sidebar just reopened has no size at all: a scroll then would stop at the old range.
+/// This waits, a few frames at most, for the pane's size and a range that reaches, and
+/// scrolls only if `latest` still says no newer scroll was asked for meanwhile.
+async fn scroll_into_view(pane: &MountedData, index: usize, latest: impl Fn() -> bool) {
+    let place = sidebar_place(index);
+    for wait in 1..=LAYOUT_WAITS {
+        tokio::time::sleep(FRAME).await;
+        let (Ok(view), Ok(offset), Ok(range)) = (
+            pane.get_client_rect().await,
+            pane.get_scroll_offset().await,
+            pane.get_scroll_size().await,
+        ) else {
+            return;
+        };
+        if view.height() <= 0.0 {
+            continue;
+        }
+        let to = if index == 0 {
+            0.0
+        } else if place.top < offset.y {
+            place.top
+        } else if place.top + place.height > offset.y + view.height() {
+            place.top + place.height - view.height()
+        } else {
+            return;
+        };
+        // A range short of the target may still be the old layout's; the last wait
+        // scrolls as far as it goes.
+        if to > range.height + 0.5 && wait < LAYOUT_WAITS {
+            continue;
+        }
+        if !latest() {
+            return;
+        }
+        let to = dioxus_html::geometry::PixelsVector2D::new(offset.x, to);
+        if let Err(e) = pane.scroll(to, ScrollBehavior::Instant).await {
+            tracing::warn!("scrolling the sidebar failed: {e}");
+        }
+        return;
+    }
+}
 
-/// A folder or feed in the sidebar. Selected, as by the arrow keys, it scrolls into view.
-/// A folder, with `expanded`, has a disclosure button that shows or hides its feeds.
+/// Where the sidebar's row `index` is, counted as [`sidebar_scopes`] lists them: all
+/// feeds, then after the Feeds heading each folder and feed shown.
+fn sidebar_place(index: usize) -> Place {
+    let rows = f64::from(u32::try_from(index).unwrap_or(u32::MAX));
+    let heading = if index > 0 { SIDEBAR_HEADING } else { 0.0 };
+    Place {
+        top: SIDEBAR_TOP + heading + rows * SIDEBAR_ROW,
+        height: SIDEBAR_ROW,
+    }
+}
+
+/// A folder or feed in the sidebar, or every feed. A folder, with `expanded`, has a
+/// disclosure button that shows or hides its feeds.
 #[component]
 fn ScopeItem(
     scope: Scope,
@@ -2015,7 +2075,6 @@ fn ScopeItem(
         .as_ref()
         .filter(|t| *reading.manage.read() == Manage::Rename((*t).clone()))
         .cloned();
-    let mut mounted = use_signal(|| None::<Rc<MountedData>>);
     let selected = reading.selection.read().scope == scope;
     let class = match (selected, nested) {
         (true, true) => "item nested selected",
@@ -2023,99 +2082,9 @@ fn ScopeItem(
         (false, true) => "item nested",
         (false, false) => "item",
     };
-    let FeedsPane(pane) = use_context::<FeedsPane>();
-    let SidebarHighlight(mut highlight) = use_context::<SidebarHighlight>();
-    let live = use_context::<Live>();
-    // Measured for the highlight when selected, and again when the rows above it may
-    // have come or gone.
-    use_effect({
-        let scope = scope.clone();
-        move || {
-            if reading.selection.read().scope != scope {
-                return;
-            }
-            // Read only to run again on their changes: they decide the rows.
-            let _ = (
-                reading.library.read(),
-                reading.pinned.read(),
-                reading.collapsed.read(),
-            );
-            let _ = live.settings.read().sort_subscriptions;
-            // Subscribed: a row that just came back, as in a folder opened again, gets
-            // its element after this first runs.
-            let (Some(item), Some(pane)) = (mounted.read().clone(), pane.peek().clone()) else {
-                return;
-            };
-            let scope = scope.clone();
-            spawn(async move {
-                // After a frame: the render that ran this isn't laid out before it. A
-                // row just mounted may take longer, and one just removed never will be:
-                // both measure 0 high.
-                for _ in 0..MEASURE_TRIES {
-                    tokio::time::sleep(FRAME).await;
-                    let (Ok(item), Ok(view)) =
-                        (item.get_client_rect().await, pane.get_client_rect().await)
-                    else {
-                        return;
-                    };
-                    if item.height() <= 0.0 {
-                        continue;
-                    }
-                    // Both count the pane's scroll, so the difference is the place in its
-                    // content, where the highlight scrolls along with the rows.
-                    let place = Place {
-                        top: item.min_y() - view.min_y(),
-                        height: item.height(),
-                    };
-                    let next = Some((scope, place));
-                    if *highlight.peek() != next {
-                        highlight.set(next);
-                    }
-                    return;
-                }
-            });
-        }
-    });
-    // After the render, when the item has its place. Blitz scrolls only the window into
-    // view, not the feeds' own scroll: done here.
-    use_effect({
-        let scope = scope.clone();
-        move || {
-            if reading.selection.read().scope != scope {
-                return;
-            }
-            let (Some(item), Some(pane)) = (mounted.peek().clone(), pane.peek().clone()) else {
-                return;
-            };
-            spawn(async move {
-                let (Ok(item), Ok(view), Ok(offset)) = (
-                    item.get_client_rect().await,
-                    pane.get_client_rect().await,
-                    pane.get_scroll_offset().await,
-                ) else {
-                    return;
-                };
-                // Blitz counts the pane's own scroll in its place too: undone here.
-                let top = view.min_y() + offset.y;
-                let bottom = top + view.height();
-                let by = if item.min_y() < top {
-                    item.min_y() - top
-                } else if item.max_y() > bottom {
-                    item.max_y() - bottom
-                } else {
-                    return;
-                };
-                let to = dioxus_html::geometry::PixelsVector2D::new(offset.x, offset.y + by);
-                if let Err(e) = pane.scroll(to, ScrollBehavior::Instant).await {
-                    tracing::warn!("scrolling the sidebar failed: {e}");
-                }
-            });
-        }
-    });
     rsx! {
         div {
             class,
-            onmounted: move |e: MountedEvent| mounted.set(Some(e.data())),
             onclick: move |_| reading.select_scope(scope.clone()),
             oncontextmenu: move |e: Event<MouseData>| {
                 e.prevent_default();
@@ -2266,6 +2235,18 @@ fn Viewport() -> Element {
     let mut reading = use_context::<Reading>();
     let size = live.settings.read().thumbnail_size;
     let settle = use_hook(|| Rc::new(RefCell::new(Settle::<String>::new())));
+    // The open article's row, found again only when the article or the list changes, not
+    // at every scroll.
+    let selected_row = use_memo(move || {
+        let article = reading.article.read();
+        let id = &article.as_ref()?.id;
+        reading
+            .articles
+            .read()
+            .rows
+            .iter()
+            .position(|a| &a.id == id)
+    });
     // Where each row starts: a Large thumbnail makes its row taller.
     let offsets = use_memo(move || {
         let size = live.settings.read().thumbnail_size;
@@ -2343,14 +2324,13 @@ fn Viewport() -> Element {
         ThumbnailSize::None => (None, false, thumbs::Fit::Square),
     };
     let selected = reading.article.read().as_ref().map(|a| a.id.clone());
-    let highlight = selected.as_ref().and_then(|id| {
-        let i = list.iter().position(|a| &a.id == id)?;
+    let highlight = selected.as_ref().zip(selected_row()).map(|(id, i)| {
         let place = Place {
             top: offsets[i],
             height: offsets[i + 1] - offsets[i],
         };
         let settles = settle.borrow_mut().settles(id.clone(), place.top);
-        Some((highlight_class(settles), place))
+        (highlight_class(settles), place)
     });
     let empty = t(&format!(
         "views.{}.empty",
@@ -3082,5 +3062,31 @@ mod tests {
         assert_eq!(pops.update("a", false, true), (true, true));
         // Another article opens unread and starred: nothing pops.
         assert_eq!(pops.update("b", false, true), (false, false));
+    }
+
+    #[test]
+    fn sidebar_rows_are_placed_after_the_heading() {
+        assert_eq!(
+            sidebar_place(0),
+            Place {
+                top: 4.0,
+                height: 28.0
+            }
+        );
+        // Feeds start after all feeds' row and the heading: 14 px high, 18 px of margins.
+        assert_eq!(
+            sidebar_place(1),
+            Place {
+                top: 64.0,
+                height: 28.0
+            }
+        );
+        assert_eq!(
+            sidebar_place(3),
+            Place {
+                top: 120.0,
+                height: 28.0
+            }
+        );
     }
 }

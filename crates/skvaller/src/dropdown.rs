@@ -13,6 +13,7 @@ use dioxus_native::prelude::*;
 use dioxus_native::use_window;
 
 use crate::icons::{CHECK, CHEVRONS_UP_DOWN, Icon};
+use crate::ui::{FRAME, LAYOUT_WAITS};
 
 /// A row's height: `.menu-item`'s.
 const ROW: f64 = 28.0;
@@ -27,10 +28,6 @@ const BUTTON_LABEL_X: f64 = 10.0;
 const MARGIN: f64 = 8.0;
 /// How far one wheel notch scrolls, as Blitz scrolls it.
 const NOTCH: f64 = 60.0;
-/// A frame, at 60 Hz.
-const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
-/// How many frames to wait at most for a new list's layout.
-const LAYOUT_WAITS: u32 = 10;
 
 /// A button showing the choice at `selected`, which opens the list of `choices`.
 ///

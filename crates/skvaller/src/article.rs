@@ -41,7 +41,7 @@ pub fn document(
     look: Look,
 ) -> String {
     let theme = theme_name(look.theme);
-    let motion = if look.animations { "on" } else { "off" };
+    let motion = crate::ui::motion(look.animations);
     let fonts = format!(
         "--article-font: {}; --headline-font: {}",
         fonts::stack(look.article_font),

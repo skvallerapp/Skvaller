@@ -73,6 +73,7 @@
 .nav-row.account small {
   font-size: 12px;
   color: var(--text-2);
+  transition: color 120ms ease-out;
 }
 
 .nav-row.account.selected small {
@@ -261,6 +262,7 @@
   width: 100%;
   padding: 12px;
   animation: appear 140ms ease-out;
+  /* From its middle, as in the Tauri version, not app.css's .confirm corner. */
   transform-origin: center;
 }
 
