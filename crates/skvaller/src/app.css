@@ -176,13 +176,12 @@ button {
 
 /* Sidebar */
 
+/* The sidebar's and list's widths are set inline from the layout. */
 .sidebar {
   display: flex;
   flex-direction: column;
-  width: 240px;
   flex: none;
   background: var(--sidebar-bg);
-  border-right: 1px solid var(--separator);
 }
 
 .feeds {
@@ -331,10 +330,10 @@ button {
 .list {
   display: flex;
   flex-direction: column;
-  width: 360px;
-  flex: none;
+  /* Shrinks in a window too narrow for both panes, so its border stays in reach. */
+  flex: 0 1 auto;
+  min-width: 260px;
   background: var(--list-bg);
-  border-right: 1px solid var(--separator);
 }
 
 .list .toolbar {
@@ -451,7 +450,8 @@ button {
   margin-top: 2px;
 }
 
-/* 180 px is about 16:9 of the row's 319 px; ui.rs's LARGE_THUMB_EXTRA counts these sizes. */
+/* As wide as the row lets it, 180 px high: ui.rs's LARGE_THUMB_EXTRA counts these
+   sizes, and thumbs.rs serves it cropped to its width. */
 .thumb.large {
   width: 100%;
   height: 180px;
@@ -526,6 +526,46 @@ button {
   margin: 40px 0;
   text-align: center;
   color: var(--text-3);
+}
+
+/* The border after a pane, which resizes it. A 1 px line in a wider hit area that
+   overlaps the panes either side; positioned, as Blitz hit-tests only those over
+   their neighbors. */
+.resizer {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  display: flex;
+  justify-content: center;
+  width: 9px;
+  margin: 0 -4px;
+  cursor: col-resize;
+}
+
+.resizer .line {
+  width: 1px;
+  background: var(--separator);
+}
+
+/* Focused, as after a click, the arrow keys resize: Blitz has no :focus-visible. */
+.resizer.dragging .line,
+.resizer:focus .line {
+  background: var(--accent);
+}
+
+.resizer:focus {
+  outline: none;
+}
+
+.root.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* While dragging, only the root takes the pointer: the article's frame doesn't swallow
+   its moves, the cursor stays, and the release clicks no row. */
+.root.resizing > * {
+  pointer-events: none;
 }
 
 /* Reader */

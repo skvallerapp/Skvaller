@@ -33,34 +33,60 @@ pub enum Fit {
     /// 128 × 128, for the Small and Medium boxes beside the headline. Medium is 64 px,
     /// Small 40 px; both get the same, to keep one variant.
     Square,
-    /// 638 × 360, for the Large box below the headline, 319 × 180 CSS px (`.thumb.large`
-    /// and `LARGE_THUMB_EXTRA`). A resizable list would make its width vary.
-    Wide,
+    /// 360 px high and this many wide, for the Large box below the headline, 180 CSS px
+    /// high (`.thumb.large` and `LARGE_THUMB_EXTRA`) and as wide as the list lets it.
+    /// See [`Fit::wide`].
+    Wide(u32),
 }
 
+/// The widest [`Fit::Wide`] served: the widest list's box on a 2× screen, with room.
+const MAX_WIDE: u32 = 1200;
+
 impl Fit {
+    /// The wide fit for a Large box `width` CSS px wide.
+    ///
+    /// The width is rounded up to a step of 40 px, so resizing the list loads new
+    /// thumbnails only now and then, and never shows one stretched.
+    #[must_use]
+    pub fn wide(width: f64) -> Self {
+        const STEP: f64 = 40.0;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the box is a few hundred px wide, at least STEP"
+        )]
+        let px = ((width.max(STEP) / STEP).ceil() * STEP * 2.0) as u32;
+        Self::Wide(px.min(MAX_WIDE))
+    }
+
     /// The box's width and height in pixels.
     fn size(self) -> (u32, u32) {
         match self {
             Self::Square => (128, 128),
-            Self::Wide => (638, 360),
+            Self::Wide(width) => (width, 360),
         }
     }
 
     /// The fit's path segment in a [`url`].
-    fn segment(self) -> &'static str {
+    fn segment(self) -> String {
         match self {
-            Self::Square => "square",
-            Self::Wide => "wide",
+            Self::Square => "square".into(),
+            Self::Wide(width) => format!("wide{width}"),
         }
     }
 
-    /// The fit whose [`Fit::segment`] is `segment`. The URL test catches a variant
-    /// missing here.
+    /// The fit whose [`Fit::segment`] is `segment`.
     fn from_segment(segment: &str) -> Option<Self> {
-        [Self::Square, Self::Wide]
-            .into_iter()
-            .find(|fit| fit.segment() == segment)
+        if segment == "square" {
+            return Some(Self::Square);
+        }
+        let digits = segment.strip_prefix("wide")?;
+        // Digits only: `parse` would take a sign.
+        if !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let width: u32 = digits.parse().ok()?;
+        (1..=MAX_WIDE).contains(&width).then_some(Self::Wide(width))
     }
 }
 
@@ -146,7 +172,7 @@ mod tests {
     #[test]
     fn ids_and_fit_go_through_the_url_unchanged() {
         let article = "tag:google.com,2005:reader/item/0000/ä?#";
-        for fit in [Fit::Square, Fit::Wide] {
+        for fit in [Fit::Square, Fit::Wide(640), Fit::wide(299.0)] {
             let url = Url::parse(&url("1", article, fit)).unwrap();
             assert_eq!(url.scheme(), SCHEME);
             assert_eq!(parse(&url), Some((fit, "1".into(), article.into())));
@@ -158,11 +184,29 @@ mod tests {
         );
         assert_eq!(parse(&at("31/32")), None);
         assert_eq!(parse(&at("huge/31/32")), None);
-        assert_eq!(parse(&at("wide/31")), None);
-        assert_eq!(parse(&at("wide/3/31")), None);
-        assert_eq!(parse(&at("wide/31/32/33")), None);
-        assert_eq!(parse(&at("wide/+f/32")), None);
+        assert_eq!(parse(&at("wide640/31")), None);
+        assert_eq!(parse(&at("wide640/3/31")), None);
+        assert_eq!(parse(&at("wide640/31/32/33")), None);
+        assert_eq!(parse(&at("wide640/+f/32")), None);
+        for fit in ["wide", "wide0", "wide+640", "wide9999", "wide640x"] {
+            assert_eq!(parse(&at(&format!("{fit}/31/32"))), None, "{fit}");
+        }
         // Another launch's URL, or one made up by an article.
-        assert_eq!(parse(&Url::parse("thumb://t/wide/31/32").unwrap()), None);
+        assert_eq!(parse(&Url::parse("thumb://t/wide640/31/32").unwrap()), None);
+    }
+
+    #[test]
+    fn a_wide_fit_rounds_the_box_up_to_steps_of_40_px() {
+        // The default list's box, 300 px, on a 2× screen.
+        assert_eq!(Fit::wide(300.0), Fit::Wide(640));
+        assert_eq!(Fit::wide(280.0), Fit::Wide(560));
+        assert_eq!(Fit::wide(281.0), Fit::Wide(640));
+        // The widest list's box.
+        assert_eq!(
+            Fit::wide(skvaller_app::LIST_WIDTH.max - 40.0),
+            Fit::Wide(1040)
+        );
+        assert_eq!(Fit::wide(5000.0), Fit::Wide(MAX_WIDE));
+        assert_eq!(Fit::wide(0.0), Fit::Wide(80));
     }
 }

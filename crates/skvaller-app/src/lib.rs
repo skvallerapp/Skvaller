@@ -21,8 +21,8 @@ mod thumbnails;
 pub use app::{AccountChange, App, Dirs, Library, Notice, import_local, seed_local};
 #[doc(inline)]
 pub use config::{
-    Account, AccountKind, Clock, Config, DateFormat, Font, MarkReadOn, Settings, SortSubscriptions,
-    SyncSchedule, Theme, ThumbnailSize,
+    Account, AccountKind, Clock, Config, DateFormat, Font, LIST_WIDTH, Layout, MarkReadOn,
+    PaneWidth, SIDEBAR_WIDTH, Settings, SortSubscriptions, SyncSchedule, Theme, ThumbnailSize,
 };
 #[doc(inline)]
 pub use error::{Error, Result};

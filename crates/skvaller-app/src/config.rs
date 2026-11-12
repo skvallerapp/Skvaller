@@ -27,6 +27,78 @@ pub struct Config {
     /// Stored next to `accounts`, not nested, in the file.
     #[serde(flatten)]
     pub settings: Settings,
+    #[serde(deserialize_with = "layout_or_default")]
+    pub layout: Layout,
+}
+
+/// A pane's width range and default, in CSS pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaneWidth {
+    pub min: f64,
+    pub max: f64,
+    pub default: f64,
+}
+
+impl PaneWidth {
+    /// `width` within the range, or the default when it isn't a number.
+    #[must_use]
+    pub fn clamp(self, width: f64) -> f64 {
+        if width.is_finite() {
+            width.clamp(self.min, self.max)
+        } else {
+            self.default
+        }
+    }
+}
+
+/// The sidebar's width, as in the Tauri version.
+pub const SIDEBAR_WIDTH: PaneWidth = PaneWidth {
+    min: 180.0,
+    max: 360.0,
+    default: 230.0,
+};
+
+/// The article list's width, as in the Tauri version.
+pub const LIST_WIDTH: PaneWidth = PaneWidth {
+    min: 260.0,
+    max: 560.0,
+    default: 340.0,
+};
+
+/// The main window's panes, as the user last left them.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Layout {
+    pub sidebar_open: bool,
+    pub sidebar_width: f64,
+    pub list_width: f64,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self {
+            sidebar_open: true,
+            sidebar_width: SIDEBAR_WIDTH.default,
+            list_width: LIST_WIDTH.default,
+        }
+    }
+}
+
+/// The layout, each part within its range or else its default, as the Tauri version
+/// loads it.
+fn layout_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<Layout, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    let width = |key: &str, range: PaneWidth| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_f64)
+            .map_or(range.default, |w| range.clamp(w))
+    };
+    Ok(Layout {
+        sidebar_open: value.get("sidebarOpen") != Some(&serde_json::Value::Bool(false)),
+        sidebar_width: width("sidebarWidth", SIDEBAR_WIDTH),
+        list_width: width("listWidth", LIST_WIDTH),
+    })
 }
 
 /// What the Settings window changes for every account. The UI receives and sends all of it.
@@ -616,6 +688,31 @@ mod tests {
         assert_eq!(back.accounts, config.accounts);
         assert_eq!(back.active, config.active);
         assert_eq!(AccountKind::Local.keychain_key(), None);
+    }
+
+    #[test]
+    fn the_layout_loads_within_its_ranges() {
+        let config = Config::parse(b"{}").unwrap();
+        assert_eq!(config.layout, Layout::default());
+        let config = Config::parse(
+            br#"{ "layout": { "sidebarOpen": false, "sidebarWidth": 9999, "listWidth": "wide" } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.layout,
+            Layout {
+                sidebar_open: false,
+                sidebar_width: SIDEBAR_WIDTH.max,
+                list_width: LIST_WIDTH.default,
+            }
+        );
+        let config = Config::parse(br#"{ "layout": 5 }"#).unwrap();
+        assert_eq!(config.layout, Layout::default());
+
+        let mut config = Config::default();
+        config.layout.list_width = 400.5;
+        let json = serde_json::to_vec(&config).unwrap();
+        assert_eq!(Config::parse(&json).unwrap().layout, config.layout);
     }
 
     #[test]

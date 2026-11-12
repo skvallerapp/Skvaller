@@ -11,9 +11,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use dioxus_html::input_data::MouseButton;
 use dioxus_native::prelude::*;
 use dioxus_native::{use_window_event, use_windows};
-use skvaller_app::{App, Library, MarkReadOn, SortSubscriptions, SyncStatus, ThumbnailSize};
+use skvaller_app::{
+    App, LIST_WIDTH, Layout, Library, MarkReadOn, PaneWidth, SIDEBAR_WIDTH, SortSubscriptions,
+    SyncStatus, ThumbnailSize,
+};
 use skvaller_core::{ArticleSummary, Counts, Scope, Selection, View};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -21,7 +25,7 @@ use crate::add_account::AddAccount;
 use crate::article;
 use crate::fonts;
 use crate::i18n::{t, t_count, t_with};
-use crate::icons::{CHEVRON_DOWN, CHEVRON_RIGHT, Icon, LAYERS, SETTINGS};
+use crate::icons::{CHEVRON_DOWN, CHEVRON_RIGHT, Icon, LAYERS, PANEL_LEFT, SETTINGS};
 use crate::live::{Live, use_live};
 use crate::settings::{Pane as SettingsPane, SettingsWindow};
 use crate::shortcuts::{ARROWS, Action, key_name};
@@ -38,8 +42,8 @@ pub(crate) const APP_CSS: &str = include_str!("app.css");
 const ROW_HEIGHT: f64 = 87.0;
 
 /// What a Large thumbnail adds to its row: a gap above it, its height and the row's
-/// bottom padding. It is about 16:9 of the row's width: the list's fixed 360 px less its
-/// 1 px border and the rows' 20 px sides, 319 px.
+/// bottom padding. The height is fixed, whatever the list's width, so rows stay placed
+/// by these heights; the thumbnail is served cropped to its width (`thumbs::Fit::wide`).
 const LARGE_THUMB_EXTRA: f64 = 8.0 + 180.0 + 11.0;
 
 /// Rows rendered above and below the visible ones, so a fast scroll doesn't show gaps
@@ -182,6 +186,76 @@ struct Reading {
     /// The ids of the folders whose feeds the sidebar hides, by account, for this
     /// session.
     collapsed: Signal<HashMap<String, HashSet<String>>>,
+    /// The panes' widths and whether the sidebar shows, as saved in config.json.
+    layout: Signal<Layout>,
+    /// The border being dragged.
+    drag: Signal<Option<Drag>>,
+    /// The list's width as last saved, which Large thumbnails follow: a drag doesn't
+    /// load new ones at every step.
+    saved_list_width: Signal<f64>,
+    /// The article list's element, measured for the width it shows.
+    list_pane: Signal<Option<Rc<MountedData>>>,
+}
+
+/// A border the user drags to resize the pane before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Edge {
+    Sidebar,
+    List,
+}
+
+impl Edge {
+    fn range(self) -> PaneWidth {
+        match self {
+            Self::Sidebar => SIDEBAR_WIDTH,
+            Self::List => LIST_WIDTH,
+        }
+    }
+
+    fn width(self, layout: &Layout) -> f64 {
+        match self {
+            Self::Sidebar => layout.sidebar_width,
+            Self::List => layout.list_width,
+        }
+    }
+
+    fn width_mut(self, layout: &mut Layout) -> &mut f64 {
+        match self {
+            Self::Sidebar => &mut layout.sidebar_width,
+            Self::List => &mut layout.list_width,
+        }
+    }
+}
+
+/// Whether two widths differ by half a pixel or more. A pointer move within the same
+/// pixel changes nothing.
+fn differs(a: f64, b: f64) -> bool {
+    (a - b).abs() >= 0.5
+}
+
+/// A drag of an [`Edge`]: where the pointer and the pane were at its start.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Drag {
+    edge: Edge,
+    from_x: f64,
+    /// The width the pane showed, which the drag moves from.
+    from_width: f64,
+    /// The width saved before the drag, which a move to widen never lowers.
+    saved_width: f64,
+}
+
+impl Drag {
+    /// The pane's width with the pointer at `x`. A list the window squeezes moves from
+    /// the width it shows, but widening it doesn't lower the width it gets back.
+    fn width_at(self, x: f64) -> f64 {
+        let moved = x - self.from_x;
+        let width = self.from_width + moved;
+        if moved > 0.0 {
+            width.max(self.saved_width)
+        } else {
+            width
+        }
+    }
 }
 
 impl Reading {
@@ -633,6 +707,89 @@ impl Reading {
         }
     }
 
+    /// Sets the width of the pane before `edge`, within its range, in whole pixels.
+    fn resize(mut self, edge: Edge, width: f64) {
+        let width = edge.range().clamp(width).round();
+        if differs(edge.width(&self.layout.peek()), width) {
+            *edge.width_mut(&mut self.layout.write()) = width;
+        }
+    }
+
+    /// Saves the layout to config.json. Only the next start misses one not saved.
+    fn save_layout(mut self, app: &App) {
+        let layout = *self.layout.peek();
+        if let Err(e) = app.set_layout(layout) {
+            tracing::error!("saving the layout failed: {e}");
+        }
+        if differs(*self.saved_list_width.peek(), layout.list_width) {
+            self.saved_list_width.set(layout.list_width);
+        }
+    }
+
+    /// Ends a drag and saves the layout. A drag that resized gives the keys back to the
+    /// window, as the press focused the resizer.
+    fn end_drag(mut self, app: &App) {
+        let Some(drag) = *self.drag.peek() else {
+            return;
+        };
+        self.drag.set(None);
+        self.save_layout(app);
+        // Not when a sign-in screen took the panes' place meanwhile: it has the focus.
+        if self.panes_shown() && differs(drag.edge.width(&self.layout.peek()), drag.saved_width) {
+            self.refocus();
+        }
+    }
+
+    /// Whether the window shows the panes, not a screen to add an account or sign in.
+    fn panes_shown(&self) -> bool {
+        self.account.peek().is_some()
+            && !self.status.peek().as_ref().is_some_and(|s| s.unauthorized)
+    }
+
+    /// The width the pane before `edge` shows: less than its saved width when the window
+    /// is too narrow for both panes, which shrinks the list.
+    async fn shown_width(self, edge: Edge) -> f64 {
+        let pane = match edge {
+            Edge::List => self.list_pane.peek().clone(),
+            Edge::Sidebar => None,
+        };
+        let shown = match pane {
+            Some(pane) => pane.get_client_rect().await.ok().map(|rect| rect.width()),
+            None => None,
+        };
+        // Read after the measure, so a step made meanwhile counts.
+        let saved = edge.width(&self.layout.peek());
+        shown.map_or(saved, |shown| shown.min(saved))
+    }
+
+    /// The pane the arrow keys move in. The list has them while the sidebar is
+    /// hidden, whatever last selected a feed.
+    fn active_pane(&self) -> Pane {
+        if self.layout.read().sidebar_open {
+            *self.pane.read()
+        } else {
+            Pane::List
+        }
+    }
+
+    /// Hides or shows the sidebar. Hidden, it gives the list the arrow keys and closes
+    /// its menus and questions, and the focus, which may have been in it, goes back to
+    /// the window. It stays while a feed is being added, which hiding would drop.
+    fn toggle_sidebar(mut self, app: &App) {
+        let open = !self.layout.peek().sidebar_open;
+        if !open && matches!(*self.manage.peek(), Manage::AddFeed { busy: true }) {
+            return;
+        }
+        self.layout.write().sidebar_open = open;
+        if !open {
+            self.pane.set(Pane::List);
+            self.menu.set(None);
+            self.close_manage();
+            self.refocus();
+        }
+        self.save_layout(app);
+    }
+
     /// Moves the sidebar's selection to the next (1) or previous (-1) scope, keeping
     /// the view, as the Tauri version does. `sort` is the sidebar's order.
     fn step_sidebar(self, delta: isize, sort: SortSubscriptions) {
@@ -732,14 +889,19 @@ impl Reading {
         };
         let repeat = e.is_auto_repeating();
         if ARROWS.contains(&name.as_str()) {
-            let pane = *self.pane.peek();
+            let pane = self.active_pane();
             let delta = match key {
                 Key::Named(NamedKey::ArrowDown) => 1,
                 Key::Named(NamedKey::ArrowUp) => -1,
                 _ => 0,
             };
             match key {
-                Key::Named(NamedKey::ArrowLeft) => self.pane.set(Pane::Sidebar),
+                // With the sidebar hidden, there is nothing to the left.
+                Key::Named(NamedKey::ArrowLeft) => {
+                    if self.layout.peek().sidebar_open {
+                        self.pane.set(Pane::Sidebar);
+                    }
+                }
                 Key::Named(NamedKey::ArrowRight) => {
                     self.pane.set(Pane::List);
                     if self.article.peek().is_none() {
@@ -947,6 +1109,10 @@ pub fn Root() -> Element {
         reader_view: Signal::new(ReaderView::default()),
         manage: Signal::new(Manage::default()),
         collapsed: Signal::new(HashMap::new()),
+        layout: Signal::new(app.layout()),
+        drag: Signal::new(None),
+        saved_list_width: Signal::new(app.layout().list_width),
+        list_pane: Signal::new(None),
     });
     use_context_provider(|| live);
     // The active account, as changed elsewhere: one added or removed in Settings.
@@ -977,7 +1143,12 @@ pub fn Root() -> Element {
         }
     });
     let signed_out = (reading.status)().is_some_and(|s| s.unauthorized);
-    let adding = reading.account.peek().is_none() || signed_out;
+    let adding = !reading.panes_shown();
+    // Each part reads only what it shows, so a drag re-renders only what it resizes.
+    let dragging = use_memo(move || reading.drag.read().is_some())();
+    let root_class = if dragging { "root resizing" } else { "root" };
+    let sidebar_open = use_memo(move || reading.layout.read().sidebar_open)();
+    let drag_app = Arc::clone(&app);
     let settings_now = live.settings.read();
     let theme = article::theme_name(settings_now.theme);
     let ui_font = format!("--ui-font: {}", fonts::stack(settings_now.ui_font));
@@ -989,7 +1160,7 @@ pub fn Root() -> Element {
         // and a click keeps focus on the nearest focusable ancestor, so every key the
         // window gets passes through here. -1 keeps the root out of the Tab order.
         div {
-            class: "root",
+            class: root_class,
             "data-theme": theme,
             style: ui_font,
             tabindex: "-1",
@@ -1005,10 +1176,34 @@ pub fn Root() -> Element {
                 if e.code() == Code::Comma && e.modifiers() == COMMAND_MODIFIER {
                     settings.open(&windows, &app);
                     e.prevent_default();
+                } else if e.code() == Code::KeyS
+                    && e.modifiers() == COMMAND_MODIFIER | Modifiers::SHIFT
+                    && reading.panes_shown()
+                {
+                    // As in the Tauri version: Cmd+Shift+S on macOS, Ctrl+Shift+S elsewhere.
+                    reading.toggle_sidebar(&app);
+                    e.prevent_default();
                 } else if reading.on_key(&app, &live.keys.peek(), &e.data()) {
                     e.prevent_default();
                 }
             },
+            // A drag of a pane's border follows the pointer over the whole window.
+            onmousemove: {
+                let app = Arc::clone(&drag_app);
+                move |e: Event<MouseData>| {
+                    let Some(drag) = *reading.drag.peek() else {
+                        return;
+                    };
+                    // Released outside the window, where no mouse-up reaches here.
+                    if !e.held_buttons().contains(MouseButton::Primary) {
+                        reading.end_drag(&app);
+                        return;
+                    }
+                    let x = e.client_coordinates().x;
+                    reading.resize(drag.edge, drag.width_at(x));
+                }
+            },
+            onmouseup: move |_| reading.end_drag(&drag_app),
             // A click outside the account menu, the mark-all-read question or a sidebar
             // popover closes it; their own clicks don't get here.
             onclick: move |_| {
@@ -1025,8 +1220,14 @@ pub fn Root() -> Element {
             if (reading.account)().is_none() || signed_out {
                 AddAccountScreen {}
             } else {
-                Sidebar {}
+                // Removed while hidden, not hidden with CSS: Blitz's layout keeps stale
+                // children of nodes removed under `display: none`.
+                if sidebar_open {
+                    Sidebar {}
+                    Resizer { edge: Edge::Sidebar }
+                }
                 ArticleList {}
+                Resizer { edge: Edge::List }
                 Reader {}
             }
         }
@@ -1326,6 +1527,7 @@ fn Sidebar() -> Element {
         &current.scope,
         sort,
     );
+    let sidebar_width = use_memo(move || reading.layout.read().sidebar_width)();
     let FeedsPane(mut feeds_pane) = use_context_provider(|| FeedsPane(Signal::new(None)));
     // Every feed is at the top: selected, as by the arrow keys, it shows the top.
     use_effect(move || {
@@ -1343,7 +1545,7 @@ fn Sidebar() -> Element {
     });
 
     rsx! {
-        nav { class, aria_label: t("sidebar.label"),
+        nav { class, aria_label: t("sidebar.label"), style: "width: {sidebar_width}px",
             div { class: "toolbar",
                 if local {
                     AddFeed {}
@@ -1416,6 +1618,75 @@ fn Sidebar() -> Element {
             }
             ViewSwitcher {}
             ManageMenu {}
+        }
+    }
+}
+
+/// The border after a pane, dragged or moved with ← and → to resize that pane.
+#[component]
+fn Resizer(edge: Edge) -> Element {
+    let app = use_context::<Arc<App>>();
+    let mut reading = use_context::<Reading>();
+    let width = use_memo(move || edge.width(&reading.layout.read()))();
+    let range = edge.range();
+    let dragging = use_memo(move || reading.drag.read().is_some_and(|d| d.edge == edge))();
+    let label = match edge {
+        Edge::Sidebar => t("app.resizeSidebar"),
+        Edge::List => t("app.resizeList"),
+    };
+    rsx! {
+        div {
+            class: if dragging { "resizer dragging" } else { "resizer" },
+            role: "separator",
+            tabindex: "0",
+            aria_label: label,
+            "aria-orientation": "vertical",
+            "aria-valuenow": "{width}",
+            "aria-valuemin": "{range.min}",
+            "aria-valuemax": "{range.max}",
+            onmousedown: move |e: Event<MouseData>| {
+                if e.trigger_button() != Some(MouseButton::Primary) {
+                    return;
+                }
+                // Not prevented: the press focuses the resizer, for the arrow keys.
+                let from_width = edge.width(&reading.layout.peek());
+                let from_x = e.client_coordinates().x;
+                let saved_width = from_width;
+                reading.drag.set(Some(Drag { edge, from_x, from_width, saved_width }));
+                // A list the window shrank moves from the width it shows.
+                spawn(async move {
+                    let shown = reading.shown_width(edge).await;
+                    let squeezed = |d: &Drag| d.edge == edge && differs(d.from_width, shown);
+                    let drag = *reading.drag.peek();
+                    if let Some(drag) = drag.filter(squeezed) {
+                        reading.drag.set(Some(Drag { from_width: shown, ..drag }));
+                    }
+                });
+            },
+            onkeydown: move |e: Event<KeyboardData>| {
+                let step = if e.modifiers().shift() { 40.0 } else { 10.0 };
+                let by = match e.key() {
+                    Key::Named(NamedKey::ArrowLeft) => -step,
+                    Key::Named(NamedKey::ArrowRight) => step,
+                    _ => return,
+                };
+                // The window's own arrow keys would move between the panes as well.
+                e.stop_propagation();
+                e.prevent_default();
+                let app = Arc::clone(&app);
+                spawn(async move {
+                    // Narrowing a list the window shrank starts from the width it shows;
+                    // widening starts from the saved width, which it never lowers.
+                    let width = if by < 0.0 {
+                        reading.shown_width(edge).await
+                    } else {
+                        edge.width(&reading.layout.peek())
+                    };
+                    reading.resize(edge, width + by);
+                    reading.save_layout(&app);
+                });
+            },
+            div { class: "line" }
         }
     }
 }
@@ -1733,6 +2004,7 @@ fn list_title(lib: &Library, selection: &Selection) -> String {
 fn ArticleList() -> Element {
     let app = use_context::<Arc<App>>();
     let reading = use_context::<Reading>();
+    let mut list_pane = reading.list_pane;
     let unread = i64::try_from(reading.unread_count()).unwrap_or(i64::MAX);
     let selection = (reading.selection)();
     let title = list_title(&(reading.library)(), &selection);
@@ -1749,16 +2021,30 @@ fn ArticleList() -> Element {
         reading.selection.read()
     );
     let confirming = (reading.confirming)() && unread > 0;
-    let class = if (reading.pane)() == Pane::List {
-        "list active"
-    } else {
-        "list"
-    };
+    let sidebar_open = use_memo(move || reading.layout.read().sidebar_open)();
+    let list_width = use_memo(move || reading.layout.read().list_width)();
+    let active = use_memo(move || reading.active_pane())() == Pane::List;
+    let class = if active { "list active" } else { "list" };
     let confirm_app = Arc::clone(&app);
+    let toggle_app = Arc::clone(&app);
+    let toggle_label = if sidebar_open {
+        t("list.hideSidebar")
+    } else {
+        t("list.showSidebar")
+    };
 
     rsx! {
-        section { class, aria_label: t("list.label"),
+        section { class, aria_label: t("list.label"), style: "width: {list_width}px",
+            onmounted: move |e: MountedEvent| list_pane.set(Some(e.data())),
             div { class: "toolbar",
+                button {
+                    class: "icon-button",
+                    aria_label: toggle_label.clone(),
+                    title: toggle_label,
+                    "aria-pressed": "{sidebar_open}",
+                    onclick: move |_| reading.toggle_sidebar(&toggle_app),
+                    Icon { size: 18, stroke: "2", paths: PANEL_LEFT }
+                }
                 div { class: "list-title",
                     h1 { "{title}" }
                     p { "{unread_label}" }
@@ -1873,7 +2159,12 @@ fn Viewport() -> Element {
     let (beside, below, fit) = match size {
         ThumbnailSize::Small => (Some("thumb small"), false, thumbs::Fit::Square),
         ThumbnailSize::Medium => (Some("thumb medium"), false, thumbs::Fit::Square),
-        ThumbnailSize::Large => (None, true, thumbs::Fit::Wide),
+        // The row's padding is 20 px a side.
+        ThumbnailSize::Large => (
+            None,
+            true,
+            thumbs::Fit::wide((reading.saved_list_width)() - 40.0),
+        ),
         ThumbnailSize::None => (None, false, thumbs::Fit::Square),
     };
     let selected = reading.article.read().as_ref().map(|a| a.id.clone());
@@ -2511,5 +2802,25 @@ mod tests {
         };
         assert_eq!(step(&feed_scope("a")), Some(folder_scope("b")));
         assert_eq!(step(&feed_scope("inner")), Some(feed_scope("News")));
+    }
+
+    #[test]
+    fn a_drag_of_a_squeezed_list_narrows_from_its_shown_width_and_widens_from_its_saved() {
+        let drag = Drag {
+            edge: Edge::List,
+            from_x: 600.0,
+            from_width: 300.0,
+            saved_width: 560.0,
+        };
+        assert_eq!(drag.width_at(550.0), 250.0);
+        // Widening a list with no room doesn't lower the width it gets back.
+        assert_eq!(drag.width_at(610.0), 560.0);
+        assert_eq!(drag.width_at(900.0), 600.0);
+        let roomy = Drag {
+            from_width: 340.0,
+            saved_width: 340.0,
+            ..drag
+        };
+        assert_eq!(roomy.width_at(620.0), 360.0);
     }
 }

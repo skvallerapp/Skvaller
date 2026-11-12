@@ -115,13 +115,14 @@ The windows, in Dioxus Native (Blitz).
   as defaults and leaves out accounts it can't read.
 - **5,000+ items scroll smoothly.** The list renders only the visible rows plus some
   either side (`ui::visible_rows`). Thumbnails are served cropped to their box, since
-  Blitz keeps every image decoded. `--seed-test <count>` fills a local account for
-  testing this.
+  Blitz keeps every image decoded. The Large box follows the list's saved width in
+  steps of 40 px, so resizing the list loads new thumbnails only now and then.
+  `--seed-test <count>` fills a local account for testing this.
 
 ## On disk
 
 ```
-<config dir>/<KEYCHAIN_SERVICE>/config.json      settings and accounts, no tokens
+<config dir>/<KEYCHAIN_SERVICE>/config.json      settings, accounts and window layout, no tokens
 <local data dir>/<KEYCHAIN_SERVICE>/accounts/<id>.db   one SQLite cache per account
 OS keychain, service KEYCHAIN_SERVICE            one access token per account
 ```

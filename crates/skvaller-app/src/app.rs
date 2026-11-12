@@ -426,6 +426,23 @@ impl App {
         Ok(())
     }
 
+    /// The main window's panes, as last saved.
+    #[must_use]
+    pub fn layout(&self) -> crate::Layout {
+        lock(&self.config).layout
+    }
+
+    /// Saves the main window's panes to config.json.
+    ///
+    /// The windows aren't told: only the main window shows the layout, and it changed it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when config.json can't be saved.
+    pub fn set_layout(&self, layout: crate::Layout) -> Result<()> {
+        self.update_config(|config| config.layout = layout)
+    }
+
     /// Changes in the settings or the accounts: the revision changes on each.
     #[must_use]
     pub fn watch_config(&self) -> watch::Receiver<u64> {
