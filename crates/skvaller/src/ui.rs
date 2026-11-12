@@ -73,6 +73,14 @@ const SIDEBAR_SLIDE: Duration = Duration::from_millis(180);
 /// and `.highlight.folding` transitions. Closing, the rows stay in the document this long.
 const FOLDER_SLIDE: Duration = Duration::from_millis(160);
 
+/// How long the list takes to slide on to the next one after mark-all-read: app.css's
+/// `list-in` and `list-out`.
+const LIST_SLIDE: Duration = Duration::from_millis(320);
+/// How long the old list's ghost stays: the slide, and some frames for it to start,
+/// which on a slow machine may be a few frames after the mark. Ending the slide early
+/// would snap the next list the last pixels into place.
+const GHOST_STAYS: Duration = LIST_SLIDE.saturating_add(Duration::from_millis(3 * 16));
+
 /// One turn of the sync icon: app.css's `spin` on `.sync.spinning`.
 const SPIN_TURN: Duration = Duration::from_millis(900);
 
@@ -152,6 +160,40 @@ impl Marks {
     }
 }
 
+/// A row of the article list as drawn, which the list's ghost draws again.
+#[derive(Clone, Debug)]
+struct Row {
+    id: String,
+    class: String,
+    place: Place,
+    feed: String,
+    starred: bool,
+    date: String,
+    title: String,
+    thumb: Option<String>,
+}
+
+/// What the article list last drew: the rows in the document and where it was scrolled.
+/// After mark-all-read, it slides away as a ghost while the next list slides in.
+#[derive(Clone, Debug)]
+struct Drawn {
+    rows: Vec<Row>,
+    top: f64,
+    highlight: Option<Place>,
+    /// The class of a thumbnail beside the text, and whether one is below it instead.
+    beside: Option<&'static str>,
+    below: bool,
+}
+
+/// The old article list sliding away after mark-all-read.
+#[derive(Clone, Debug)]
+struct Ghost {
+    /// The list's [`list_key`], which keys the ghost: one replacing another starts its
+    /// slide over.
+    list: String,
+    drawn: Rc<Drawn>,
+}
+
 /// The open article's Reader View, as the Tauri version's store keeps it.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct ReaderView {
@@ -229,6 +271,10 @@ struct Reading {
     saved_list_width: Signal<f64>,
     /// The article list's element, measured for the width it shows.
     list_pane: Signal<Option<Rc<MountedData>>>,
+    /// What the article list last drew. Kept at every render, so not a signal.
+    drawn: CopyValue<Option<Rc<Drawn>>>,
+    /// The old list sliding away after mark-all-read, until the slide ends.
+    ghost: Signal<Option<Ghost>>,
 }
 
 /// A border the user drags to resize the pane before it.
@@ -400,6 +446,10 @@ impl Reading {
         self.confirming.set(false);
         // A delayed mark of the article left is off.
         self.mark_generation += 1;
+        // A list sliding away goes at once: the one it slid to is left too.
+        if self.ghost.peek().is_some() {
+            self.ghost.set(None);
+        }
     }
 
     /// Shows `view`, keeping the scope.
@@ -711,8 +761,37 @@ impl Reading {
             next_with_articles(&lib, view, &pinned, &collapsed, &scope, sort)
         };
         if let Some(scope) = next {
+            let list = list_key(&self);
             self.select(Selection { view, scope });
+            if app.settings().animations {
+                self.slide_away(list);
+            }
         }
+    }
+
+    /// Slides the list as last drawn up out of sight, as the next one slides in from
+    /// below, as in the Tauri version. `list` is the old list's [`list_key`].
+    fn slide_away(mut self, list: String) {
+        // Taken, so a list not drawn since never slides away twice.
+        let Some(drawn) = self.drawn.write().take() else {
+            return;
+        };
+        self.ghost.set(Some(Ghost {
+            list,
+            drawn: Rc::clone(&drawn),
+        }));
+        let mut ghost = self.ghost;
+        spawn(async move {
+            tokio::time::sleep(GHOST_STAYS).await;
+            // A selection or another mark-all meanwhile already replaced it.
+            let current = ghost
+                .peek()
+                .as_ref()
+                .is_some_and(|g| Rc::ptr_eq(&g.drawn, &drawn));
+            if current {
+                ghost.set(None);
+            }
+        });
     }
 
     /// Closes the mark-all-read question; its focused button goes with it.
@@ -1189,6 +1268,8 @@ pub fn Root() -> Element {
         drag: Signal::new(None),
         saved_list_width: Signal::new(app.layout().list_width),
         list_pane: Signal::new(None),
+        drawn: CopyValue::new(None),
+        ghost: Signal::new(None),
     });
     use_context_provider(|| live);
     // The active account, as changed elsewhere: one added or removed in Settings.
@@ -2277,13 +2358,13 @@ fn ArticleList() -> Element {
     } else {
         t_count("list.unread", unread)
     };
-    // A new list starts at the top: the viewport is keyed on what it lists, so a new
-    // selection or account gets a new viewport, with its own scroll state.
-    let key = format!(
-        "{:?}/{:?}",
-        reading.account.read(),
-        reading.selection.read()
-    );
+    let key = list_key(&reading);
+    let ghost = (reading.ghost)();
+    let body_class = if ghost.is_some() {
+        "list-body sliding"
+    } else {
+        "list-body"
+    };
     let confirming = (reading.confirming)() && unread > 0;
     let sidebar_open = use_memo(move || reading.layout.read().sidebar_open)();
     let list_width = use_memo(move || reading.layout.read().list_width)();
@@ -2340,8 +2421,61 @@ fn ArticleList() -> Element {
                     }
                 }
             }
-            for key in std::iter::once(key) {
-                Viewport { key: "{key}" }
+            div { class: body_class,
+                for key in std::iter::once(key) {
+                    Viewport { key: "{key}" }
+                }
+                for Ghost { list, drawn } in ghost {
+                    div { key: "{list}", class: "ghost", "aria-hidden": "true",
+                        div { class: "spacer", style: "transform: translateY({-drawn.top}px)",
+                            if let Some(place) = drawn.highlight {
+                                div { class: "highlight", style: "transform: translateY({place.top}px); height: {place.height}px" }
+                            }
+                            for row in &drawn.rows {
+                                div {
+                                    key: "{row.id}",
+                                    class: "{row.class}",
+                                    style: "top: {row.place.top}px; height: {row.place.height}px",
+                                    {row_content(row, drawn.beside, drawn.below)}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What the article list lists, which keys its viewport. A new list starts at the top: a
+/// new selection or account gets a new viewport, with its own scroll state.
+fn list_key(reading: &Reading) -> String {
+    format!(
+        "{:?}/{:?}",
+        reading.account.read(),
+        reading.selection.read()
+    )
+}
+
+/// A row's thumbnail, meta line and headline, in the list or its ghost.
+fn row_content(row: &Row, beside: Option<&'static str>, below: bool) -> Element {
+    rsx! {
+        if let (Some(class), Some(src)) = (beside, row.thumb.clone()) {
+            img { class, src, alt: "" }
+        }
+        div { class: "text",
+            div { class: "meta",
+                span { class: "feed", "{row.feed}" }
+                if row.starred {
+                    svg { class: "star", width: "11", height: "11", view_box: "0 0 24 24", fill: "currentColor",
+                        path { d: STAR_PATH }
+                    }
+                }
+                span { "{row.date}" }
+            }
+            div { class: "title", "{row.title}" }
+            if let Some(src) = row.thumb.clone().filter(|_| below) {
+                img { class: "thumb large", src, alt: "" }
             }
         }
     }
@@ -2465,6 +2599,42 @@ fn Viewport() -> Element {
             .map(|f| f.title.clone())
             .unwrap_or_default()
     };
+    let rows: Vec<Row> = list[first..last]
+        .iter()
+        .enumerate()
+        .map(|(n, a)| {
+            let i = first + n;
+            let mut class = String::from("row");
+            if !reading.is_read(a) {
+                class.push_str(" unread");
+            }
+            if selected.as_deref() == Some(a.id.as_str()) {
+                class.push_str(" selected");
+            }
+            Row {
+                id: a.id.clone(),
+                class,
+                place: Place {
+                    top: offsets[i],
+                    height: offsets[i + 1] - offsets[i],
+                },
+                feed: feed_title(&a.feed_id),
+                starred: reading.is_starred(a),
+                date: dates.list(a.published),
+                title: a.title.clone(),
+                thumb: a.thumbnail.then(|| thumbs::url(&account, &a.id, fit)),
+            }
+        })
+        .collect();
+    let drawn = Rc::new(Drawn {
+        rows,
+        top: view_top,
+        highlight: highlight.map(|(_, place)| place),
+        beside,
+        below,
+    });
+    // Kept for mark-all-read, which slides away the list as drawn.
+    reading.drawn.set(Some(Rc::clone(&drawn)));
 
     rsx! {
         div {
@@ -2488,46 +2658,20 @@ fn Viewport() -> Element {
                 if let Some((class, place)) = highlight {
                     div { class, style: "transform: translateY({place.top}px); height: {place.height}px" }
                 }
-                for (i , a) in list.iter().enumerate().take(last).skip(first) {
+                for (row , a) in drawn.rows.iter().zip(&list[first..last]) {
                     {
                         let summary = a.clone();
                         let app = Arc::clone(&app);
-                        let mut class = String::from("row");
-                        if !reading.is_read(a) {
-                            class.push_str(" unread");
-                        }
-                        if selected.as_deref() == Some(a.id.as_str()) {
-                            class.push_str(" selected");
-                        }
-                        let (row_top, row_height) = (offsets[i], offsets[i + 1] - offsets[i]);
-                        let thumb = a.thumbnail.then(|| thumbs::url(&account, &a.id, fit));
                         rsx! {
                             div {
-                                key: "{a.id}",
-                                class,
-                                style: "top: {row_top}px; height: {row_height}px",
+                                key: "{row.id}",
+                                class: "{row.class}",
+                                style: "top: {row.place.top}px; height: {row.place.height}px",
                                 onclick: move |_| {
                                     reading.pane.set(Pane::List);
                                     reading.open(&app, summary.clone());
                                 },
-                                if let (Some(class), Some(src)) = (beside, thumb.clone()) {
-                                    img { class, src, alt: "" }
-                                }
-                                div { class: "text",
-                                    div { class: "meta",
-                                        span { class: "feed", {feed_title(&a.feed_id)} }
-                                        if reading.is_starred(a) {
-                                            svg { class: "star", width: "11", height: "11", view_box: "0 0 24 24", fill: "currentColor",
-                                                path { d: STAR_PATH }
-                                            }
-                                        }
-                                        span { {dates.list(a.published)} }
-                                    }
-                                    div { class: "title", "{a.title}" }
-                                    if let Some(src) = thumb.filter(|_| below) {
-                                        img { class: "thumb large", src, alt: "" }
-                                    }
-                                }
+                                {row_content(row, beside, below)}
                             }
                         }
                     }
