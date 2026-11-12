@@ -764,7 +764,8 @@ button {
   justify-content: flex-end;
 }
 
-.sync.syncing svg {
+/* While a sync runs, and on to the end of a turn: ui.rs's SPIN_TURN is one turn. */
+.sync.spinning svg {
   animation: spin 0.9s linear infinite;
 }
 
@@ -778,7 +779,7 @@ button {
 }
 
 /* Without the spin or the pulse, a dimmed icon shows the work. */
-.root[data-motion='off'] .sync.syncing svg,
+.root[data-motion='off'] .sync.spinning svg,
 .root[data-motion='off'] .icon-button.loading svg {
   opacity: 0.5;
 }

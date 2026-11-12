@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dioxus_html::input_data::MouseButton;
 use dioxus_native::prelude::*;
@@ -68,6 +68,9 @@ const READ_ON_PAGE: f64 = 0.9;
 /// How long the sidebar takes to slide open or closed: app.css's `.sidebar-slot`
 /// transition. Closing, the sidebar stays in the document this long.
 const SIDEBAR_SLIDE: Duration = Duration::from_millis(180);
+
+/// One turn of the sync icon: app.css's `spin` on `.sync.spinning`.
+const SPIN_TURN: Duration = Duration::from_millis(900);
 
 /// A frame, at 60 Hz.
 pub(crate) const FRAME: Duration = Duration::from_millis(16);
@@ -200,6 +203,9 @@ struct Reading {
     frame: Signal<Option<Rc<MountedData>>>,
     /// The shown account's sync status.
     status: Signal<Option<SyncStatus>>,
+    /// Bumped by each sync asked for here, so the sync icon turns even for one that
+    /// ends before its status says it runs.
+    syncs_asked: Signal<u64>,
     /// The account menu, when open: the index of its highlighted account.
     menu: Signal<Option<usize>>,
     /// The window's root, which takes focus back when the focused element goes away.
@@ -722,10 +728,11 @@ impl Reading {
         }
     }
 
-    fn sync(self, app: &Arc<App>) {
+    fn sync(mut self, app: &Arc<App>) {
         let (Some(account), app) = (self.account.peek().clone(), Arc::clone(app)) else {
             return;
         };
+        self.syncs_asked += 1;
         if let Err(e) = app.sync_now(&account) {
             tracing::error!("syncing failed: {e}");
         }
@@ -1167,6 +1174,7 @@ pub fn Root() -> Element {
         mark_generation: Signal::new(0),
         frame: Signal::new(None),
         status,
+        syncs_asked: Signal::new(0),
         menu: Signal::new(None),
         root: Signal::new(None),
         reader_view: Signal::new(ReaderView::default()),
@@ -1531,7 +1539,7 @@ fn Sidebar() -> Element {
     let all_count: i64 = counts.values().sum();
     let count_of = |id: &str| counts.get(id).copied().unwrap_or(0);
     let status = (reading.status)();
-    let syncing = status.as_ref().is_some_and(|s| s.syncing);
+    let spinning = use_spin(reading.status, reading.syncs_asked);
     let sync_app = Arc::clone(&app);
     let settings = use_context::<SettingsWindow>();
     let windows = use_windows();
@@ -1633,7 +1641,7 @@ fn Sidebar() -> Element {
                     Icon { size: 18, stroke: "2", paths: SETTINGS }
                 }
                 button {
-                    class: if syncing { "icon-button sync syncing" } else { "icon-button sync" },
+                    class: if spinning { "icon-button sync spinning" } else { "icon-button sync" },
                     aria_label: t("sidebar.sync"),
                     title: t("sidebar.sync"),
                     onclick: move |_| reading.sync(&sync_app),
@@ -1689,6 +1697,65 @@ fn Sidebar() -> Element {
             ManageMenu {}
         }
     }
+}
+
+/// Whether the sync icon turns: while a sync runs, and after it until a whole turn ends,
+/// one at least from when it began or was asked for, so a quick sync still shows and the
+/// icon never stops askew. With
+/// Settings → Animations off it shows the sync only while it runs, dimmed.
+fn use_spin(status: Signal<Option<SyncStatus>>, asked: Signal<u64>) -> bool {
+    let live = use_context::<Live>();
+    let syncing = use_memo(move || status.read().as_ref().is_some_and(|s| s.syncing));
+    let mut spinning = use_signal(|| false);
+    // When the icon began turning; counts the stops asked for, so a sync starting again
+    // keeps the icon turning past an earlier stop; the syncs asked for when this last ran.
+    let started = use_hook(|| Rc::new(std::cell::Cell::new(None::<Instant>)));
+    let stops = use_hook(|| Rc::new(std::cell::Cell::new(0_u64)));
+    let seen = use_hook(|| Rc::new(std::cell::Cell::new(*asked.peek())));
+    use_effect(move || {
+        let syncing = syncing();
+        let asked = asked();
+        let stop = stops.get() + 1;
+        stops.set(stop);
+        // A sync asked for may already have ended, its running status unseen.
+        if syncing || asked != seen.replace(asked) {
+            if started.get().is_none() {
+                started.set(Some(Instant::now()));
+            }
+            if !*spinning.peek() {
+                spinning.set(true);
+            }
+        }
+        if syncing {
+            return;
+        }
+        let Some(start) = started.get() else {
+            return;
+        };
+        let (started, stops) = (Rc::clone(&started), Rc::clone(&stops));
+        let wait = if live.settings.peek().animations {
+            rest_of_turn(start.elapsed())
+        } else {
+            Duration::ZERO
+        };
+        spawn(async move {
+            tokio::time::sleep(wait).await;
+            if stops.get() == stop {
+                started.set(None);
+                spinning.set(false);
+            }
+        });
+    });
+    spinning()
+}
+
+/// How much longer a spin that began `elapsed` ago turns to end a whole [`SPIN_TURN`],
+/// one at least.
+fn rest_of_turn(elapsed: Duration) -> Duration {
+    let turn = SPIN_TURN.as_nanos();
+    let turns = elapsed.as_nanos().div_ceil(turn).max(1);
+    let rest = (turns * turn).saturating_sub(elapsed.as_nanos());
+    Duration::from_nanos(u64::try_from(rest).unwrap_or(u64::MAX))
 }
 
 /// The sidebar and its border while it shows, sliding open and closed.
@@ -3088,5 +3155,14 @@ mod tests {
                 height: 28.0
             }
         );
+    }
+
+    #[test]
+    fn the_sync_icon_stops_at_a_whole_turn_after_one_at_least() {
+        let ms = Duration::from_millis;
+        assert_eq!(rest_of_turn(ms(0)), ms(900));
+        assert_eq!(rest_of_turn(ms(200)), ms(700));
+        assert_eq!(rest_of_turn(ms(900)), ms(0));
+        assert_eq!(rest_of_turn(ms(1000)), ms(800));
     }
 }
