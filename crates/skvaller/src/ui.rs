@@ -52,7 +52,7 @@ const META: f64 = 12.0 * 1.3 + 3.0;
 const TITLE_LINE: f64 = lines::SIZE as f64 * 1.3;
 /// The most lines a headline shows: rows count it to at most this many, and its `.title`
 /// is clamped to the count.
-const TITLE_LINES: u32 = 3;
+pub(crate) const TITLE_LINES: u32 = 6;
 /// The space between a thumbnail beside the text and the text (`.row`'s `gap`).
 const GAP: f64 = 12.0;
 /// The margin above a thumbnail beside the text (`.thumb.small`, `.thumb.medium`).
@@ -3319,17 +3319,17 @@ mod tests {
     fn a_row_fits_its_headline_and_thumbnail() {
         let mut list = articles(&[true, false, true, false]);
         list[2].title = "x".repeat(45);
-        list[3].title = "x".repeat(100);
+        list[3].title = "x".repeat(250);
         let heights = |size, width: f64| {
             let offsets = place(&list, size, width);
             offsets.windows(2).map(|w| w[1] - w[0]).collect::<Vec<_>>()
         };
         let line = |n: f64| (2.0 * PAD_Y + META + n * TITLE_LINE).ceil();
         // At 340 px, the text is 300 px wide: the 450 px headline takes two lines, the
-        // longest three, however long.
+        // longest six, however long.
         assert_eq!(
             heights(ThumbnailSize::None, 340.0),
-            [line(1.0), line(1.0), line(2.0), line(3.0)]
+            [line(1.0), line(1.0), line(2.0), line(6.0)]
         );
         // Beside a 64 px thumbnail, the text is 224 px wide, which the 450 px headline
         // takes three lines of; an empty headline's row grows to fit the thumbnail.
@@ -3337,13 +3337,13 @@ mod tests {
         assert!(line(2.0) < medium && medium < line(3.0));
         assert_eq!(
             heights(ThumbnailSize::Medium, 340.0),
-            [medium, line(1.0), line(3.0), line(3.0)]
+            [medium, line(1.0), line(3.0), line(6.0)]
         );
         // A Large thumbnail is 16:9 at the text's width: 300 × 169, then 600 × 338.
         let large = |n: f64, h: f64| (2.0 * PAD_Y + META + n * TITLE_LINE + LARGE_GAP + h).ceil();
         assert_eq!(
             heights(ThumbnailSize::Large, 340.0),
-            [large(1.0, 169.0), line(1.0), large(2.0, 169.0), line(3.0)]
+            [large(1.0, 169.0), line(1.0), large(2.0, 169.0), line(6.0)]
         );
         assert_eq!(heights(ThumbnailSize::Large, 640.0)[0], large(1.0, 338.0));
         // Past the end, the last rows render.

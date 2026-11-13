@@ -723,7 +723,7 @@ button {
   white-space: nowrap;
 }
 
-/* ui.rs sets its max-height to the lines it counted, three at most, as line-clamp
+/* ui.rs sets its max-height to the lines it counted, six at most, as line-clamp
    would. */
 .title {
   overflow: hidden;

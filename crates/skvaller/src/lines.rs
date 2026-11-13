@@ -631,8 +631,9 @@ mod tests {
     }
 
     /// Laid out by Parley in the headline's style, as Blitz sets it: optical size
-    /// included. A count is never short, never more than a line over, and seldom over at
-    /// all.
+    /// included. A count is never short and seldom over. Over six lines a little width
+    /// counted on each can add up to more than a line, as for the `iiiiiiiiii WWWWWWWWWW`
+    /// headline at one width or two, but hardly ever.
     #[test]
     fn counts_never_fall_short_of_the_layout() {
         let mut lines = Lines::new(fonts::font_context());
@@ -680,24 +681,29 @@ mod tests {
         // ways the count doesn't see.
         let stacks =
             [Font::Inter, Font::Geist, Font::SourceSerif, Font::Literata].map(fonts::stack);
-        let (mut checked, mut over) = (0_u32, 0_u32);
+        let (mut checked, mut over, mut far) = (0_u32, 0_u32, 0_u32);
         for stack in &stacks {
             for text in texts {
                 let headline = lines.headline(stack, text);
                 for px in (140_u16..=520).step_by(5) {
                     let laid = laid_out(&mut lines, stack, text, f32::from(px));
-                    let laid = laid.min(3);
-                    let counted = headline.lines(f64::from(px), 3);
+                    let laid = laid.min(crate::ui::TITLE_LINES);
+                    let counted = headline.lines(f64::from(px), crate::ui::TITLE_LINES);
                     assert!(
-                        counted >= laid && counted <= laid + 1,
+                        counted >= laid,
                         "{stack}: {text:?} at {px}: counted {counted}, laid out {laid}"
                     );
                     checked += 1;
                     over += u32::from(counted > laid);
+                    far += u32::from(counted > laid + 1);
                 }
             }
         }
         assert!(over * 20 < checked, "{over} of {checked} counted over");
+        assert!(
+            far * 1_000 < checked,
+            "{far} of {checked} counted 2+ lines over"
+        );
     }
 
     /// Run with `cargo test -p skvaller --release five_thousand -- --ignored --nocapture`:
@@ -725,7 +731,9 @@ mod tests {
         for width in [300.0, 400.0] {
             let start = std::time::Instant::now();
             for headline in &headlines {
-                std::hint::black_box(headline.lines(std::hint::black_box(width), 3));
+                std::hint::black_box(
+                    headline.lines(std::hint::black_box(width), crate::ui::TITLE_LINES),
+                );
             }
             let wrapped = start.elapsed();
             eprintln!("5,000 headlines wrapped: {wrapped:?}");
