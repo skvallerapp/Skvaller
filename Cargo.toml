@@ -22,8 +22,8 @@ skvaller-core = { path = "crates/skvaller-core", version = "0.1.0" }
 # page (an iframe's list too), closing on outside clicks, scrolling and window blur, and
 # its label centered in its box;
 # <input type=password> masked; the HTTP client, a request filter and URL schemes set by
-# the app; and the decoded image cache capped at 32 MB.
-dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "359285d0", default-features = false }
+# the app; the decoded image cache capped at 32 MB; and a wheel event's phase and source.
+dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "16b02800", default-features = false }
 
 dirs = "6.0.0"
 icu_calendar = { version = "2.4.0", default-features = false }

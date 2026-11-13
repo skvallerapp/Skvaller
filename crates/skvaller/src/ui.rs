@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 use dioxus_html::geometry::WheelDelta;
 use dioxus_html::input_data::MouseButton;
 use dioxus_native::prelude::*;
-use dioxus_native::{use_window, use_window_event, use_windows};
+use dioxus_native::{
+    BlitzScrollSource, BlitzWheelPhase, NativeWheelData, use_window, use_window_event, use_windows,
+};
 use skvaller_app::{
     App, LIST_WIDTH, Layout, Library, MarkReadOn, PaneWidth, SIDEBAR_WIDTH, SortSubscriptions,
     SyncStatus, ThumbnailSize,
@@ -3162,8 +3164,21 @@ impl Pull {
             WheelDelta::Lines(d) => (false, (d.x, d.y)),
             WheelDelta::Pages(d) => (false, (d.x, d.y)),
         };
+        // Dioxus's wheel event has no phase or source: Blitz's has.
+        let (phase, source) = e
+            .data()
+            .downcast::<NativeWheelData>()
+            .map_or((BlitzWheelPhase::Moved, BlitzScrollSource::Unknown), |d| {
+                (d.phase(), d.source())
+            });
+        // A wheel that turns in lines is a wheel, whatever the platform says.
+        let source = if pixels {
+            source
+        } else {
+            BlitzScrollSource::Wheel
+        };
         let zoom = e.modifiers().ctrl();
-        if self.run(|o, now, edges| o.wheel(now, (dx, dy), pixels, zoom, edges)) {
+        if self.run(|o, now, edges| o.wheel(now, (dx, dy), zoom, (phase, source), edges)) {
             e.prevent_default();
         }
     }

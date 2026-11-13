@@ -2,13 +2,19 @@
 //! the edge, and it springs back when let go. Given a refresh, a pull at the top that
 //! goes far enough runs it, if it began with the list at the top; the list waits there
 //! until the refresh ends. A trackpad's momentum that reaches an edge bounces the list off it,
-//! as macOS does. A mouse wheel, which turns in lines, doesn't stretch it. With
-//! animations off the list stays put, and a long pull at the top refreshes at once.
+//! as macOS does. A mouse wheel doesn't stretch it. With animations off the list stays
+//! put, and a long pull at the top refreshes at once.
+//!
+//! A trackpad on macOS or Wayland says when the fingers lift, and which events are
+//! momentum: the list springs back as they lift. Elsewhere the fingers are guessed to have
+//! lifted when the events stop or start to shrink as momentum's do.
 //!
 //! This is the state alone: the list feeds it the events, scrolls what it says, and
 //! draws the offset, which CSS transitions while the list springs.
 
 use std::time::{Duration, Instant};
+
+use dioxus_native::{BlitzScrollSource as Source, BlitzWheelPhase as Phase};
 
 /// The rubber band's give: the further the pull, the less the list follows.
 const GIVE: f64 = 0.55;
@@ -16,8 +22,8 @@ const GIVE: f64 = 0.55;
 const TRIGGER: f64 = 90.0;
 /// Where the list waits while it refreshes.
 pub(crate) const HOLD: f64 = 48.0;
-/// A trackpad sends no event once the fingers and their momentum stop: after this long
-/// without one, the pull is let go.
+/// A trackpad that doesn't say when the fingers lift sends no event once they and their
+/// momentum stop: after this long without one, the pull is let go.
 pub(crate) const WHEEL_IDLE: Duration = Duration::from_millis(120);
 /// A trackpad's scrolling is accelerated, so a quick swipe goes far: it pulls this much
 /// less than a finger on a touchscreen does.
@@ -26,8 +32,8 @@ const WHEEL_PULL: f64 = 0.4;
 /// the pull follows how far the fingers go, not how fast.
 const WHEEL_MAX: f64 = 40.0;
 /// After the fingers lift, a trackpad's momentum goes on as events that shrink smoothly,
-/// give or take a pixel or a doubled event. This many smaller ones are momentum, not a
-/// hand.
+/// give or take a pixel or a doubled event. For a trackpad that doesn't say which events
+/// are momentum, this many smaller ones are, not a hand.
 const COASTING: u32 = 3;
 /// Momentum shrinks by less than this from one event to the next. A hand slowing down
 /// drops more at once.
@@ -243,22 +249,57 @@ impl Overscroll {
         self.spring.map_or(self.offset, |s| s.at(now))
     }
 
-    /// A wheel event: `dy` as Blitz signs it, positive toward the top; `pixels` for a
-    /// trackpad's, not a wheel's lines.
+    /// A wheel event: `dy` as Blitz signs it, positive toward the top. A `source` of
+    /// [`Source::Wheel`] includes any event in lines rather than pixels.
     pub fn wheel(
         &mut self,
         now: Instant,
         (dx, dy): (f64, f64),
-        pixels: bool,
         zoom: bool,
+        (phase, source): (Phase, Source),
         edges: Edges,
     ) -> Out {
-        if pixels && !zoom {
-            self.on_wheel(now, dx, dy, edges);
+        if !zoom {
+            match source {
+                Source::Wheel => {}
+                Source::Finger => self.on_finger(now, phase, dx, dy, edges),
+                Source::Momentum => {
+                    if dy.abs() > dx.abs() {
+                        self.left_top(edges);
+                        self.coast(now, dy, edges);
+                    }
+                }
+                Source::Unknown => self.on_wheel(now, dx, dy, edges),
+            }
         }
         self.done()
     }
 
+    /// Fingers on a trackpad that says when they land and lift.
+    fn on_finger(&mut self, now: Instant, phase: Phase, dx: f64, dy: f64, edges: Edges) {
+        match phase {
+            Phase::Started => self.began(edges),
+            Phase::Moved => {}
+            Phase::Ended => {
+                // The fingers lifted: a stretched list springs back, or refreshes, at
+                // once. The momentum that follows neither stretches it nor scrolls it.
+                if self.pull != 0.0 {
+                    self.release(now, edges);
+                }
+                return;
+            }
+        }
+        if dy.abs() <= dx.abs() {
+            return;
+        }
+        self.left_top(edges);
+        let pull = dy.signum() * dy.abs().min(WHEEL_MAX) * WHEEL_PULL;
+        if self.take(now, pull, edges) {
+            self.out.prevent = true;
+        }
+    }
+
+    /// A trackpad that doesn't say when the fingers lift, or which events are momentum.
     fn on_wheel(&mut self, now: Instant, dx: f64, dy: f64, edges: Edges) {
         // A pause in the events starts a new gesture.
         if self
@@ -301,27 +342,7 @@ impl Overscroll {
             self.began(edges);
         }
         if self.coasting {
-            // While it refreshes, the list stays held: momentum may scroll it, but
-            // neither bounces nor releases it.
-            if self.refreshing {
-                return;
-            }
-            let at = self.now_at(now);
-            if self.pull != 0.0 || (at != 0.0 && edges.at(at)) {
-                // The fingers lifted: a stretched list springs back at once, as it does
-                // natively, and the momentum neither stretches it nor scrolls it.
-                self.out.prevent = true;
-                self.bounced = true;
-                if self.spring.is_none() {
-                    self.release(now, edges);
-                }
-            } else if !self.bounced && edges.at(dy) && self.animate {
-                // Momentum reached an edge: it bounces the list off it.
-                self.bounced = true;
-                self.out.prevent = true;
-                let out = dy.signum() * size.min(BOUNCE_MAX);
-                self.settle(now, out, BOUNCE, Then::SpringBack);
-            }
+            self.coast(now, dy, edges);
             return;
         }
         let pull = dy.signum() * size.min(WHEEL_MAX) * WHEEL_PULL;
@@ -334,6 +355,31 @@ impl Overscroll {
         self.out.prevent = true;
         self.wheels += 1;
         self.out.idle = Some(self.wheels);
+    }
+
+    /// A momentum event, `dy` as Blitz signs it.
+    fn coast(&mut self, now: Instant, dy: f64, edges: Edges) {
+        // While it refreshes, the list stays held: momentum may scroll it, but neither
+        // bounces nor releases it.
+        if self.refreshing {
+            return;
+        }
+        let at = self.now_at(now);
+        if self.pull != 0.0 || (at != 0.0 && edges.at(at)) {
+            // The fingers lifted: a stretched list springs back at once, as it does
+            // natively, and the momentum neither stretches it nor scrolls it.
+            self.out.prevent = true;
+            self.bounced = true;
+            if self.spring.is_none() {
+                self.release(now, edges);
+            }
+        } else if !self.bounced && edges.at(dy) && self.animate {
+            // Momentum reached an edge: it bounces the list off it.
+            self.bounced = true;
+            self.out.prevent = true;
+            let out = dy.signum() * dy.abs().min(BOUNCE_MAX);
+            self.settle(now, out, BOUNCE, Then::SpringBack);
+        }
     }
 
     /// No wheel event came for a while after the one `wheel` counted.
@@ -545,6 +591,10 @@ mod tests {
         at + Duration::from_millis(ms)
     }
 
+    const GUESSED: (Phase, Source) = (Phase::Moved, Source::Unknown);
+    const FINGERS: (Phase, Source) = (Phase::Moved, Source::Finger);
+    const MOMENTUM: (Phase, Source) = (Phase::Moved, Source::Momentum);
+
     /// A finger pulls the list down (up, if negative) `steps` times 10 px.
     fn drag(o: &mut Overscroll, at: Instant, steps: i32, edges: Edges) -> Vec<Out> {
         let _ = o.touch_start(Some(0.0), edges);
@@ -646,12 +696,15 @@ mod tests {
     #[test]
     fn a_mouse_wheel_and_mid_list_scrolls_pass_through() {
         let (mut o, at) = (Overscroll::new(true, true), Instant::now());
-        assert_eq!(o.wheel(at, (0.0, 3.0), false, false, TOP), Out::default());
+        let wheel = (Phase::Moved, Source::Wheel);
+        assert_eq!(o.wheel(at, (0.0, 3.0), false, wheel, TOP), Out::default());
+        // A mouse that scrolls smoothly, in pixels.
+        assert_eq!(o.wheel(at, (0.0, 30.0), false, wheel, TOP), Out::default());
         assert_eq!(
-            o.wheel(at, (0.0, 30.0), true, false, MIDDLE),
+            o.wheel(at, (0.0, 30.0), false, GUESSED, MIDDLE),
             Out::default()
         );
-        assert_eq!(o.wheel(at, (0.0, 30.0), true, true, TOP), Out::default());
+        assert_eq!(o.wheel(at, (0.0, 30.0), true, GUESSED, TOP), Out::default());
     }
 
     #[test]
@@ -659,7 +712,7 @@ mod tests {
         let (mut o, at) = (Overscroll::new(true, true), Instant::now());
         let mut idle = None;
         for i in 0..40 {
-            let out = o.wheel(ms(at, i * 8), (0.0, 20.0), true, false, TOP);
+            let out = o.wheel(ms(at, i * 8), (0.0, 20.0), false, GUESSED, TOP);
             assert!(out.prevent);
             idle = out.idle;
         }
@@ -680,8 +733,8 @@ mod tests {
             out = o.wheel(
                 ms(at, t),
                 (0.0, size),
-                true,
                 false,
+                GUESSED,
                 if t < 40 { MIDDLE } else { TOP },
             );
         }
@@ -691,6 +744,98 @@ mod tests {
         let (back, _) = o.sprung(ms(at, t + 120), id).spring.expect("springs back");
         let _ = o.sprung(ms(at, t + 520), back);
         assert_eq!(o.shown().offset, 0.0);
+    }
+
+    /// Fingers on a trackpad that says when they land and lift pull the list down `steps`
+    /// events of 20 px, 8 ms apart from `at`.
+    fn finger_pull(o: &mut Overscroll, at: Instant, steps: u64, edges: Edges) -> Vec<Out> {
+        let mut outs = vec![o.wheel(
+            at,
+            (0.0, 0.0),
+            false,
+            (Phase::Started, Source::Finger),
+            edges,
+        )];
+        for i in 1..=steps {
+            outs.push(o.wheel(ms(at, i * 8), (0.0, 20.0), false, FINGERS, edges));
+        }
+        outs
+    }
+
+    #[test]
+    fn fingers_that_lift_let_go_at_once() {
+        let (mut o, at) = (Overscroll::new(true, true), Instant::now());
+        let outs = finger_pull(&mut o, at, 10, TOP);
+        assert!(
+            outs[1..]
+                .iter()
+                .all(|out| out.prevent && out.idle.is_none())
+        );
+        // Held still, the fingers keep the list stretched: no timer lets it go.
+        assert!(o.shown().offset > 0.0 && o.shown().spring.is_none());
+        let out = o.wheel(
+            ms(at, 500),
+            (0.0, 0.0),
+            false,
+            (Phase::Ended, Source::Finger),
+            TOP,
+        );
+        assert!(!out.refresh);
+        let (id, _) = out.spring.expect("springs back as the fingers lift");
+        // The momentum that follows, growing at first and shrinking unevenly, doesn't
+        // stretch the list or scroll it.
+        for (i, size) in [24.0, 30.0, 18.0, 19.0, 9.0, 3.0, 2.0, 1.0]
+            .into_iter()
+            .enumerate()
+        {
+            let out = o.wheel(
+                ms(at, 510 + i as u64 * 8),
+                (0.0, size),
+                false,
+                MOMENTUM,
+                TOP,
+            );
+            assert!(out.prevent && out.spring.is_none(), "momentum event {i}");
+            assert_eq!(o.shown().offset, 0.0);
+        }
+        let _ = o.sprung(ms(at, 900), id);
+        assert_eq!((o.shown().offset, o.shown().spring), (0.0, None));
+    }
+
+    #[test]
+    fn fingers_that_lift_from_a_long_pull_refresh() {
+        let (mut o, at) = (Overscroll::new(true, true), Instant::now());
+        let _ = finger_pull(&mut o, at, 40, TOP);
+        assert!(o.shown().armed());
+        let out = o.wheel(
+            ms(at, 400),
+            (0.0, 0.0),
+            false,
+            (Phase::Ended, Source::Finger),
+            TOP,
+        );
+        assert!(out.refresh);
+        assert_eq!(o.shown().offset, HOLD);
+    }
+
+    #[test]
+    fn momentum_said_as_such_bounces_off_an_edge() {
+        let (mut o, at) = (Overscroll::new(true, true), Instant::now());
+        let _ = finger_pull(&mut o, at, 3, MIDDLE);
+        let _ = o.wheel(
+            ms(at, 40),
+            (0.0, 0.0),
+            false,
+            (Phase::Ended, Source::Finger),
+            MIDDLE,
+        );
+        let out = o.wheel(ms(at, 50), (0.0, 30.0), false, MOMENTUM, MIDDLE);
+        assert_eq!(out, Out::default(), "momentum mid-list scrolls it");
+        // Its first event at the top bounces, however its sizes ran.
+        let out = o.wheel(ms(at, 58), (0.0, 31.0), false, MOMENTUM, TOP);
+        assert!(out.prevent && out.spring.is_some() && o.shown().offset > 0.0);
+        let again = o.wheel(ms(at, 66), (0.0, 20.0), false, MOMENTUM, TOP);
+        assert!(again.prevent && again.spring.is_none(), "bounces once");
     }
 
     #[test]
