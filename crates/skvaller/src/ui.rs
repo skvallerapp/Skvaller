@@ -11,6 +11,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use dioxus_html::geometry::WheelDelta;
 use dioxus_html::input_data::MouseButton;
 use dioxus_native::prelude::*;
 use dioxus_native::{use_window, use_window_event, use_windows};
@@ -26,9 +27,10 @@ use crate::article;
 use crate::chrome::{DragArea, MAC};
 use crate::fonts;
 use crate::i18n::{t, t_count, t_with};
-use crate::icons::{CHECK, CHEVRON_RIGHT, Icon, LAYERS, PANEL_LEFT, SETTINGS};
+use crate::icons::{CHECK, CHEVRON_RIGHT, Icon, LAYERS, PANEL_LEFT, ROTATE_CW, SETTINGS};
 use crate::lines::{self, Lines};
 use crate::live::{Live, use_live};
+use crate::overscroll::{Edges, HOLD, Out, Overscroll, SPRING_EASE, Shown, WHEEL_IDLE};
 use crate::settings::{Pane as SettingsPane, SettingsWindow};
 use crate::shortcuts::{ARROWS, Action, key_name};
 use crate::thumbs;
@@ -1821,7 +1823,21 @@ fn Sidebar() -> Element {
         sort,
     );
     let sidebar_width = use_memo(move || reading.layout.read().sidebar_width)();
-    let mut feeds_pane = use_signal(|| None::<Rc<MountedData>>);
+    let feeds_pane = use_signal(|| None::<Rc<MountedData>>);
+    // Pulled past their ends, the feeds stretch, with no refresh.
+    let pull = use_hook(|| Pull::new(live, feeds_pane, None));
+    // Unlike the article list, the feeds don't know their scroll range: measured again
+    // when rows come or go, a folder opens or closes, or the window resizes.
+    use_effect(move || {
+        reading.library.read();
+        reading.collapsed.read();
+        reading.pinned.read();
+        reading.window_size.read();
+        spawn(async move {
+            tokio::time::sleep(FOLDER_SLIDE + FRAME).await;
+            pull.measure().await;
+        });
+    });
     let settle = use_hook(|| Rc::new(RefCell::new(Settle::<Scope>::new())));
     // The selection's row, for the scroll after this render too: a feed in a collapsed
     // folder's is its folder's.
@@ -1863,7 +1879,11 @@ fn Sidebar() -> Element {
             return;
         };
         let scrolls = Rc::clone(&scrolls);
-        spawn(async move { scroll_into_view(&pane, index, || scrolls.get() == scroll).await });
+        spawn(async move {
+            scroll_into_view(&pane, index, || scrolls.get() == scroll).await;
+            // Code-driven scrolls send no scroll event.
+            pull.measure().await;
+        });
     });
     rsx! {
         nav { class, aria_label: t("sidebar.label"), style: "width: {sidebar_width}px",
@@ -1888,11 +1908,7 @@ fn Sidebar() -> Element {
                     aria_label: t("sidebar.sync"),
                     title: t("sidebar.sync"),
                     onclick: move |_| reading.sync(&sync_app),
-                    // Lucide's rotate-cw.
-                    svg { width: "18", height: "18", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
-                        path { d: "M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" }
-                        path { d: "M21 3v5h-5" }
-                    }
+                    Icon { size: 18, stroke: "2", paths: ROTATE_CW }
                 }
             }
             header { class: "account",
@@ -1900,8 +1916,7 @@ fn Sidebar() -> Element {
                 h1 { "{title}" }
                 p { class: if status_line.1 { "failed" } else { "" }, "{status_line.0}" }
             }
-            div { class: "feeds",
-                onmounted: move |e: MountedEvent| feeds_pane.set(Some(e.data())),
+            Feeds { pull,
                 if let Some((class, place)) = highlight {
                     div { class, style: "transform: translateY({place.top}px); height: {place.height}px" }
                 }
@@ -1934,6 +1949,36 @@ fn Sidebar() -> Element {
             }
             ViewSwitcher {}
             ManageMenu {}
+        }
+    }
+}
+
+/// The sidebar's scrolling feeds, apart so that only they draw a pull, not the sidebar.
+#[component]
+fn Feeds(pull: Pull, children: Element) -> Element {
+    let (mut mounted, mut at) = (pull.mounted, pull.at);
+    let stretched = stretch_style((pull.shown)());
+    rsx! {
+        div { class: "feeds-clip",
+        div {
+            class: "feeds",
+            style: "{stretched}",
+            onmounted: move |e: MountedEvent| mounted.set(Some(e.data())),
+            onscroll: move |e: Event<ScrollData>| at.write().top = e.data().scroll_top(),
+            // Measured anew for the gesture's next events.
+            onwheel: move |e| {
+                pull.on_wheel(&e);
+                spawn(pull.measure());
+            },
+            ontouchstart: move |e| {
+                pull.on_touch_start(&e);
+                spawn(pull.measure());
+            },
+            ontouchmove: move |e| pull.on_touch_move(&e),
+            ontouchend: move |e| pull.on_touch_end(&e),
+            ontouchcancel: move |e| pull.on_touch_cancel(&e),
+            {children}
+        }
         }
     }
 }
@@ -2691,6 +2736,18 @@ fn Viewport() -> Element {
     let mut pending = use_hook(|| CopyValue::new(None::<(f64, dioxus_core::Task)>));
     let mut top = use_signal(|| 0.0_f64);
     let mut mounted = use_signal(|| None::<Rc<MountedData>>);
+    let pull = use_hook(|| {
+        Pull::new(
+            live,
+            mounted,
+            Some(&ListPull {
+                top,
+                app: CopyValue::new(Arc::clone(&app)),
+                reading,
+            }),
+        )
+    });
+    let mut scrolled = pull.at;
 
     // Brings a newly opened article's row into view, as when stepping with the keyboard.
     // Only a change of article does this: a reload must not pull the list back.
@@ -2751,6 +2808,11 @@ fn Viewport() -> Element {
     // size, shows its end, but Blitz keeps the scroll position past it: the list
     // scrolls back itself, below.
     let end = (total - height).max(0.0);
+    scrolled.set(Scrolled {
+        top: *top.peek(),
+        end,
+        height,
+    });
     let mut view_top = top().min(end);
     // Where the list is scrolled, or where a hold waiting to scroll takes it.
     let waiting = pending.peek().as_ref().map(|&(target, _)| target);
@@ -2906,15 +2968,49 @@ fn Viewport() -> Element {
     });
     // Kept for mark-all-read, which slides away the list as drawn.
     reading.drawn.set(Some(Rc::clone(&drawn)));
+    let pulled = (pull.shown)();
+    let spring = spring_style(pulled);
+    let stretched = stretch_style(pulled);
+    let opacity = if pulled.armed() {
+        1.0
+    } else {
+        pulled.progress()
+    };
+    let icon_y = (pulled.offset - HOLD) / 2.0;
+    let turn = pulled.progress() * 360.0;
 
     rsx! {
+        // Shows in the gap above a list pulled down, centered in it. Decorative: the
+        // sidebar's sync button says the same.
+        if pulled.indicator() {
+            div {
+                class: "refresh",
+                class: if pulled.armed() { "armed" },
+                class: if pulled.refreshing { "spinning" },
+                "aria-hidden": "true",
+                style: "height: {HOLD}px; opacity: {opacity}; transform: translateY({icon_y}px); {spring}",
+                // A full turn when armed, so the spin starts where the pull left it.
+                span {
+                    class: "turn",
+                    style: if pulled.refreshing { "" } else { "transform: rotate({turn}deg); {spring}" },
+                    Icon { size: 18, stroke: "2", paths: ROTATE_CW }
+                }
+            }
+        }
         div {
             class: "viewport",
+            style: "{stretched}",
             onmounted: move |e: MountedEvent| mounted.set(Some(e.data())),
+            onwheel: move |e| pull.on_wheel(&e),
+            ontouchstart: move |e| pull.on_touch_start(&e),
+            ontouchmove: move |e| pull.on_touch_move(&e),
+            ontouchend: move |e| pull.on_touch_end(&e),
+            ontouchcancel: move |e| pull.on_touch_cancel(&e),
             onscroll: move |e: Event<ScrollData>| {
                 // Setting a signal re-renders even to the same value; a scroll event
                 // that follows every layout would loop.
                 let t = e.data().scroll_top();
+                scrolled.write().top = t;
                 if (*top.peek() - t).abs() >= 1.0 {
                     top.set(t);
                     // The user's scroll: the list is where they took it.
@@ -2950,6 +3046,247 @@ fn Viewport() -> Element {
                 }
             }
         }
+    }
+}
+
+/// With no word from a sync this long, the refresh checks whether one still runs.
+const SYNC_CHECK: Duration = Duration::from_secs(1);
+
+/// While a list springs, CSS moves it, and the refresh icon along.
+fn spring_style(pulled: Shown) -> String {
+    pulled.spring.map_or(String::new(), |s| {
+        let ms = s.duration.as_millis();
+        format!("transition: transform {ms}ms {SPRING_EASE}, opacity {ms}ms {SPRING_EASE};")
+    })
+}
+
+/// A list's style as it is stretched.
+fn stretch_style(pulled: Shown) -> String {
+    if pulled.offset == 0.0 && pulled.spring.is_none() {
+        String::new()
+    } else {
+        format!(
+            "transform: translateY({}px); {}",
+            pulled.offset,
+            spring_style(pulled)
+        )
+    }
+}
+
+/// Where a scrolling list is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Scrolled {
+    /// Where it is scrolled.
+    top: f64,
+    /// The furthest it scrolls.
+    end: f64,
+    /// How tall it shows.
+    height: f64,
+}
+
+/// What pulling the article list acts on besides the list: its rows follow its scroll,
+/// and a pull refreshes.
+#[derive(Clone, Copy, PartialEq)]
+struct ListPull {
+    /// Where the list is scrolled, which its rows are drawn from.
+    top: Signal<f64>,
+    app: CopyValue<Arc<App>>,
+    reading: Reading,
+}
+
+/// A list's [`Overscroll`], with what it acts on.
+#[derive(Clone, Copy, PartialEq)]
+struct Pull {
+    state: CopyValue<Overscroll>,
+    /// What the list draws of it.
+    shown: Signal<Shown>,
+    /// Where the scrolling element is, as last seen.
+    at: CopyValue<Scrolled>,
+    /// The scrolling element.
+    mounted: Signal<Option<Rc<MountedData>>>,
+    live: Live,
+    /// The article list's, which refreshes; `None` for the sidebar's feeds.
+    list: Option<ListPull>,
+}
+
+impl Pull {
+    fn new(live: Live, mounted: Signal<Option<Rc<MountedData>>>, list: Option<&ListPull>) -> Self {
+        let animate = live.settings.peek().animations;
+        Self {
+            state: CopyValue::new(Overscroll::new(animate, list.is_some())),
+            shown: Signal::new(Shown::default()),
+            // Until measured, at the top of a long list.
+            at: CopyValue::new(Scrolled {
+                top: 0.0,
+                end: f64::INFINITY,
+                height: 600.0,
+            }),
+            mounted,
+            live,
+            list: list.copied(),
+        }
+    }
+
+    /// Where the list is scrolled now.
+    fn edges(self) -> Edges {
+        let at = *self.at.peek();
+        Edges {
+            top: at.top < 1.0,
+            bottom: at.top >= at.end - END_SLACK,
+            height: at.height,
+        }
+    }
+
+    /// Reads where the scrolling element is, for a list that doesn't know it itself.
+    async fn measure(mut self) {
+        let Some(el) = self.mounted.peek().clone() else {
+            return;
+        };
+        if let (Ok(view), Ok(offset), Ok(range)) = (
+            el.get_client_rect().await,
+            el.get_scroll_offset().await,
+            el.get_scroll_size().await,
+        ) && view.height() > 0.0
+        {
+            self.at.set(Scrolled {
+                top: offset.y,
+                end: range.height,
+                height: view.height(),
+            });
+        }
+    }
+
+    fn on_wheel(self, e: &Event<WheelData>) {
+        let (pixels, (dx, dy)) = match e.delta() {
+            WheelDelta::Pixels(d) => (true, (d.x, d.y)),
+            WheelDelta::Lines(d) => (false, (d.x, d.y)),
+            WheelDelta::Pages(d) => (false, (d.x, d.y)),
+        };
+        let zoom = e.modifiers().ctrl();
+        if self.run(|o, now, edges| o.wheel(now, (dx, dy), pixels, zoom, edges)) {
+            e.prevent_default();
+        }
+    }
+
+    fn on_touch_start(self, e: &Event<TouchData>) {
+        let y = only_touch(e);
+        self.run(|o, _, edges| o.touch_start(y, edges));
+    }
+
+    fn on_touch_move(self, e: &Event<TouchData>) {
+        let y = only_touch(e);
+        if self.run(|o, now, edges| o.touch_move(now, y, edges)) {
+            e.prevent_default();
+        }
+    }
+
+    fn on_touch_end(self, e: &Event<TouchData>) {
+        let left = e.touches().len();
+        self.run(|o, now, edges| o.touch_end(now, left, edges));
+    }
+
+    fn on_touch_cancel(self, e: &Event<TouchData>) {
+        let left = e.touches().len();
+        self.run(|o, now, edges| o.touch_cancel(now, left, edges));
+    }
+
+    /// Feeds an event to the overscroll with `f` and does what it says. Returns whether
+    /// to keep the event from scrolling the list.
+    fn run(mut self, f: impl FnOnce(&mut Overscroll, Instant, Edges) -> Out) -> bool {
+        let edges = self.edges();
+        let (out, shown) = {
+            let mut state = self.state.write();
+            state.animate = self.live.settings.peek().animations;
+            let out = f(&mut state, Instant::now(), edges);
+            (out, state.shown())
+        };
+        if *self.shown.peek() != shown {
+            self.shown.set(shown);
+        }
+        self.act(out)
+    }
+
+    /// Does what the overscroll said, apart from drawing it: not generic, as the tasks
+    /// it starts feed it again.
+    fn act(mut self, out: Out) -> bool {
+        if let Some(wheel) = out.idle {
+            spawn(async move {
+                tokio::time::sleep(WHEEL_IDLE).await;
+                self.run(|o, now, edges| o.idle(now, wheel, edges));
+            });
+        }
+        if let Some((id, duration)) = out.spring {
+            spawn(async move {
+                tokio::time::sleep(duration).await;
+                self.run(|o, now, _| o.sprung(now, id));
+            });
+        }
+        if out.refresh
+            && let Some(list) = self.list
+        {
+            spawn(async move {
+                list.refresh().await;
+                self.run(|o, now, _| o.refreshed(now));
+            });
+        }
+        if out.scroll_by != 0.0
+            && let Some(el) = self.mounted.peek().clone()
+        {
+            // Code-driven scrolls send no scroll event: the list follows here.
+            let at = *self.at.peek();
+            let to = (at.top + out.scroll_by).clamp(0.0, at.end);
+            self.at.write().top = to;
+            if let Some(mut list) = self.list {
+                list.top.set(to);
+            }
+            spawn(async move {
+                let to = dioxus_html::geometry::PixelsVector2D::new(0.0, to);
+                if let Err(e) = el.scroll(to, ScrollBehavior::Instant).await {
+                    tracing::warn!("scrolling the list failed: {e}");
+                }
+            });
+        }
+        out.prevent
+    }
+}
+
+impl ListPull {
+    /// Syncs the shown account and waits until no sync of it runs: one that was already
+    /// running ends the wait when it does.
+    async fn refresh(self) {
+        let app = self.app.peek().clone();
+        let Some(account) = self.reading.account.peek().clone() else {
+            return;
+        };
+        let syncing = || app.status(&account).is_ok_and(|s| s.syncing);
+        // Listening before the sync starts, so its end can't be missed.
+        let mut events = app.subscribe();
+        let mut ran = syncing();
+        self.reading.sync(&app);
+        loop {
+            match tokio::time::timeout(SYNC_CHECK, events.recv()).await {
+                Ok(Ok(report)) if report.account_id == account => {
+                    if report.syncing {
+                        ran = true;
+                    } else if ran {
+                        break;
+                    }
+                }
+                Ok(Ok(_) | Err(RecvError::Lagged(_))) => {}
+                Ok(Err(RecvError::Closed)) => break,
+                // No sync started, as for an account signed out, or its end went by.
+                Err(_) if !syncing() => break,
+                Err(_) => ran = true,
+            }
+        }
+    }
+}
+
+/// Where a touch is, if it's the only one.
+fn only_touch(e: &Event<TouchData>) -> Option<f64> {
+    match e.touches().as_slice() {
+        [touch] => Some(touch.client_coordinates().y),
+        _ => None,
     }
 }
 

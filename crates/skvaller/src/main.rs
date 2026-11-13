@@ -17,6 +17,7 @@ mod i18n;
 mod icons;
 mod lines;
 mod live;
+mod overscroll;
 mod settings;
 mod shortcuts;
 mod thumbs;

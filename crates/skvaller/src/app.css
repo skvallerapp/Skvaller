@@ -284,6 +284,16 @@ button {
   background: var(--sidebar-bg);
 }
 
+/* Clips the feeds stretched past their ends. Positioned, so they paint inside it. */
+.feeds-clip {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
 .feeds {
   flex: 1;
   /* A flex item grows to its content otherwise, and never scrolls. */
@@ -1103,4 +1113,30 @@ input.rename {
   font-size: 11px;
   font-weight: 600;
   color: var(--text-3);
+}
+
+/* Shows in the gap above the list pulled down, centered in it; ui.rs sets its height to
+   where the list waits while it refreshes, and moves it with the list. */
+.list-body > .refresh {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  pointer-events: none;
+}
+
+.list-body > .refresh.armed {
+  color: var(--text-2);
+}
+
+.refresh .turn {
+  display: flex;
+}
+
+.refresh.spinning svg {
+  animation: spin 0.9s linear infinite;
 }

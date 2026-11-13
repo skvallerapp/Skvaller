@@ -79,6 +79,8 @@ The windows, in Dioxus Native (Blitz).
 - `thumbs`: serves cached thumbnails to `<img>` through `thumb:` URLs.
 - `lines`: counts the lines a headline wraps to, from each character's advance, so
   the list sizes its rows without measuring them.
+- `overscroll`: a list stretched past its ends by trackpad or touch, and pull to
+  refresh, as state alone: `ui` feeds it the events and draws the offset.
 - `live`: each window's view of the settings, following `watch_config()`.
 - `chrome`: the windows' frame. On macOS the title bar is hidden: the window buttons
   sit over the toolbars, which grow to the title bar's 52px, and the window drags from
