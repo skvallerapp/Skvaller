@@ -1960,6 +1960,7 @@ fn Sidebar() -> Element {
 fn Feeds(pull: Pull, children: Element) -> Element {
     let (mut mounted, mut at) = (pull.mounted, pull.at);
     let stretched = stretch_style((pull.shown)());
+    let mut wheel_at = use_hook(|| CopyValue::new(None::<Instant>));
     rsx! {
         div { class: "feeds-clip",
         div {
@@ -1967,10 +1968,15 @@ fn Feeds(pull: Pull, children: Element) -> Element {
             style: "{stretched}",
             onmounted: move |e: MountedEvent| mounted.set(Some(e.data())),
             onscroll: move |e: Event<ScrollData>| at.write().top = e.data().scroll_top(),
-            // Measured anew for the gesture's next events.
+            // Measured anew as a gesture begins, for its next events: `onscroll`
+            // follows the scroll meanwhile.
             onwheel: move |e| {
                 pull.on_wheel(&e);
-                spawn(pull.measure());
+                let now = Instant::now();
+                let last = wheel_at.replace(Some(now));
+                if last.is_none_or(|at| now.duration_since(at) > WHEEL_IDLE) {
+                    spawn(pull.measure());
+                }
             },
             ontouchstart: move |e| {
                 pull.on_touch_start(&e);

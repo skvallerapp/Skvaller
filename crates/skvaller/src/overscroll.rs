@@ -1,7 +1,7 @@
 //! Pulling a list past its top or bottom, by trackpad or touch, stretches it away from
 //! the edge, and it springs back when let go. Given a refresh, a pull at the top that
 //! goes far enough runs it, if it began with the list at the top; the list waits there
-//! until the refresh ends. A trackpad's momentum that reaches an edge bounces the list off it,
+//! until the refresh ends, or until it is scrolled down. A trackpad's momentum that reaches an edge bounces the list off it,
 //! as macOS does. A mouse wheel doesn't stretch it. With animations off the list stays
 //! put, and a long pull at the top refreshes at once.
 //!
@@ -166,7 +166,7 @@ pub(crate) struct Out {
 #[derive(Debug)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "a gesture's flags, as the Tauri version kept them"
+    reason = "a gesture's flags, each independent of the others"
 )]
 pub(crate) struct Overscroll {
     /// Settings → Animations.
@@ -265,7 +265,7 @@ impl Overscroll {
                 Source::Finger => self.on_finger(now, phase, dx, dy, edges),
                 Source::Momentum => {
                     if dy.abs() > dx.abs() {
-                        self.left_top(edges);
+                        self.left_top(now, edges);
                         self.coast(now, dy, edges);
                     }
                 }
@@ -292,7 +292,7 @@ impl Overscroll {
         if dy.abs() <= dx.abs() {
             return;
         }
-        self.left_top(edges);
+        self.left_top(now, edges);
         let pull = dy.signum() * dy.abs().min(WHEEL_MAX) * WHEEL_PULL;
         if self.take(now, pull, edges) {
             self.out.prevent = true;
@@ -312,7 +312,7 @@ impl Overscroll {
         if dy.abs() <= dx.abs() {
             return;
         }
-        self.left_top(edges);
+        self.left_top(now, edges);
         let size = dy.abs();
         let shrank = size < self.wheel_size && size >= self.wheel_size * SMOOTH;
         // Trackpads repeat a size exactly: an event of the same size goes on a run.
@@ -406,7 +406,7 @@ impl Overscroll {
         // A finger left alone by a second one lifting has no start yet: it starts here.
         let delta = self.touch_y.map_or(0.0, |from| y - from);
         self.touch_y = Some(y);
-        self.left_top(edges);
+        self.left_top(now, edges);
         if self.take(now, delta, edges) {
             self.out.prevent = true;
             self.touch_owned = true;
@@ -559,10 +559,16 @@ impl Overscroll {
         self.coasted = 0.0;
     }
 
-    /// A gesture that scrolled the list away from the top can't refresh.
-    fn left_top(&mut self, edges: Edges) {
-        if self.from_top && !edges.top {
-            self.from_top = false;
+    /// A gesture that scrolled the list away from the top can't refresh. Scrolled away
+    /// while it refreshes, the list lets go of its hold, which would keep its end out of
+    /// sight.
+    fn left_top(&mut self, now: Instant, edges: Edges) {
+        if edges.top {
+            return;
+        }
+        self.from_top = false;
+        if self.refreshing && self.offset != 0.0 {
+            self.settle(now, 0.0, SETTLE, Then::Rest);
         }
     }
 }
@@ -836,6 +842,27 @@ mod tests {
         assert!(out.prevent && out.spring.is_some() && o.shown().offset > 0.0);
         let again = o.wheel(ms(at, 66), (0.0, 20.0), false, MOMENTUM, TOP);
         assert!(again.prevent && again.spring.is_none(), "bounces once");
+    }
+
+    #[test]
+    fn scrolled_while_it_refreshes_the_list_lets_go_of_its_hold() {
+        let (mut o, at) = (Overscroll::new(true, true), Instant::now());
+        let _ = drag(&mut o, at, 40, TOP);
+        assert!(o.touch_end(at, 0, TOP).refresh);
+        assert_eq!(o.shown().offset, HOLD);
+        // Still at the top, the list stays held.
+        let out = o.wheel(ms(at, 500), (0.0, -20.0), false, FINGERS, TOP);
+        assert!(!out.prevent && out.spring.is_none());
+        assert_eq!(o.shown().offset, HOLD);
+        // Scrolled down, it springs back, and goes on refreshing.
+        let out = o.wheel(ms(at, 510), (0.0, -20.0), false, FINGERS, MIDDLE);
+        assert!(!out.prevent);
+        let (id, _) = out.spring.expect("springs back");
+        assert_eq!(o.shown().offset, 0.0);
+        let _ = o.sprung(ms(at, 910), id);
+        assert!(o.shown().refreshing);
+        let _ = o.refreshed(ms(at, 1000));
+        assert!(!o.shown().refreshing);
     }
 
     #[test]
