@@ -87,6 +87,13 @@
   "list.markAllQuestion_one": "Markera {count} artikel som läst?",
   "list.markAllQuestion_other": "Markera {count} artiklar som lästa?",
   "list.markAsRead": "Markera som läst",
+  "list.search": "Sök",
+  "list.searchWithKey": "Sök ({key})",
+  "list.searchEverywhere": "Alla flöden",
+  "list.closeSearch": "Stäng sökningen",
+  "list.noMatches": "Inga artiklar matchar",
+  "list.results_one": "{count} träff",
+  "list.results_other": "{count} träffar",
 
   "reader.label": "Artikel",
   "reader.empty": "Ingen artikel vald",

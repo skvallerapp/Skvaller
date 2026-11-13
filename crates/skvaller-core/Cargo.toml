@@ -21,7 +21,7 @@ image = { version = "0.25.10", default-features = false, features = ["gif", "jpe
 keyring = "4.2.0"
 opml = "1.1.6"
 reqwest = { version = "0.13.5", features = ["form", "gzip", "json", "query"] }
-rusqlite = { version = "0.41.1", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "functions"] }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json.workspace = true
 thiserror.workspace = true

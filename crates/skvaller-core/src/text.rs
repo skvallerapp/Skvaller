@@ -1,15 +1,25 @@
-//! Plain-text previews of untrusted article HTML for the article list.
+//! Plain text of untrusted article HTML: previews for the article list, and the text
+//! the search index holds.
+
+use html5ever::data::NAMED_ENTITIES;
 
 /// Elements whose contents are never text.
 const SKIPPED: [&str; 6] = ["script", "style", "template", "noscript", "svg", "head"];
+/// Characters that only hint at a line break or join, inside a word: the soft hyphen,
+/// the zero-width space, the word joiner and the byte order mark. Dropped, so the word
+/// stays one, as search's tokenizer would split it there.
+pub(crate) const INVISIBLE: [char; 4] = ['\u{AD}', '\u{200B}', '\u{2060}', '\u{FEFF}'];
+/// The longest named entity, `&CounterClockwiseContourIntegral;`, without `&` and `;`.
+const LONGEST_ENTITY: usize = 31;
 /// Elements that sit inside a line of text. Every other tag separates words.
 const INLINE: [&str; 15] = [
     "a", "abbr", "b", "cite", "code", "em", "i", "mark", "q", "s", "small", "span", "strong",
     "sub", "sup",
 ];
 
-/// Text of `html` with tags dropped, common entities decoded and whitespace collapsed,
-/// cut to at most `max` characters. Good enough for a two-line preview; not a parser.
+/// Text of `html` with tags dropped, entities decoded and whitespace collapsed, cut to
+/// at most `max` characters, with `…` at the cut. Good enough for a preview or a search
+/// index; not a parser.
 pub(crate) fn plain_text(html: &str, max: usize) -> String {
     let mut out = String::new();
     let mut count = 0;
@@ -17,6 +27,9 @@ pub(crate) fn plain_text(html: &str, max: usize) -> String {
     let mut rest = html;
 
     let mut push = |c: char, out: &mut String, space: &mut bool| {
+        if INVISIBLE.contains(&c) {
+            return true;
+        }
         if c.is_whitespace() {
             *space = true;
             return true;
@@ -138,25 +151,23 @@ fn skip_past_close<'a>(s: &'a str, name: &str) -> &'a str {
 /// Decodes the entity at the start of `s` (which starts with `&`). Returns the
 /// character and how many bytes it used; an unknown entity is a literal `&`.
 fn entity(s: &str) -> (char, usize) {
-    let Some(end) = s[1..].find(';').filter(|&i| i <= 10) else {
+    // Only as far as the longest name: a page of `&`s without `;` would otherwise be
+    // read to its end at each one.
+    let Some(end) = s.as_bytes()[1..]
+        .iter()
+        .take(LONGEST_ENTITY + 1)
+        .position(|&b| b == b';')
+    else {
         return ('&', 1);
     };
     let name = &s[1..=end];
-    let c = match name {
-        "amp" => Some('&'),
-        "lt" => Some('<'),
-        "gt" => Some('>'),
-        "quot" => Some('"'),
-        "apos" => Some('\''),
-        "nbsp" => Some(' '),
-        "hellip" => Some('…'),
-        "mdash" => Some('—'),
-        "ndash" => Some('–'),
-        "lsquo" => Some('‘'),
-        "rsquo" => Some('’'),
-        "ldquo" => Some('“'),
-        "rdquo" => Some('”'),
-        _ => name.strip_prefix('#').and_then(|num| {
+    let c = match name.strip_prefix('#') {
+        // The map's keys end in `;`. A few entities are two characters; the first does.
+        None => NAMED_ENTITIES
+            .get(&s[1..=end + 1])
+            .and_then(|&(code, _)| char::from_u32(code))
+            .filter(|&c| c != '\0'),
+        Some(num) => {
             // `from_str_radix` takes a leading `+`, which HTML doesn't.
             let code = match num.strip_prefix(['x', 'X']) {
                 Some(hex) if hex.bytes().all(|b| b.is_ascii_hexdigit()) => {
@@ -168,7 +179,7 @@ fn entity(s: &str) -> (char, usize) {
             // HTML never yields NUL or control characters here; drop them as unknown.
             code.and_then(char::from_u32)
                 .filter(|c| !c.is_control() || c.is_whitespace())
-        }),
+        }
     };
     match c {
         Some(c) => (c, end + 2),
@@ -198,6 +209,43 @@ mod tests {
             plain_text("A &amp; B &#8217; &#x2014; &bogus; &", 100),
             "A & B ’ — &bogus; &"
         );
+        assert_eq!(
+            plain_text(
+                "caf&eacute; Malm&ouml; &CounterClockwiseContourIntegral;",
+                100
+            ),
+            "café Malmö ∳"
+        );
+    }
+
+    #[test]
+    fn keeps_words_whole_across_invisible_breaks() {
+        assert_eq!(
+            plain_text(
+                "Bundes&shy;republik zero\u{200B}width wo\u{2060}rd \u{FEFF}bom",
+                100
+            ),
+            "Bundesrepublik zerowidth word bom"
+        );
+    }
+
+    #[test]
+    fn entity_names_are_bounded() {
+        let longest = "&CounterClockwiseContourIntegral;";
+        assert_eq!(plain_text(longest, 100), "∳");
+        assert_eq!(
+            plain_text("&CounterClockwiseContourIntegralX;", 100),
+            "&CounterClockwiseContourIntegralX;"
+        );
+        // Without `;` it is text, as before.
+        assert_eq!(plain_text("&amp B", 100), "&amp B");
+        // Each `&` looks only a name's length ahead: well under a second for these,
+        // where reading on to the end at each would take tens.
+        let many = "&".repeat(1_000_000);
+        assert_eq!(plain_text(&many, 10), "&&&&&&&&&&…");
+        let started = std::time::Instant::now();
+        assert_eq!(plain_text(&many, usize::MAX).len(), many.len());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]

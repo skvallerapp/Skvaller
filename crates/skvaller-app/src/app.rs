@@ -505,6 +505,30 @@ impl App {
         Ok(self.runtime(account_id)?.db.articles(selection)?)
     }
 
+    /// The account's article `id` as the list shows it, if it is cached.
+    ///
+    /// # Errors
+    ///
+    /// As [`App::library`].
+    pub fn article(&self, account_id: &str, id: &str) -> Result<Option<ArticleSummary>> {
+        Ok(self.runtime(account_id)?.db.article(id)?)
+    }
+
+    /// The account's articles in `selection` that match `query`, newest first, from the
+    /// cache only. See [`skvaller_core::Db::search`].
+    ///
+    /// # Errors
+    ///
+    /// As [`App::library`].
+    pub fn search(
+        &self,
+        account_id: &str,
+        selection: &Selection,
+        query: &str,
+    ) -> Result<Vec<ArticleSummary>> {
+        Ok(self.runtime(account_id)?.db.search(selection, query)?)
+    }
+
     /// The article's HTML, as the feed gave it: untrusted, never to run scripts.
     ///
     /// # Errors

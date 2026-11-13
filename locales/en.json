@@ -87,6 +87,13 @@
   "list.markAllQuestion_one": "Mark {count} article as read?",
   "list.markAllQuestion_other": "Mark {count} articles as read?",
   "list.markAsRead": "Mark as Read",
+  "list.search": "Search",
+  "list.searchWithKey": "Search ({key})",
+  "list.searchEverywhere": "All Feeds",
+  "list.closeSearch": "Close Search",
+  "list.noMatches": "No Matching Articles",
+  "list.results_one": "{count} Result",
+  "list.results_other": "{count} Results",
 
   "reader.label": "Article",
   "reader.empty": "No article selected",

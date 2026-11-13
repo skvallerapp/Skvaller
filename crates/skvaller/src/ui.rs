@@ -29,7 +29,9 @@ use crate::article;
 use crate::chrome::{DragArea, MAC};
 use crate::fonts;
 use crate::i18n::{t, t_count, t_with};
-use crate::icons::{CHECK, CHEVRON_RIGHT, Icon, LAYERS, PANEL_LEFT, ROTATE_CW, SETTINGS};
+use crate::icons::{
+    CHECK, CHEVRON_RIGHT, Icon, LAYERS, PANEL_LEFT, ROTATE_CW, SEARCH, SETTINGS, X,
+};
 use crate::lines::{self, Lines};
 use crate::live::{Live, use_live};
 use crate::overscroll::{Edges, HOLD, Out, Overscroll, SPRING_EASE, Shown, WHEEL_IDLE};
@@ -158,6 +160,71 @@ enum Pane {
 struct Listed {
     load: u64,
     rows: Vec<ArticleSummary>,
+    /// The open article as the cache has it, when search results leave it out.
+    open: Option<ArticleSummary>,
+}
+
+/// The search over the article list, while its field is open.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Search {
+    open: bool,
+    /// As typed.
+    query: String,
+    /// Search every feed rather than the sidebar's selection.
+    everywhere: bool,
+}
+
+impl Search {
+    /// What the list searches for: the text typed, while the field is open and has any.
+    fn active(&self) -> Option<(&str, bool)> {
+        let query = self.query.trim();
+        (self.open && !query.is_empty()).then_some((query, self.everywhere))
+    }
+}
+
+/// Where a list was when a search replaced it, to scroll back to when the search ends:
+/// the row at its top and how far into it, since rows above it may be gone by then,
+/// such as those read in Unread.
+#[derive(Clone, Debug, PartialEq)]
+struct Restore {
+    /// The list's [`list_key`].
+    list: String,
+    /// The rows from the top of the view down, each with how far below the view's top
+    /// it started (negative: above). The first still listed places the list.
+    rows: Vec<(String, f64)>,
+    /// Where it was scrolled, should none be.
+    top: f64,
+}
+
+impl Restore {
+    /// The place of `list` as last `drawn`.
+    fn at(list: String, drawn: &Drawn) -> Self {
+        let mut rows: Vec<&Row> = drawn
+            .rows
+            .iter()
+            .filter(|r| r.place.top + r.place.height > drawn.top)
+            .collect();
+        rows.sort_by(|a, b| a.place.top.total_cmp(&b.place.top));
+        Self {
+            list,
+            rows: rows
+                .into_iter()
+                .map(|r| (r.id.clone(), r.place.top - drawn.top))
+                .collect(),
+            top: drawn.top,
+        }
+    }
+
+    /// Where to scroll the list `rows`, placed at `offsets`, to.
+    fn target(&self, rows: &[ArticleSummary], offsets: &[f64]) -> f64 {
+        self.rows
+            .iter()
+            .find_map(|(id, below)| {
+                let i = rows.iter().position(|a| &a.id == id)?;
+                Some(offsets.get(i)? - below)
+            })
+            .map_or(self.top, |top| top.max(0.0))
+    }
 }
 
 /// Read and starred changes made here since the list loaded, kept on top of it, so an
@@ -282,15 +349,16 @@ impl Anchor {
     /// `offsets` and has `rows`, if either moved its row, and the row is still there.
     /// None while the viewport shows the list at its top, `top`, which stays there.
     ///
-    /// `scroll` is where the list is scrolled now, if no hold waits to scroll it: a
+    /// `scroll` is where the list is scrolled now, or where a scroll waiting takes it: a
     /// scroll since the anchor was taken, as in the render that brings rows synced in,
-    /// moves the list too. Under half a pixel is taken as rounding.
+    /// moves the list too. A hold's own wait is where the anchor was taken, so it adds
+    /// nothing. Under half a pixel is taken as rounding.
     fn hold(
         &self,
         offsets: &Rc<[f64]>,
         rows: &[ArticleSummary],
         top: f64,
-        scroll: Option<f64>,
+        scroll: f64,
     ) -> Option<f64> {
         let in_place = rows.get(self.index).is_some_and(|a| a.id == self.id);
         // Offsets kept as they were may still hold other rows, as after a sync that
@@ -308,9 +376,11 @@ impl Anchor {
             Hold::Below(below) => start - below,
             Hold::Into(into) => start + into * (end - start),
         };
-        let since = scroll
-            .filter(|&scroll| differs(scroll, self.scroll))
-            .map_or(0.0, |scroll| scroll - self.scroll);
+        let since = if differs(scroll, self.scroll) {
+            scroll - self.scroll
+        } else {
+            0.0
+        };
         Some(held + since)
     }
 }
@@ -399,6 +469,12 @@ struct Reading {
     drawn: CopyValue<Option<Rc<Drawn>>>,
     /// The old list sliding away after mark-all-read, until the slide ends.
     ghost: Signal<Option<Ghost>>,
+    search: Signal<Search>,
+    /// The search field, focused again by the search key while it is open.
+    search_field: Signal<Option<Rc<MountedData>>>,
+    /// The list a search replaced and where it was: it scrolls back there when the
+    /// search ends.
+    restore: CopyValue<Option<Restore>>,
 }
 
 /// A border the user drags to resize the pane before it.
@@ -528,13 +604,14 @@ impl Reading {
     }
 
     /// The open article as the list has it now, which a sync may have changed since it
-    /// opened. The list always has it.
+    /// opened. The list has it, or keeps it apart while search results leave it out.
     fn open_article(&self) -> Option<ArticleSummary> {
         let open = self.article.read().clone()?;
         let list = self.articles.read();
         Some(
             list.rows
                 .iter()
+                .chain(&list.open)
                 .find(|a| a.id == open.id)
                 .cloned()
                 .unwrap_or(open),
@@ -562,7 +639,14 @@ impl Reading {
     }
 
     fn select(mut self, selection: Selection) {
+        // Searching every feed is for the selection it was asked from.
+        let new_scope = selection.scope != self.selection.peek().scope;
+        if new_scope && self.search.peek().everywhere {
+            self.search.write().everywhere = false;
+        }
         self.selection.set(selection);
+        // The list a search replaced is no longer the one to go back to.
+        self.restore.set(None);
         self.article.set(None);
         // Reader View starts over, as in the Tauri version, and a load under way is
         // dropped: reopening the article doesn't find it stuck loading.
@@ -874,6 +958,10 @@ impl Reading {
             return;
         }
         self.cleared += 1;
+        // Search results don't move on to another feed.
+        if self.search.peek().active().is_some() {
+            return;
+        }
         // Before the library's guard: reading `pinned` may recompute it, which reads
         // the library. Read, not peek: a peek can return the library from before these
         // counts.
@@ -916,6 +1004,75 @@ impl Reading {
                 ghost.set(None);
             }
         });
+    }
+
+    /// Opens the search field, or focuses it if it is open.
+    fn open_search(mut self) {
+        // Their keys would keep the field's, such as a paste, from it.
+        if self.menu.peek().is_some() {
+            self.menu.set(None);
+        }
+        if *self.confirming.peek() {
+            self.confirming.set(false);
+        }
+        if *self.manage.peek() != Manage::Closed {
+            self.close_manage();
+        }
+        if !self.search.peek().open {
+            // The field focuses itself as it mounts.
+            self.search.write().open = true;
+            return;
+        }
+        let Some(field) = self.search_field.peek().clone() else {
+            return;
+        };
+        spawn(async move {
+            if let Err(e) = field.set_focus(true).await {
+                tracing::warn!("focusing the search field failed: {e}");
+            }
+        });
+    }
+
+    /// Searches for `query`, as typed. The first search keeps the list's place, so it
+    /// scrolls back there when the search ends.
+    fn set_query(mut self, query: String) {
+        if self.search.peek().query == query {
+            return;
+        }
+        let starts = self.search.peek().active().is_none() && !query.trim().is_empty();
+        if starts && let Some(drawn) = self.drawn.peek().as_ref() {
+            self.restore.set(Some(Restore::at(list_key(&self), drawn)));
+        }
+        self.search.write().query = query;
+    }
+
+    fn toggle_search_everywhere(mut self) {
+        let mut search = self.search.write();
+        search.everywhere = !search.everywhere;
+    }
+
+    /// Closes the search field and shows the list it searched, where it was.
+    fn close_search(mut self) {
+        if *self.search.peek() == Search::default() {
+            return;
+        }
+        self.search.set(Search::default());
+        self.refocus();
+    }
+
+    /// Moves from the search field to the results, opening the first if none is open.
+    fn leave_search_field(mut self, app: &Arc<App>) {
+        self.pane.set(Pane::List);
+        self.refocus();
+        // Also when the open article isn't among the results.
+        let listed = self
+            .article
+            .peek()
+            .as_ref()
+            .is_some_and(|open| self.articles.peek().rows.iter().any(|a| a.id == open.id));
+        if !listed {
+            self.step(app, 1);
+        }
     }
 
     /// Closes the mark-all-read question; its focused button goes with it.
@@ -1103,8 +1260,9 @@ impl Reading {
     /// Shows the account, keeping the view: its feeds, articles and status. `None` once
     /// there is no account.
     fn show_account(mut self, app: &App, id: Option<String>) {
-        // Another account's feeds are its own.
+        // Another account's feeds are its own, and so are its articles.
         self.manage.set(Manage::Closed);
+        self.close_search();
         let view = self.selection.peek().view;
         self.select(Selection {
             view,
@@ -1162,6 +1320,11 @@ impl Reading {
                 Key::Named(NamedKey::Enter) => self.mark_all_read(app),
                 _ => {}
             }
+            return true;
+        }
+        // Not over the sign-in screen, whose fields have the focus.
+        if key == Key::Named(NamedKey::Escape) && self.search.peek().open && self.panes_shown() {
+            self.close_search();
             return true;
         }
         let Some(name) = key_name(&key, &code, e.modifiers()) else {
@@ -1250,6 +1413,7 @@ pub fn Root() -> Element {
     let cleared = use_signal(|| 0_u64);
     let counts = use_signal(|| 0_u64);
     let marks = use_signal(Marks::default);
+    let search = use_signal(Search::default);
     let mut status = use_signal(|| account.peek().as_deref().and_then(|id| app.status(id).ok()));
 
     // Sync reports: the status for the sidebar, and a reload when articles changed.
@@ -1316,14 +1480,37 @@ pub fn Root() -> Element {
     });
     // The last load, what it listed and what it was for: a sync's reload keeps rows.
     let last = use_hook(|| Rc::new(RefCell::new((Listed::default(), None, 0_u64))));
+    // What the list searches for: only a change here loads it again, not opening the
+    // field or typing a space.
+    let searched = use_memo(move || {
+        search
+            .read()
+            .active()
+            .map(|(query, everywhere)| (query.to_owned(), everywhere))
+    });
     let articles = use_memo({
         let app = Arc::clone(&app);
         move || {
             revision();
             let (selection, account, cleared) = (selection(), account(), cleared());
+            let searched = searched();
             let mut rows = account
                 .as_ref()
-                .and_then(|id| app.articles(id, &selection).ok())
+                .and_then(|id| match &searched {
+                    Some((query, everywhere)) => {
+                        let scope = if *everywhere {
+                            Scope::All
+                        } else {
+                            selection.scope.clone()
+                        };
+                        let within = Selection {
+                            view: selection.view,
+                            scope,
+                        };
+                        app.search(id, &within, query).ok()
+                    }
+                    None => app.articles(id, &selection).ok(),
+                })
                 .unwrap_or_default();
             let mut last = last.borrow_mut();
             let (before, last_for, last_cleared) = &*last;
@@ -1332,11 +1519,13 @@ pub fn Root() -> Element {
             let listed: HashSet<String> = rows.iter().map(|a| a.id.clone()).collect();
             // The changes made here are in the cache, and so in the rows; those of rows
             // the cache no longer lists here are only in the marks.
-            let same = last_for.as_ref() == Some(&(account.clone(), selection.clone()));
+            let same =
+                last_for.as_ref() == Some(&(account.clone(), selection.clone(), searched.clone()));
             let keep = |a: &ArticleSummary| {
-                // The open article stays, read or not, until another opens.
+                // The open article stays, read or not, until another opens; in search
+                // results, only if it was one.
                 if open.as_deref() == Some(a.id.as_str()) {
-                    return true;
+                    return same || searched.is_none();
                 }
                 // After a sync, the Unread view keeps what was read here since it opened,
                 // and the Starred view what was unstarred, so the list doesn't jump.
@@ -1354,21 +1543,39 @@ pub fn Root() -> Element {
                 .filter(|a| !listed.contains(&a.id) && keep(a))
                 .map(|a| marks.apply(before.load, a))
                 .collect();
-            // The open article from another list, as after a new selection.
-            let from_elsewhere = article
+            // The open article from another list, as after a new selection or a search,
+            // as the cache has it now: changes made to it since are in no list's marks.
+            let unlisted = article
                 .peek()
                 .clone()
-                .filter(|a| !listed.contains(&a.id) && !kept.iter().any(|k| k.id == a.id));
+                .filter(|a| !listed.contains(&a.id) && !kept.iter().any(|k| k.id == a.id))
+                .map(|a| {
+                    account
+                        .as_ref()
+                        .and_then(|id| app.article(id, &a.id).ok().flatten())
+                        .unwrap_or(a)
+                });
+            // Search results show it only if it matched; else it is kept apart.
+            let (from_elsewhere, open_apart) = if searched.is_none() {
+                (unlisted, None)
+            } else {
+                (None, unlisted)
+            };
             if !kept.is_empty() || from_elsewhere.is_some() {
                 rows.extend(kept);
-                rows.extend(from_elsewhere.map(|a| marks.apply(before.load, &a)));
+                rows.extend(from_elsewhere);
                 rows.sort_by_key(|a| std::cmp::Reverse(a.published));
             }
             let listed = Listed {
                 load: before.load + 1,
                 rows,
+                open: open_apart,
             };
-            *last = (listed.clone(), Some((account, selection)), cleared);
+            *last = (
+                listed.clone(),
+                Some((account, selection, searched)),
+                cleared,
+            );
             listed
         }
     });
@@ -1402,6 +1609,9 @@ pub fn Root() -> Element {
         list_pane: Signal::new(None),
         drawn: CopyValue::new(None),
         ghost: Signal::new(None),
+        search,
+        search_field: Signal::new(None),
+        restore: CopyValue::new(None),
     });
     use_context_provider(|| live);
     // The active account, as changed elsewhere: one added or removed in Settings.
@@ -1484,6 +1694,12 @@ pub fn Root() -> Element {
                 {
                     // As in the Tauri version: Cmd+Shift+S on macOS, Ctrl+Shift+S elsewhere.
                     reading.toggle_sidebar(&app);
+                    e.prevent_default();
+                } else if e.code() == Code::KeyF
+                    && e.modifiers() == COMMAND_MODIFIER
+                    && reading.panes_shown()
+                {
+                    reading.open_search();
                     e.prevent_default();
                 } else if reading.on_key(&app, &live.keys.peek(), &e.data()) {
                     e.prevent_default();
@@ -2398,6 +2614,26 @@ struct Place {
     height: f64,
 }
 
+/// How far toward `target` the list `el` can scroll once its rows are laid out.
+///
+/// This runs before Blitz lays out the rows' new heights, and a scroll past the old
+/// range would stop at its end: it waits for the range, a few frames at most, and else
+/// returns as far as it reaches.
+async fn reachable(el: &MountedData, target: f64) -> f64 {
+    let mut to = target;
+    for _ in 0..LAYOUT_WAITS {
+        match el.get_scroll_size().await {
+            Ok(range) if range.height >= target - 0.5 => return target,
+            Ok(range) => {
+                to = range.height;
+                tokio::time::sleep(FRAME).await;
+            }
+            Err(_) => break,
+        }
+    }
+    to
+}
+
 /// Scrolls the sidebar's feeds `pane` the least that shows its row `index`, or to the
 /// top for every feed's row.
 ///
@@ -2547,8 +2783,27 @@ fn ArticleList() -> Element {
     let mut list_pane = reading.list_pane;
     let unread = i64::try_from(reading.unread_count()).unwrap_or(i64::MAX);
     let selection = (reading.selection)();
-    let title = list_title(&(reading.library)(), &selection);
-    let unread_label = if unread == 0 {
+    let searched = reading
+        .search
+        .read()
+        .active()
+        .map(|(_, everywhere)| everywhere);
+    // A search of every feed lists the view's articles from all of them.
+    let everywhere = searched == Some(true);
+    let listed = if everywhere {
+        Selection {
+            view: selection.view,
+            scope: Scope::All,
+        }
+    } else {
+        selection.clone()
+    };
+    let title = list_title(&(reading.library)(), &listed);
+    // The results' count, not the feed's unread one, which the title would suggest.
+    let unread_label = if searched.is_some() {
+        let found = reading.articles.read().rows.len();
+        t_count("list.results", i64::try_from(found).unwrap_or(i64::MAX))
+    } else if unread == 0 {
         t("list.noUnread")
     } else {
         t_count("list.unread", unread)
@@ -2574,6 +2829,12 @@ fn ArticleList() -> Element {
     } else {
         t("list.showSidebar")
     };
+    let searching = reading.search.read().open;
+    let search_key = if COMMAND_MODIFIER == Modifiers::META {
+        "⌘F".to_owned()
+    } else {
+        format!("{}+F", t("keys.ctrl"))
+    };
 
     rsx! {
         section {
@@ -2597,6 +2858,13 @@ fn ArticleList() -> Element {
                 div { class: "list-title",
                     h1 { "{title}" }
                     p { "{unread_label}" }
+                }
+                button {
+                    class: "icon-button",
+                    aria_label: t("list.search"),
+                    title: t_with("list.searchWithKey", &[("key", search_key.as_str())]),
+                    onclick: move |_| reading.open_search(),
+                    Icon { size: 18, stroke: "2", paths: SEARCH }
                 }
                 div { class: "mark-all",
                     // The window closes the question on any click that reaches it.
@@ -2625,6 +2893,9 @@ fn ArticleList() -> Element {
                     }
                 }
             }
+            if searching {
+                SearchBar {}
+            }
             div { class: body_class,
                 for key in std::iter::once(key) {
                     Viewport { key: "{key}" }
@@ -2651,13 +2922,77 @@ fn ArticleList() -> Element {
     }
 }
 
+/// The search field over the article list, and the choice to search every feed when
+/// the sidebar has one feed or folder selected.
+#[component]
+fn SearchBar() -> Element {
+    let app = use_context::<Arc<App>>();
+    let mut reading = use_context::<Reading>();
+    let search = (reading.search)();
+    let scoped = (reading.selection)().scope != Scope::All;
+
+    rsx! {
+        div { class: "search-bar", role: "search",
+            input {
+                class: "search-field",
+                aria_label: t("list.search"),
+                placeholder: t("list.search"),
+                value: "{search.query}",
+                spellcheck: "false",
+                onmounted: move |e: MountedEvent| async move {
+                    reading.search_field.set(Some(e.data()));
+                    if let Err(err) = e.data().set_focus(true).await {
+                        tracing::warn!("focusing the search field failed: {err}");
+                    }
+                },
+                oninput: move |e| reading.set_query(e.value()),
+                onkeydown: move |e: Event<KeyboardData>| {
+                    if e.modifiers().intersects(COMMAND_MODIFIER | ACCOUNT_MODIFIER) {
+                        return;
+                    }
+                    // Other keys typed here are the field's, not the window's.
+                    e.stop_propagation();
+                    match e.key() {
+                        Key::Named(NamedKey::Escape) => reading.close_search(),
+                        Key::Named(NamedKey::Enter | NamedKey::ArrowDown) => {
+                            e.prevent_default();
+                            reading.leave_search_field(&app);
+                        }
+                        _ => {}
+                    }
+                },
+            }
+            if scoped {
+                button {
+                    class: "search-everywhere",
+                    "aria-pressed": "{search.everywhere}",
+                    onclick: move |_| {
+                        reading.toggle_search_everywhere();
+                        // Back to the field, so typing goes on there.
+                        reading.open_search();
+                    },
+                    {t("list.searchEverywhere")}
+                }
+            }
+            button {
+                class: "icon-button",
+                aria_label: t("list.closeSearch"),
+                title: t("list.closeSearch"),
+                onclick: move |_| reading.close_search(),
+                Icon { size: 16, stroke: "2", paths: X }
+            }
+        }
+    }
+}
+
 /// What the article list lists, which keys its viewport. A new list starts at the top: a
 /// new selection or account gets a new viewport, with its own scroll state.
 fn list_key(reading: &Reading) -> String {
     format!(
-        "{:?}/{:?}",
+        "{:?}/{:?}/{:?}",
         reading.account.read(),
-        reading.selection.read()
+        reading.selection.read(),
+        reading.search.read().active()
     )
 }
 
@@ -2796,11 +3131,19 @@ fn Viewport() -> Element {
             if let Some((_, task)) = pending.take() {
                 task.cancel();
             }
-            top.set(target);
-            let to = dioxus_html::geometry::PixelsVector2D::new(0.0, target);
-            if let Err(e) = el.scroll(to, ScrollBehavior::Instant).await {
-                tracing::warn!("scrolling the list failed: {e}");
-            }
+            // A list just mounted, as search results with the article open, isn't laid
+            // out yet: the scroll would stop short while the rows drawn followed `top`.
+            // It waits as a hold, which the user's scroll or a newer one replaces.
+            let task = spawn(async move {
+                let to = reachable(&el, target).await;
+                pending.set(None);
+                top.set(to);
+                let to = dioxus_html::geometry::PixelsVector2D::new(0.0, to);
+                if let Err(e) = el.scroll(to, ScrollBehavior::Instant).await {
+                    tracing::warn!("scrolling the list failed: {e}");
+                }
+            });
+            pending.set(Some((target, task)));
         });
     });
 
@@ -2830,10 +3173,10 @@ fn Viewport() -> Element {
     // to the end.
     let held = anchor.peek().as_ref().and_then(|a| {
         a.hold(
-            &offsets,
-            list,
-            view_top,
-            waiting.is_none().then_some(scroll),
+            &offsets, list, view_top,
+            // Also a waiting scroll's target: that of the open article or a search's
+            // end was set apart from the anchor, which moves with it.
+            scroll,
         )
     });
     let goal = held
@@ -2857,23 +3200,7 @@ fn Viewport() -> Element {
             // `top` stays where the viewport is until the scroll: the renders until
             // then draw the rows there. Whatever else scrolls the list cancels this.
             let task = spawn(async move {
-                // This runs before Blitz lays out the rows' new heights, and a scroll
-                // past the old range would stop at its end: wait for the range, a
-                // few frames at most, and else scroll as far as it reaches.
-                let mut to = target;
-                for _ in 0..LAYOUT_WAITS {
-                    match el.get_scroll_size().await {
-                        Ok(range) if range.height >= target - 0.5 => {
-                            to = target;
-                            break;
-                        }
-                        Ok(range) => {
-                            to = range.height;
-                            tokio::time::sleep(FRAME).await;
-                        }
-                        Err(_) => break,
-                    }
-                }
+                let to = reachable(&el, target).await;
                 pending.set(None);
                 // Both before the next frame: the rows drawn follow the scroll.
                 top.set(to);
@@ -2928,10 +3255,14 @@ fn Viewport() -> Element {
         let settles = settle.borrow_mut().settles(id.clone(), place.top);
         (highlight_class(settles), place)
     });
-    let empty = t(&format!(
-        "views.{}.empty",
-        view_key(reading.selection.read().view)
-    ));
+    let empty = if reading.search.read().active().is_some() {
+        t("list.noMatches")
+    } else {
+        t(&format!(
+            "views.{}.empty",
+            view_key(reading.selection.read().view)
+        ))
+    };
     let lib = reading.library.read();
     let feed_title = |id: &str| {
         lib.feeds
@@ -3008,7 +3339,37 @@ fn Viewport() -> Element {
         div {
             class: "viewport",
             style: "{stretched}",
-            onmounted: move |e: MountedEvent| mounted.set(Some(e.data())),
+            onmounted: move |e: MountedEvent| {
+                let el = e.data();
+                mounted.set(Some(Rc::clone(&el)));
+                // Back from a search: where this list was before it.
+                let back = reading
+                    .restore
+                    .peek()
+                    .as_ref()
+                    .is_some_and(|r| r.list == list_key(&reading));
+                if back && let Some(restore) = reading.restore.take() {
+                    let target = {
+                        let (list, placed) = (reading.articles.peek(), placed.peek());
+                        restore.target(&list.rows, &placed.0)
+                    };
+                    // A hold, as the list's own: bringing the open article into view
+                    // takes its place.
+                    if let Some((_, task)) = pending.take() {
+                        task.cancel();
+                    }
+                    let task = spawn(async move {
+                        let to = reachable(&el, target).await;
+                        pending.set(None);
+                        top.set(to);
+                        let to = dioxus_html::geometry::PixelsVector2D::new(0.0, to);
+                        if let Err(e) = el.scroll(to, ScrollBehavior::Instant).await {
+                            tracing::warn!("scrolling the list back failed: {e}");
+                        }
+                    });
+                    pending.set(Some((target, task)));
+                }
+            },
             onwheel: move |e| pull.on_wheel(&e),
             ontouchstart: move |e| pull.on_touch_start(&e),
             ontouchmove: move |e| pull.on_touch_move(&e),
@@ -3632,6 +3993,25 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn search_restore_finds_the_first_row_still_listed() {
+        let restore = Restore {
+            list: String::new(),
+            rows: vec![("1".into(), -20.0), ("2".into(), 60.0), ("3".into(), 140.0)],
+            top: 500.0,
+        };
+        let rows = articles(&[false; 4]);
+        let offsets = [0.0, 80.0, 160.0, 240.0, 320.0];
+        assert_eq!(restore.target(&rows, &offsets), 100.0);
+        // Row 1 gone, as read in Unread: row 2 keeps its place in the view.
+        let rows: Vec<_> = rows.into_iter().filter(|a| a.id != "1").collect();
+        assert_eq!(restore.target(&rows, &offsets), 20.0);
+        // Above the list's start: its top.
+        let rows: Vec<_> = rows.into_iter().filter(|a| a.id != "0").collect();
+        assert_eq!(restore.target(&rows, &offsets), 0.0);
+        assert_eq!(restore.target(&[], &[0.0]), 500.0);
+    }
+
     /// A headline's lines as the tests count them: every character 10 px wide, wrapped
     /// anywhere at `width`.
     fn count_lines(title: &str, width: f64) -> u32 {
@@ -3738,15 +4118,18 @@ mod tests {
         // Halfway into row 10, the top row: halfway into it still.
         let top = narrow[10] + (narrow[11] - narrow[10]) / 2.0;
         let anchor = Anchor::at(&narrow, &list, top, top, 600.0, None).unwrap();
-        assert_eq!(anchor.hold(&narrow, &list, top, None), None);
+        assert_eq!(anchor.hold(&narrow, &list, top, anchor.scroll), None);
         assert_eq!(
-            anchor.hold(&wide, &list, top, None),
+            anchor.hold(&wide, &list, top, anchor.scroll),
             Some(wide[10] + (wide[11] - wide[10]) / 2.0)
         );
         // The open article's row, showing, keeps its place in the viewport.
         let anchor = Anchor::at(&narrow, &list, top, top, 600.0, Some(11)).unwrap();
         let below = narrow[11] - top;
-        assert_eq!(anchor.hold(&wide, &list, top, None), Some(wide[11] - below));
+        assert_eq!(
+            anchor.hold(&wide, &list, top, anchor.scroll),
+            Some(wide[11] - below)
+        );
         // One out of view doesn't, and the top of the list stays there.
         let anchor = Anchor::at(&narrow, &list, top, top, 600.0, Some(90)).unwrap();
         assert_eq!(anchor.id, "10");
@@ -3758,20 +4141,20 @@ mod tests {
         let moved: Rc<[f64]> = place(&synced, ThumbnailSize::Large, 340.0).into();
         let anchor = Anchor::at(&narrow, &list, top, top, 600.0, None).unwrap();
         assert_eq!(
-            anchor.hold(&moved, &synced, top, None),
+            anchor.hold(&moved, &synced, top, anchor.scroll),
             Some(top + narrow[1])
         );
         // Also when the rows are as high as before, and the offsets stay as they were.
         synced.pop();
         assert_eq!(
-            anchor.hold(&narrow, &synced, top, None),
+            anchor.hold(&narrow, &synced, top, anchor.scroll),
             Some(top + narrow[1])
         );
         // A scroll since the anchor was taken moves the list too, by the scroll
         // position: not by where the viewport shows, which a shorter list clamps.
         let anchor = Anchor::at(&narrow, &list, top, top, 600.0, None).unwrap();
         assert_eq!(
-            anchor.hold(&wide, &list, top, Some(top + 50.0)),
+            anchor.hold(&wide, &list, top, top + 50.0),
             Some(wide[10] + (wide[11] - wide[10]) / 2.0 + 50.0)
         );
         // Deep in the list, rows grown shorter make the viewport clamp to the end.
@@ -3781,7 +4164,7 @@ mod tests {
         let clamped = short[100] - 600.0;
         assert!(clamped < deep);
         assert_eq!(
-            anchor.hold(&short, &list, clamped, Some(deep)),
+            anchor.hold(&short, &list, clamped, deep),
             Some(short[60] + (short[61] - short[60]) / 2.0)
         );
     }

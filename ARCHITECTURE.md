@@ -36,6 +36,9 @@ server).
 
 - `db`: the SQLite cache. `pending` holds queued read and star changes. A second
   connection serves the UI's reads, so they don't wait behind a sync's writes (WAL).
+  `search` is an FTS5 index of the articles' titles, authors and text, kept in step
+  by triggers, whatever writes the articles. They call `search_text`, a Rust function
+  registered on the write connection, which turns the untrusted HTML into plain text.
 - `api`: the Google Reader client. Only calls FreshRSS, Miniflux and The Old Reader
   all have; articles come by ID.
 - `sync`: two-way sync. Push queued changes, pull subscriptions, articles and flags,

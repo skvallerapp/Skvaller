@@ -534,6 +534,42 @@ button {
   padding-left: 84px;
 }
 
+/* The search field under the list's toolbar, while open. */
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--separator);
+  flex: none;
+}
+
+input.search-field {
+  flex: 1;
+  height: 28px;
+}
+
+/* Search every feed, not only the selected one: on while pressed. */
+.search-everywhere {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+
+.search-everywhere:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.search-everywhere[aria-pressed='true'] {
+  background: var(--active);
+  color: var(--text);
+}
+
 /* The list's title, with its unread count under it. */
 .list-title {
   flex: 1;
@@ -1054,7 +1090,8 @@ button {
 }
 
 .add-feed-form input,
-input.rename {
+input.rename,
+input.search-field {
   min-width: 0;
   padding: 0 8px;
   border: 1px solid var(--separator);
@@ -1070,7 +1107,8 @@ input.rename {
 }
 
 .add-feed-form input:focus,
-input.rename:focus {
+input.rename:focus,
+input.search-field:focus {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
 }

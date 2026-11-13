@@ -6,18 +6,21 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use rusqlite::config::DbConfig;
+use rusqlite::functions::FunctionFlags;
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::full_text::MAX_ATTEMPTS;
+use crate::text::{INVISIBLE, plain_text};
 use crate::{Error, Result, api, thumbnail};
 
-const SCHEMA_VERSION: i32 = 8;
+const SCHEMA_VERSION: i32 = 9;
 
-/// The schema. A change to it bumps [`SCHEMA_VERSION`] and adds a migration to
-/// [`Db::init`].
+/// The schema as of version 8, the oldest version that is migrated rather than reset.
+/// A change to the schema bumps [`SCHEMA_VERSION`], goes in a new constant like
+/// [`SEARCH`] and adds a migration to [`Db::init`].
 const SCHEMA: &str = "
 CREATE TABLE folders (
     id    TEXT PRIMARY KEY,
@@ -114,6 +117,77 @@ CREATE TABLE meta (
     value NOT NULL
 );
 ";
+
+/// Version 9: full-text search over the articles' titles, authors and text.
+const SEARCH: &str = "
+-- Contentless: only the index is kept, not the text. Keyed by the article's rowid,
+-- which stays put: only an empty cache is ever vacuumed (`Db::init`).
+CREATE VIRTUAL TABLE search USING fts5 (
+    title, author, body,
+    content = '', contentless_delete = 1,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+-- What `search` holds for an article: the text of its Reader View page once fetched,
+-- else of the feed's HTML. `search_text` is a function `Db` registers.
+CREATE VIEW search_source AS
+SELECT a.rowid AS article_rowid, a.id, a.title, a.author,
+       search_text(coalesce(f.html, h.html, '')) AS body
+FROM articles a
+LEFT JOIN article_html h ON h.article_id = a.id
+LEFT JOIN full_text f ON f.article_id = a.id;
+-- Each write to `search` deletes the rowid's entry first, as a rowid freed by a delete
+-- may come back. Not INSERT OR REPLACE: in a trigger, FTS5 takes the outer statement's
+-- conflict mode instead, and keeps the old words too.
+CREATE TRIGGER search_article_insert AFTER INSERT ON articles BEGIN
+    DELETE FROM search WHERE rowid = new.rowid;
+    INSERT INTO search (rowid, title, author, body)
+    VALUES (new.rowid, new.title, new.author, '');
+END;
+CREATE TRIGGER search_article_update AFTER UPDATE OF title, author ON articles
+WHEN old.title IS NOT new.title OR old.author IS NOT new.author
+BEGIN
+    DELETE FROM search WHERE rowid = new.rowid;
+    INSERT INTO search (rowid, title, author, body)
+    SELECT article_rowid, title, author, body FROM search_source WHERE id = new.id;
+END;
+CREATE TRIGGER search_article_delete AFTER DELETE ON articles BEGIN
+    DELETE FROM search WHERE rowid = old.rowid;
+END;
+CREATE TRIGGER search_html_insert AFTER INSERT ON article_html BEGIN
+    DELETE FROM search WHERE rowid = (SELECT rowid FROM articles WHERE id = new.article_id);
+    INSERT INTO search (rowid, title, author, body)
+    SELECT article_rowid, title, author, body FROM search_source WHERE id = new.article_id;
+END;
+CREATE TRIGGER search_html_update AFTER UPDATE OF html ON article_html BEGIN
+    DELETE FROM search WHERE rowid = (SELECT rowid FROM articles WHERE id = new.article_id);
+    INSERT INTO search (rowid, title, author, body)
+    SELECT article_rowid, title, author, body FROM search_source WHERE id = new.article_id;
+END;
+CREATE TRIGGER search_full_text_insert AFTER INSERT ON full_text WHEN new.html IS NOT NULL
+BEGIN
+    DELETE FROM search WHERE rowid = (SELECT rowid FROM articles WHERE id = new.article_id);
+    INSERT INTO search (rowid, title, author, body)
+    SELECT article_rowid, title, author, body FROM search_source WHERE id = new.article_id;
+END;
+CREATE TRIGGER search_full_text_update AFTER UPDATE OF html ON full_text
+WHEN new.html IS NOT old.html
+BEGIN
+    DELETE FROM search WHERE rowid = (SELECT rowid FROM articles WHERE id = new.article_id);
+    INSERT INTO search (rowid, title, author, body)
+    SELECT article_rowid, title, author, body FROM search_source WHERE id = new.article_id;
+END;
+-- A page dropped for a new URL: back to the feed's text. Nothing to do when the article
+-- went too.
+CREATE TRIGGER search_full_text_delete AFTER DELETE ON full_text BEGIN
+    DELETE FROM search WHERE rowid = (SELECT rowid FROM articles WHERE id = old.article_id);
+    INSERT INTO search (rowid, title, author, body)
+    SELECT article_rowid, title, author, body FROM search_source WHERE id = old.article_id;
+END;
+";
+
+/// How much of an article's text is indexed, in characters: a book-length page would
+/// grow the index for words nobody looks for that deep.
+const INDEXED_CHARS: usize = 100_000;
 
 /// Stores an article's HTML (`?1` ID, `?2` HTML) if the article is cached in feed `?3`.
 /// Its WHERE skips the write when nothing changed.
@@ -356,10 +430,30 @@ impl Db {
     }
 
     fn init(conn: Connection) -> Result<Self> {
+        // Before the schema: its triggers call it.
+        conn.create_scalar_function(
+            "search_text",
+            1,
+            FunctionFlags::SQLITE_UTF8
+                | FunctionFlags::SQLITE_DETERMINISTIC
+                | FunctionFlags::SQLITE_INNOCUOUS,
+            |ctx| {
+                Ok(plain_text(
+                    ctx.get_raw(0).as_str().unwrap_or(""),
+                    INDEXED_CHARS,
+                ))
+            },
+        )?;
         let version: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         match version {
             SCHEMA_VERSION => {}
             v if v > SCHEMA_VERSION => return Err(Error::CacheTooNew),
+            8 => conn.execute_batch(&format!(
+                "BEGIN IMMEDIATE; {SEARCH}
+                 INSERT INTO search (rowid, title, author, body)
+                 SELECT article_rowid, title, author, body FROM search_source;
+                 PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+            ))?,
             v => {
                 // Lets prune give freed pages back to the file system. Takes effect
                 // only before the first table exists, or at a VACUUM.
@@ -373,7 +467,8 @@ impl Db {
                     conn.set_db_config(DbConfig::SQLITE_DBCONFIG_RESET_DATABASE, false)?;
                 }
                 conn.execute_batch(&format!(
-                    "BEGIN IMMEDIATE; {SCHEMA} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+                    "BEGIN IMMEDIATE; {SCHEMA} {SEARCH}
+                     PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
                 ))?;
             }
         }
@@ -436,40 +531,75 @@ impl Db {
     ///
     /// Returns `Error::Db` if the cache can't be read.
     pub fn articles(&self, selection: &Selection) -> Result<Vec<ArticleSummary>> {
+        self.list(selection, None)
+    }
+
+    /// Articles for `selection` whose title, author or text has every word of `query`,
+    /// newest first. A word matches as the start of a word, so results come while
+    /// typing; a single character only itself, as one that starts nearly every article
+    /// is slow to look up. A query without any letters or digits finds nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be read.
+    pub fn search(&self, selection: &Selection, query: &str) -> Result<Vec<ArticleSummary>> {
+        match match_expression(query) {
+            Some(expr) => self.list(selection, Some(&expr)),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Articles for `selection`, newest first; only those `search` matches, if given an
+    /// FTS5 query.
+    fn list(&self, selection: &Selection, search: Option<&str>) -> Result<Vec<ArticleSummary>> {
         let view = match selection.view {
             View::Unread => "NOT read",
             View::Starred => "starred",
             View::All => "1",
         };
-        let (scope, param) = match &selection.scope {
+        let (scope, scope_id) = match &selection.scope {
             Scope::All => ("1", None),
-            Scope::Feed { id } => ("feed_id = ?1", Some(id)),
+            Scope::Feed { id } => ("feed_id = :scope", Some(id)),
             Scope::Folder { id } => (
-                "feed_id IN (SELECT id FROM feeds WHERE folder_id = ?1)",
+                "feed_id IN (SELECT id FROM feeds WHERE folder_id = :scope)",
                 Some(id),
             ),
         };
+        let matching = if search.is_some() {
+            "rowid IN (SELECT rowid FROM search WHERE search MATCH :search)"
+        } else {
+            "1"
+        };
         let conn = self.read();
         let mut stmt = conn.prepare(&format!(
-            "SELECT id, feed_id, title, author, url, published, read, starred,
-                 EXISTS (SELECT 1 FROM thumbnails WHERE article_id = id)
-             FROM articles WHERE {view} AND {scope} ORDER BY published DESC, id DESC"
+            "SELECT {SUMMARY} FROM articles WHERE {view} AND {scope} AND {matching}
+             ORDER BY published DESC, id DESC"
         ))?;
-        let params: Vec<&String> = param.into_iter().collect();
-        let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
-            Ok(ArticleSummary {
-                id: r.get(0)?,
-                feed_id: r.get(1)?,
-                title: r.get(2)?,
-                author: r.get(3)?,
-                url: r.get(4)?,
-                published: r.get(5)?,
-                read: r.get(6)?,
-                starred: r.get(7)?,
-                thumbnail: r.get(8)?,
-            })
-        })?;
+        let mut params: Vec<(&str, &dyn rusqlite::ToSql)> = Vec::new();
+        if let Some(id) = &scope_id {
+            params.push((":scope", id));
+        }
+        if let Some(search) = &search {
+            params.push((":search", search));
+        }
+        let rows = stmt.query_map(params.as_slice(), summary)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The article as the list shows it, if it is cached.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Db` if the cache can't be read.
+    pub fn article(&self, id: &str) -> Result<Option<ArticleSummary>> {
+        Ok(self
+            .read()
+            .query_row(
+                &format!("SELECT {SUMMARY} FROM articles WHERE id = ?1"),
+                [id],
+                summary,
+            )
+            .optional()?)
     }
 
     /// The article's thumbnail JPEG, if one is cached.
@@ -1307,6 +1437,52 @@ fn set_meta(conn: &Connection, key: &str, value: i64) -> Result<()> {
     Ok(())
 }
 
+/// The columns of `articles` that [`summary`] reads.
+const SUMMARY: &str = "id, feed_id, title, author, url, published, read, starred,
+     EXISTS (SELECT 1 FROM thumbnails WHERE article_id = id)";
+
+/// An [`ArticleSummary`] from a row of [`SUMMARY`].
+fn summary(r: &rusqlite::Row<'_>) -> rusqlite::Result<ArticleSummary> {
+    Ok(ArticleSummary {
+        id: r.get(0)?,
+        feed_id: r.get(1)?,
+        title: r.get(2)?,
+        author: r.get(3)?,
+        url: r.get(4)?,
+        published: r.get(5)?,
+        read: r.get(6)?,
+        starred: r.get(7)?,
+        thumbnail: r.get(8)?,
+    })
+}
+
+/// The FTS5 query for what the user typed: each word, quoted so its punctuation is
+/// never query syntax, as a prefix unless it ends in a single letter or digit, as `C++`
+/// or `I'm` do: FTS5 takes the prefix from the word's last token. Control characters
+/// are dropped, as FTS5 reads a NUL as the end of the string, and so are the invisible
+/// ones the indexed text drops, such as a soft hyphen pasted in. `None` if no word has
+/// a letter or digit.
+fn match_expression(query: &str) -> Option<String> {
+    let words: Vec<String> = query
+        .split_whitespace()
+        .map(|w| {
+            w.chars()
+                .filter(|c| !c.is_control() && !INVISIBLE.contains(c))
+                .collect::<String>()
+        })
+        .filter(|w| w.chars().any(char::is_alphanumeric))
+        .map(|w| {
+            let last = w
+                .rsplit(|c: char| !c.is_alphanumeric())
+                .find(|t| !t.is_empty())
+                .unwrap_or_default();
+            let prefix = if last.chars().count() > 1 { "*" } else { "" };
+            format!("\"{}\"{prefix}", w.replace('"', "\"\""))
+        })
+        .collect();
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
 fn json(values: &[impl AsRef<str>]) -> String {
     let values: Vec<&str> = values.iter().map(AsRef::as_ref).collect();
     serde_json::to_string(&values).expect("a slice of IDs serializes")
@@ -1808,10 +1984,241 @@ mod tests {
         assert_eq!(counts.starred_by_feed.get("feed/1"), None);
         assert_eq!(counts.starred_by_feed.get("feed/2"), Some(&1));
         assert_eq!(db.article_html("1").unwrap(), Some(String::new()));
+        assert!(
+            db.article("3")
+                .unwrap()
+                .is_some_and(|a| a.read && !a.starred)
+        );
+        assert_eq!(db.article("9").unwrap(), None);
         assert_eq!(db.article_html("9").unwrap(), None);
         assert_eq!(db.folders().unwrap().len(), 1);
         assert_eq!(db.feeds().unwrap().len(), 2);
 
+        drop(db);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    fn found(db: &Db, view: View, scope: Scope, query: &str) -> Vec<String> {
+        db.search(&Selection { view, scope }, query)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.id)
+            .collect()
+    }
+
+    /// The index's rows, which must be the articles' rowids, no more and no less.
+    fn indexed(db: &Db) -> (Vec<i64>, Vec<i64>) {
+        db.with_conn(|c| {
+            let all = |sql: &str| -> Vec<i64> {
+                let mut stmt = c.prepare(sql).unwrap();
+                stmt.query_map([], |r| r.get(0))
+                    .unwrap()
+                    .collect::<rusqlite::Result<_>>()
+                    .unwrap()
+            };
+            (
+                all("SELECT rowid FROM search ORDER BY rowid"),
+                all("SELECT rowid FROM articles ORDER BY rowid"),
+            )
+        })
+    }
+
+    #[test]
+    fn search_finds_words_in_title_author_and_text_but_not_markup() {
+        let db = Db::open_in_memory().unwrap();
+        db.replace_subscriptions(&[feed("feed/1", Some("tech")), feed("feed/2", None)])
+            .unwrap();
+        db.upsert_articles(&[
+            ArticleRow {
+                title: "Rust 2.0 released".into(),
+                ..article(1, "feed/1", false, false)
+            },
+            ArticleRow {
+                author: "Åsa Ström".into(),
+                ..article(2, "feed/1", true, false)
+            },
+            ArticleRow {
+                html: r#"<p>Kernel <b>scheduling</b> &amp; you</p>
+                         <a href="https://hidden.example/">link</a>
+                         <script>secretword()</script>"#
+                    .into(),
+                ..article(3, "feed/2", false, true)
+            },
+        ])
+        .unwrap();
+        let all = |q| found(&db, View::All, Scope::All, q);
+
+        assert_eq!(all("rust"), ["1"]);
+        assert_eq!(all("RUS"), ["1"], "a prefix, any case");
+        assert_eq!(all("rust released"), ["1"]);
+        assert_eq!(all("rust kernel"), Vec::<String>::new(), "every word");
+        assert_eq!(all("strom"), ["2"], "without diacritics");
+        assert_eq!(all("scheduling"), ["3"]);
+        assert_eq!(all("hidden"), Vec::<String>::new());
+        assert_eq!(all("secretword"), Vec::<String>::new());
+        assert_eq!(all("ar"), ["3", "2"], "newest first");
+        assert_eq!(all("r"), Vec::<String>::new(), "one character is no prefix");
+        assert_eq!(all("2"), ["2", "1"], "but matches itself");
+        assert_eq!(found(&db, View::Unread, Scope::All, "ar"), ["3"]);
+        assert_eq!(found(&db, View::Starred, Scope::All, "kernel"), ["3"]);
+        let tech = Scope::Folder { id: "tech".into() };
+        assert_eq!(found(&db, View::All, tech, "ar"), ["2"]);
+        let feed2 = Scope::Feed {
+            id: "feed/2".into(),
+        };
+        assert_eq!(found(&db, View::All, feed2, "rust"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn search_query_is_never_syntax() {
+        let db = db_with_article();
+        for query in [
+            "", "  ", "- * ()", "\"", "rust\"", "a AND", "NEAR(", "title:x", "^x",
+        ] {
+            assert!(
+                db.search(
+                    &Selection {
+                        view: View::All,
+                        scope: Scope::All
+                    },
+                    query
+                )
+                .is_ok(),
+                "{query}"
+            );
+        }
+        assert_eq!(found(&db, View::All, Scope::All, "(article)"), ["1"]);
+        assert_eq!(
+            found(&db, View::All, Scope::All, "--"),
+            Vec::<String>::new()
+        );
+        assert_eq!(found(&db, View::All, Scope::All, "arti\0cle"), ["1"]);
+        assert_eq!(
+            match_expression("C++ I'm ab").unwrap(),
+            r#""C++" "I'm" "ab"*"#
+        );
+        assert_eq!(
+            match_expression("Bundes\u{AD}tag").unwrap(),
+            r#""Bundestag"*"#
+        );
+        assert_eq!(
+            match_expression("e.g. x, rust.").unwrap(),
+            r#""e.g." "x," "rust."*"#
+        );
+    }
+
+    #[test]
+    fn search_follows_changes_and_removals() {
+        let db = Db::open_in_memory().unwrap();
+        db.replace_subscriptions(&[feed("feed/1", None), feed("feed/2", None)])
+            .unwrap();
+        db.upsert_articles(&[
+            ArticleRow {
+                html: "<p>old words</p>".into(),
+                url: "https://a.example/1".into(),
+                ..article(1, "feed/1", false, false)
+            },
+            article(2, "feed/2", true, false),
+        ])
+        .unwrap();
+        let all = |q| found(&db, View::All, Scope::All, q);
+
+        db.upsert_articles(&[ArticleRow {
+            author: "Byline".into(),
+            ..article(2, "feed/2", true, false)
+        }])
+        .unwrap();
+        assert_eq!(all("byline"), ["2"], "an author alone changed");
+
+        // A failed fetch leaves a row without text; the one that works fills it in.
+        db.full_text_failed("2", false).unwrap();
+        db.set_full_text("2", "", "<p>fetched later</p>").unwrap();
+        assert_eq!(all("fetched"), ["2"]);
+        db.set_full_text("2", "", "<p>fetched again</p>").unwrap();
+        assert_eq!(all("later"), Vec::<String>::new());
+        assert_eq!(all("again"), ["2"]);
+
+        db.upsert_articles(&[ArticleRow {
+            title: "Renamed".into(),
+            html: "<p>new words</p>".into(),
+            url: "https://a.example/1".into(),
+            ..article(1, "feed/1", false, false)
+        }])
+        .unwrap();
+        assert_eq!(all("old"), Vec::<String>::new());
+        assert_eq!(all("new renamed"), ["1"]);
+
+        db.set_full_text("1", "https://a.example/1", "<p>whole page text</p>")
+            .unwrap();
+        assert_eq!(all("page"), ["1"]);
+        // A new URL drops the old page's text, and the feed's counts again.
+        db.upsert_articles(&[ArticleRow {
+            title: "Renamed".into(),
+            html: "<p>new words</p>".into(),
+            url: "https://a.example/moved".into(),
+            ..article(1, "feed/1", false, false)
+        }])
+        .unwrap();
+        assert_eq!(all("page"), Vec::<String>::new());
+        assert_eq!(all("new"), ["1"]);
+        db.set_full_text("1", "https://a.example/moved", "<p>whole page text</p>")
+            .unwrap();
+        assert_eq!(all("page"), ["1"]);
+        assert_eq!(
+            all("new"),
+            Vec::<String>::new(),
+            "the full text stands for the feed's"
+        );
+
+        db.prune(i64::MAX, i64::MAX).unwrap();
+        assert_eq!(all("page"), Vec::<String>::new());
+        assert_eq!(indexed(&db).0, indexed(&db).1);
+
+        // A rowid freed by the delete comes back for the next article.
+        db.upsert_articles(&[ArticleRow {
+            title: "Third".into(),
+            ..article(3, "feed/2", false, false)
+        }])
+        .unwrap();
+        assert_eq!(all("third"), ["3"]);
+        assert_eq!(all("page"), Vec::<String>::new());
+        let (search, articles) = indexed(&db);
+        assert_eq!(search, articles);
+
+        db.unsubscribe("feed/2").unwrap();
+        db.replace_subscriptions(&[feed("feed/1", None)]).unwrap();
+        assert_eq!(all("third"), Vec::<String>::new());
+        let (search, articles) = indexed(&db);
+        assert_eq!(search, articles);
+    }
+
+    #[test]
+    fn version_8_cache_gets_its_articles_indexed() {
+        let path = std::env::temp_dir().join(format!("skvaller-v8-{}.db", std::process::id()));
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(&format!(
+            "{SCHEMA}
+             INSERT INTO feeds (id, title, subscribed) VALUES ('feed/1', 'Feed', 1);
+             INSERT INTO articles VALUES ('1', 'feed/1', 'Kept', 'Me', '', 1, 0, 1);
+             INSERT INTO article_html VALUES ('1', '<p>backfilled text</p>');
+             PRAGMA user_version = 8;"
+        ))
+        .unwrap();
+        drop(conn);
+
+        let db = Db::open(&path).unwrap();
+
+        assert_eq!(
+            found(&db, View::Starred, Scope::All, "backfilled kept"),
+            ["1"]
+        );
+        assert_eq!(
+            db.with_conn(|c| c.pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0)))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
         drop(db);
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
