@@ -36,6 +36,7 @@ dioxus-native = { workspace = true, features = [
 icu_calendar.workspace = true
 icu_datetime.workspace = true
 icu_locale_core.workspace = true
+icu_segmenter.workspace = true
 jiff.workspace = true
 mimalloc.workspace = true
 parley.workspace = true

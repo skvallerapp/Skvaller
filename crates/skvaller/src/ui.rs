@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use dioxus_html::input_data::MouseButton;
 use dioxus_native::prelude::*;
-use dioxus_native::{use_window_event, use_windows};
+use dioxus_native::{use_window, use_window_event, use_windows};
 use skvaller_app::{
     App, LIST_WIDTH, Layout, Library, MarkReadOn, PaneWidth, SIDEBAR_WIDTH, SortSubscriptions,
     SyncStatus, ThumbnailSize,
@@ -27,6 +27,7 @@ use crate::chrome::{DragArea, MAC};
 use crate::fonts;
 use crate::i18n::{t, t_count, t_with};
 use crate::icons::{CHECK, CHEVRON_RIGHT, Icon, LAYERS, PANEL_LEFT, SETTINGS};
+use crate::lines::{self, Lines};
 use crate::live::{Live, use_live};
 use crate::settings::{Pane as SettingsPane, SettingsWindow};
 use crate::shortcuts::{ARROWS, Action, key_name};
@@ -38,22 +39,39 @@ use manage::{AddFeed, ConfirmRemove, Manage, ManageMenu, RenameField, Target, is
 
 pub(crate) const APP_CSS: &str = include_str!("app.css");
 
-/// Height of an article list row, in CSS pixels: the Tauri version's row with three
-/// lines of headline. Rows are placed from these heights, never by measuring them.
-const ROW_HEIGHT: f64 = 87.0;
+// An article list row's parts, in CSS px, as app.css has them. Rows are placed from
+// these heights and the headline's lines (`lines::Lines`), never by measuring them.
 
-/// What a Large thumbnail adds to its row: a gap above it, its height and the row's
-/// bottom padding. The height is fixed, whatever the list's width, so rows stay placed
-/// by these heights; the thumbnail is served cropped to its width (`thumbs::Fit::wide`).
-const LARGE_THUMB_EXTRA: f64 = 8.0 + 180.0 + 11.0;
+/// A row's padding above and below (`.row`).
+const PAD_Y: f64 = 11.0;
+/// A row's padding at either side (`.row`).
+const PAD_X: f64 = 20.0;
+/// The meta line, 12 px at a line height of 1.3, and the gap below it (`.title`).
+const META: f64 = 12.0 * 1.3 + 3.0;
+/// A headline line: its font size at a line height of 1.3 (`.title`).
+const TITLE_LINE: f64 = lines::SIZE as f64 * 1.3;
+/// The most lines a headline shows: rows count it to at most this many, and its `.title`
+/// is clamped to the count.
+const TITLE_LINES: u32 = 3;
+/// The space between a thumbnail beside the text and the text (`.row`'s `gap`).
+const GAP: f64 = 12.0;
+/// The margin above a thumbnail beside the text (`.thumb.small`, `.thumb.medium`).
+const THUMB_MARGIN: f64 = 2.0;
+/// What a pane's border takes of the window: 9 px, less 4 px of margin a side
+/// (`.resizer`).
+const RESIZER: f64 = 1.0;
+/// The space above a Large thumbnail (`.text.below .title`).
+const LARGE_GAP: f64 = 8.0;
 
 /// Rows rendered above and below the visible ones, so a fast scroll doesn't show gaps
 /// before the next render.
 const OVERSCAN: usize = 8;
 
-/// The list's height before its first scroll event says what it is. Generous: rendering
-/// a few rows too many costs little, too few shows a gap.
-const INITIAL_VIEWPORT: f64 = 1600.0;
+/// The list's toolbar above its viewport: app.css's `--toolbar-height`, its border
+/// inside (`border-box`). The list's pane is as tall as the window, so the viewport is
+/// the window's height less this: taken from the CSS, never by measuring, as a resize
+/// brings no scroll event to measure by and Blitz may answer before its layout.
+const TOOLBAR: f64 = if MAC { 52.0 } else { 44.0 };
 
 /// How long an article is open before it is marked read, with [`MarkReadOn::Delay`].
 const MARK_READ_DELAY: Duration = Duration::from_secs(2);
@@ -171,6 +189,9 @@ struct Row {
     starred: bool,
     date: String,
     title: String,
+    /// The headline's height as counted, which clamps it: one counted short loses its
+    /// last line rather than showing half of it.
+    title_height: f64,
     thumb: Option<String>,
 }
 
@@ -181,9 +202,9 @@ struct Drawn {
     rows: Vec<Row>,
     top: f64,
     highlight: Option<Place>,
-    /// The class of a thumbnail beside the text, and whether one is below it instead.
+    /// The class of a thumbnail beside the text, or the height of a Large one below it.
     beside: Option<&'static str>,
-    below: bool,
+    below: Option<f64>,
 }
 
 /// The old article list sliding away after mark-all-read.
@@ -193,6 +214,101 @@ struct Ghost {
     /// slide over.
     list: String,
     drawn: Rc<Drawn>,
+}
+
+/// Where the article list was, by a row, so it stays in place when its rows' heights
+/// change: the open article's row keeps its place in the viewport while it shows,
+/// otherwise the top row keeps how far into it the viewport starts. A list at its top
+/// stays there.
+#[derive(Clone, Debug)]
+struct Anchor {
+    /// The offsets the list was placed by, so a change of them shows.
+    offsets: Rc<[f64]>,
+    /// Where the list was scrolled then, or where a hold waiting to scroll takes it:
+    /// the scroll position, not where the viewport shows it, which a list grown
+    /// shorter clamps.
+    scroll: f64,
+    id: String,
+    index: usize,
+    hold: Hold,
+}
+
+/// How an [`Anchor`]'s row keeps the list in place.
+#[derive(Clone, Copy, Debug)]
+enum Hold {
+    /// The row starts this far below the viewport's top.
+    Below(f64),
+    /// The viewport starts this fraction of the way into the row.
+    Into(f64),
+}
+
+impl Anchor {
+    /// The anchor for a list placed by `offsets`, held with the viewport at `top` and
+    /// scrolled to `scroll` ([`Anchor::scroll`]): by the open article's row,
+    /// `selected`, while it shows, or else by the top row. None at the top of the list.
+    fn at(
+        offsets: &Rc<[f64]>,
+        rows: &[ArticleSummary],
+        top: f64,
+        scroll: f64,
+        height: f64,
+        selected: Option<usize>,
+    ) -> Option<Self> {
+        if top <= 0.0 {
+            return None;
+        }
+        let shows = |&i: &usize| offsets[i + 1] > top && offsets[i] < top + height;
+        let (index, hold) = if let Some(i) = selected.filter(shows) {
+            (i, Hold::Below(offsets[i] - top))
+        } else {
+            let i = offsets.partition_point(|&o| o <= top).saturating_sub(1);
+            let row = offsets.get(i + 1)? - offsets[i];
+            (i, Hold::Into((top - offsets[i]) / row.max(1.0)))
+        };
+        Some(Self {
+            offsets: Rc::clone(offsets),
+            scroll,
+            id: rows.get(index)?.id.clone(),
+            index,
+            hold,
+        })
+    }
+
+    /// Where the viewport starts to keep the list in place now that it is placed by
+    /// `offsets` and has `rows`, if either moved its row, and the row is still there.
+    /// None while the viewport shows the list at its top, `top`, which stays there.
+    ///
+    /// `scroll` is where the list is scrolled now, if no hold waits to scroll it: a
+    /// scroll since the anchor was taken, as in the render that brings rows synced in,
+    /// moves the list too. Under half a pixel is taken as rounding.
+    fn hold(
+        &self,
+        offsets: &Rc<[f64]>,
+        rows: &[ArticleSummary],
+        top: f64,
+        scroll: Option<f64>,
+    ) -> Option<f64> {
+        let in_place = rows.get(self.index).is_some_and(|a| a.id == self.id);
+        // Offsets kept as they were may still hold other rows, as after a sync that
+        // added one above and dropped one below.
+        if (Rc::ptr_eq(&self.offsets, offsets) && in_place) || top <= 0.0 {
+            return None;
+        }
+        let index = if in_place {
+            self.index
+        } else {
+            rows.iter().position(|a| a.id == self.id)?
+        };
+        let (start, end) = (offsets[index], offsets[index + 1]);
+        let held = match self.hold {
+            Hold::Below(below) => start - below,
+            Hold::Into(into) => start + into * (end - start),
+        };
+        let since = scroll
+            .filter(|&scroll| differs(scroll, self.scroll))
+            .map_or(0.0, |scroll| scroll - self.scroll);
+        Some(held + since)
+    }
 }
 
 /// The open article's Reader View, as the Tauri version's store keeps it.
@@ -267,9 +383,12 @@ struct Reading {
     layout: Signal<Layout>,
     /// The border being dragged.
     drag: Signal<Option<Drag>>,
-    /// The list's width as last saved, which Large thumbnails follow: a drag doesn't
-    /// load new ones at every step.
+    /// The list's width as last saved, which Large thumbnails are served for: a drag
+    /// doesn't load new ones at every step.
     saved_list_width: Signal<f64>,
+    /// The window's width and height in CSS px: the width may squeeze the list, and
+    /// either may change what the list shows.
+    window_size: Signal<(f64, f64)>,
     /// The article list's element, measured for the width it shows.
     list_pane: Signal<Option<Rc<MountedData>>>,
     /// What the article list last drew. Kept at every render, so not a signal.
@@ -308,8 +427,8 @@ impl Edge {
     }
 }
 
-/// Whether two widths differ by half a pixel or more. A pointer move within the same
-/// pixel changes nothing.
+/// Whether two sizes or positions differ by half a pixel or more: less is rounding, as a
+/// pointer move within the same pixel.
 fn differs(a: f64, b: f64) -> bool {
     (a - b).abs() >= 0.5
 }
@@ -913,6 +1032,12 @@ impl Reading {
         shown.map_or(saved, |shown| shown.min(saved))
     }
 
+    /// The width the list shows at, as CSS lays it out: its own, or less in a window
+    /// too narrow for it beside the sidebar, but never less than its least.
+    fn list_shown_width(&self) -> f64 {
+        list_shown_width(&self.layout.read(), (self.window_size)().0)
+    }
+
     /// The pane the arrow keys move in. The list has them while the sidebar is
     /// hidden, whatever last selected a feed.
     fn active_pane(&self) -> Pane {
@@ -1243,6 +1368,7 @@ pub fn Root() -> Element {
             listed
         }
     });
+    let window = use_window();
     let mut reading = use_context_provider(|| Reading {
         account,
         selection,
@@ -1268,6 +1394,7 @@ pub fn Root() -> Element {
         layout: Signal::new(app.layout()),
         drag: Signal::new(None),
         saved_list_width: Signal::new(app.layout().list_width),
+        window_size: Signal::new(window_size(&*window)),
         list_pane: Signal::new(None),
         drawn: CopyValue::new(None),
         ghost: Signal::new(None),
@@ -1288,15 +1415,26 @@ pub fn Root() -> Element {
     });
     let windows = use_windows();
     let settings = use_context_provider(SettingsWindow::default);
-    // Settings goes with the main window, as the app does.
+    // Settings goes with the main window, as the app does, and the list follows the
+    // window's size: its width may squeeze the list, its height the list's viewport.
     use_window_event({
         let (settings, windows) = (settings.clone(), windows.clone());
+        let window = Arc::clone(&window);
         move |event, _| {
-            if matches!(
-                event,
-                dioxus_native::winit::event::WindowEvent::CloseRequested
-            ) {
-                settings.close(&windows);
+            use dioxus_native::winit::event::WindowEvent;
+            match event {
+                WindowEvent::CloseRequested => settings.close(&windows),
+                // A new scale factor, which may keep the surface's size.
+                WindowEvent::SurfaceResized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                    let size = window_size(&*window);
+                    let was = *reading.window_size.peek();
+                    // Minimized, as Windows has it: nothing shows to lay out.
+                    let shown = size.0 > 0.0 && size.1 > 0.0;
+                    if shown && (differs(was.0, size.0) || differs(was.1, size.1)) {
+                        reading.window_size.set(size);
+                    }
+                }
+                _ => {}
             }
         }
     });
@@ -2370,6 +2508,9 @@ fn ArticleList() -> Element {
         "list-body"
     };
     let confirming = (reading.confirming)() && unread > 0;
+    // Shared by the list's viewports, one for each selection, so each character is
+    // shaped, and each headline cut, once.
+    use_context_provider(|| Rc::new(RefCell::new(Lines::new(fonts::font_context()))));
     let sidebar_open = use_memo(move || reading.layout.read().sidebar_open)();
     let list_width = use_memo(move || reading.layout.read().list_width)();
     let active = use_memo(move || reading.active_pane())() == Pane::List;
@@ -2468,12 +2609,18 @@ fn list_key(reading: &Reading) -> String {
 }
 
 /// A row's thumbnail, meta line and headline, in the list or its ghost.
-fn row_content(row: &Row, beside: Option<&'static str>, below: bool) -> Element {
+fn row_content(row: &Row, beside: Option<&'static str>, below: Option<f64>) -> Element {
+    let thumb_below = below.zip(row.thumb.clone());
+    let text_class = if thumb_below.is_some() {
+        "text below"
+    } else {
+        "text"
+    };
     rsx! {
         if let (Some(class), Some(src)) = (beside, row.thumb.clone()) {
             img { class, src, alt: "" }
         }
-        div { class: "text",
+        div { class: text_class,
             div { class: "meta",
                 span { class: "feed", "{row.feed}" }
                 if row.starred {
@@ -2483,9 +2630,9 @@ fn row_content(row: &Row, beside: Option<&'static str>, below: bool) -> Element 
                 }
                 span { "{row.date}" }
             }
-            div { class: "title", "{row.title}" }
-            if let Some(src) = row.thumb.clone().filter(|_| below) {
-                img { class: "thumb large", src, alt: "" }
+            div { class: "title", style: "max-height: {row.title_height}px", "{row.title}" }
+            if let Some((height, src)) = thumb_below {
+                img { class: "thumb large", style: "height: {height}px", src, alt: "" }
             }
         }
     }
@@ -2498,8 +2645,8 @@ fn Viewport() -> Element {
     let live = use_context::<Live>();
     let dates = (live.dates)();
     let mut reading = use_context::<Reading>();
-    let size = live.settings.read().thumbnail_size;
     let settle = use_hook(|| Rc::new(RefCell::new(Settle::<String>::new())));
+    let cutter = use_context::<Rc<RefCell<Lines>>>();
     // The open article's row, found again only when the article or the list changes, not
     // at every scroll.
     let selected_row = use_memo(move || {
@@ -2512,13 +2659,37 @@ fn Viewport() -> Element {
             .iter()
             .position(|a| &a.id == id)
     });
-    // Where each row starts: a Large thumbnail makes its row taller.
-    let offsets = use_memo(move || {
-        let size = live.settings.read().thumbnail_size;
-        row_offsets(&reading.articles.read().rows, size)
+    // What sizes the rows, apart from the rows themselves.
+    let size = use_memo(move || live.settings.read().thumbnail_size);
+    let font = use_memo(move || live.settings.read().ui_font);
+    let shown_width = use_memo(move || reading.list_shown_width());
+    // Each row's headline cut where it may wrap: again only for new rows or a new font.
+    let headlines = use_memo(move || {
+        let stack = fonts::stack(font());
+        let rows = &reading.articles.read().rows;
+        cutter
+            .borrow_mut()
+            .headlines(&stack, rows.iter().map(|a| a.title.as_str()))
     });
+    // How many lines each row's headline takes, and where each row starts, at the width
+    // the list shows, as during a drag.
+    let placed = use_memo(move || {
+        let (size, width) = (size(), shown_width());
+        let headlines = headlines();
+        let rows = &reading.articles.read().rows;
+        debug_assert_eq!(rows.len(), headlines.len(), "headlines cut from other rows");
+        let counts: Rc<[u32]> = rows
+            .iter()
+            .zip(headlines.iter())
+            .map(|(a, h)| h.lines(title_width(size, width, a.thumbnail), TITLE_LINES))
+            .collect();
+        let offsets = row_offsets(rows, size, width, &counts);
+        (Rc::<[f64]>::from(offsets), counts)
+    });
+    let mut anchor = use_hook(|| CopyValue::new(None::<Anchor>));
+    // The list's scroll to where it holds, while it waits for the layout, and where to.
+    let mut pending = use_hook(|| CopyValue::new(None::<(f64, dioxus_core::Task)>));
     let mut top = use_signal(|| 0.0_f64);
-    let mut height = use_signal(|| INITIAL_VIEWPORT);
     let mut mounted = use_signal(|| None::<Rc<MountedData>>);
 
     // Brings a newly opened article's row into view, as when stepping with the keyboard.
@@ -2531,19 +2702,12 @@ fn Viewport() -> Element {
             return;
         };
         spawn(async move {
-            // The height scroll events report goes stale when the window resizes, and
-            // there is none before the first scroll: measure it.
-            let view_height = match el.get_client_rect().await {
-                Ok(rect) => rect.height(),
-                Err(_) => *height.peek(),
-            };
-            if (*height.peek() - view_height).abs() >= 1.0 {
-                height.set(view_height);
-            }
+            let view_height = viewport_height(reading.window_size.peek().1);
             // Found now, not when the effect ran: a reload meanwhile may have moved the
             // row, or taken it away.
             let place = {
-                let (list, offsets) = (reading.articles.peek(), offsets.peek());
+                let (list, placed) = (reading.articles.peek(), placed.peek());
+                let offsets = &placed.0;
                 list.rows
                     .iter()
                     .position(|a| a.id == id)
@@ -2552,14 +2716,21 @@ fn Viewport() -> Element {
             let Some((row_top, row_bottom)) = place else {
                 return;
             };
-            let view_top = *top.peek();
+            // From where a hold waiting to scroll takes the list, if one is.
+            let held = pending.peek().as_ref().map(|&(target, _)| target);
+            let view_top = held.unwrap_or(*top.peek());
             let target = if row_top < view_top {
                 row_top
             } else if row_bottom > view_top + view_height {
-                row_bottom - view_height
+                // A row taller than the list shows its top.
+                (row_bottom - view_height).min(row_top)
             } else {
                 return;
             };
+            // This scroll takes the hold's place.
+            if let Some((_, task)) = pending.take() {
+                task.cancel();
+            }
             top.set(target);
             let to = dioxus_html::geometry::PixelsVector2D::new(0.0, target);
             if let Err(e) = el.scroll(to, ScrollBehavior::Instant).await {
@@ -2568,27 +2739,117 @@ fn Viewport() -> Element {
         });
     });
 
+    let size = size();
+    let width = shown_width();
     let listed = reading.articles.read();
     let list = &listed.rows;
-    let offsets = offsets.read();
+    let (offsets, counts) = placed();
     let total = offsets[list.len()];
-    // A list made shorter, as by a smaller thumbnail size, may still have the old scroll
-    // position until a scroll event says where the viewport clamped it.
-    let view_top = top().min((total - height()).max(0.0));
-    let (first, last) = visible_rows(&offsets, view_top, height());
+    let height = viewport_height((reading.window_size)().1);
+    let selected = reading.article.read().as_ref().map(|a| a.id.clone());
+    // The furthest the list scrolls. A list grown shorter, as by a smaller thumbnail
+    // size, shows its end, but Blitz keeps the scroll position past it: the list
+    // scrolls back itself, below.
+    let end = (total - height).max(0.0);
+    let mut view_top = top().min(end);
+    // Where the list is scrolled, or where a hold waiting to scroll takes it.
+    let waiting = pending.peek().as_ref().map(|&(target, _)| target);
+    let scroll = waiting.unwrap_or(*top.peek());
+    // Rows whose heights changed, for a new width, font or thumbnail size, or rows
+    // synced in above, keep the list where it was; a list scrolled past its end goes
+    // to the end.
+    let held = anchor.peek().as_ref().and_then(|a| {
+        a.hold(
+            &offsets,
+            list,
+            view_top,
+            waiting.is_none().then_some(scroll),
+        )
+    });
+    let goal = held
+        .map(|target| target.min(end).max(0.0))
+        .or_else(|| (scroll > end + 0.5).then_some(end));
+    // Where the viewport is until the list scrolls to its goal.
+    let still_at = view_top;
+    // Where the list is held, which the anchor is taken at: its goal, even when that is
+    // under half a pixel off and not scrolled to, so steps that small don't add up.
+    let mut anchor_top = waiting.unwrap_or(view_top);
+    if let Some(target) = goal {
+        anchor_top = target;
+        if differs(target, scroll)
+            && let Some(el) = mounted.peek().clone()
+        {
+            // A newer hold replaces one still waiting.
+            if let Some((_, task)) = pending.take() {
+                task.cancel();
+            }
+            view_top = target;
+            // `top` stays where the viewport is until the scroll: the renders until
+            // then draw the rows there. Whatever else scrolls the list cancels this.
+            let task = spawn(async move {
+                // This runs before Blitz lays out the rows' new heights, and a scroll
+                // past the old range would stop at its end: wait for the range, a
+                // few frames at most, and else scroll as far as it reaches.
+                let mut to = target;
+                for _ in 0..LAYOUT_WAITS {
+                    match el.get_scroll_size().await {
+                        Ok(range) if range.height >= target - 0.5 => {
+                            to = target;
+                            break;
+                        }
+                        Ok(range) => {
+                            to = range.height;
+                            tokio::time::sleep(FRAME).await;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                pending.set(None);
+                // Both before the next frame: the rows drawn follow the scroll.
+                top.set(to);
+                let to = dioxus_html::geometry::PixelsVector2D::new(0.0, to);
+                if let Err(e) = el.scroll(to, ScrollBehavior::Instant).await {
+                    tracing::warn!("keeping the list in place failed: {e}");
+                }
+            });
+            pending.set(Some((target, task)));
+        }
+    }
+    // The rows to render; in a render that holds the list, also those where the
+    // viewport still is, which may be far from the others.
+    let shown: Vec<usize> = {
+        let (first, last) = visible_rows(&offsets, view_top, height);
+        let (was_first, was_last) = visible_rows(&offsets, still_at, height);
+        (first..last)
+            .chain((was_first..was_last).filter(|i| !(first..last).contains(i)))
+            .collect()
+    };
+    // Read again: the hold above may have set a scroll waiting.
+    let scroll_after = pending
+        .peek()
+        .as_ref()
+        .map_or(*top.peek(), |&(target, _)| target);
+    anchor.set(Anchor::at(
+        &offsets,
+        list,
+        anchor_top,
+        scroll_after,
+        height,
+        selected_row(),
+    ));
     let account = reading.account.read().clone().unwrap_or_default();
     let (beside, below, fit) = match size {
-        ThumbnailSize::Small => (Some("thumb small"), false, thumbs::Fit::Square),
-        ThumbnailSize::Medium => (Some("thumb medium"), false, thumbs::Fit::Square),
-        // The row's padding is 20 px a side.
+        ThumbnailSize::Small => (Some("thumb small"), None, thumbs::Fit::Square),
+        ThumbnailSize::Medium => (Some("thumb medium"), None, thumbs::Fit::Square),
+        // The box follows the width shown; the image is served for the saved one, so
+        // a drag loads none.
         ThumbnailSize::Large => (
             None,
-            true,
-            thumbs::Fit::wide((reading.saved_list_width)() - 40.0),
+            Some(large_height(width)),
+            thumbs::Fit::wide((reading.saved_list_width)() - 2.0 * PAD_X),
         ),
-        ThumbnailSize::None => (None, false, thumbs::Fit::Square),
+        ThumbnailSize::None => (None, None, thumbs::Fit::Square),
     };
-    let selected = reading.article.read().as_ref().map(|a| a.id.clone());
     let highlight = selected.as_ref().zip(selected_row()).map(|(id, i)| {
         let place = Place {
             top: offsets[i],
@@ -2609,11 +2870,10 @@ fn Viewport() -> Element {
             .map(|f| f.title.clone())
             .unwrap_or_default()
     };
-    let rows: Vec<Row> = list[first..last]
+    let rows: Vec<Row> = shown
         .iter()
-        .enumerate()
-        .map(|(n, a)| {
-            let i = first + n;
+        .map(|&i| {
+            let a = &list[i];
             let mut class = String::from("row");
             if !reading.is_read(a) {
                 class.push_str(" unread");
@@ -2632,6 +2892,7 @@ fn Viewport() -> Element {
                 starred: reading.is_starred(a),
                 date: dates.list(a.published),
                 title: a.title.clone(),
+                title_height: f64::from(counts[i]) * TITLE_LINE,
                 thumb: a.thumbnail.then(|| thumbs::url(&account, &a.id, fit)),
             }
         })
@@ -2653,12 +2914,13 @@ fn Viewport() -> Element {
             onscroll: move |e: Event<ScrollData>| {
                 // Setting a signal re-renders even to the same value; a scroll event
                 // that follows every layout would loop.
-                let (t, h) = (e.data().scroll_top(), f64::from(e.data().client_height()));
+                let t = e.data().scroll_top();
                 if (*top.peek() - t).abs() >= 1.0 {
                     top.set(t);
-                }
-                if (*height.peek() - h).abs() >= 1.0 {
-                    height.set(h);
+                    // The user's scroll: the list is where they took it.
+                    if let Some((_, task)) = pending.take() {
+                        task.cancel();
+                    }
                 }
             },
             if list.is_empty() {
@@ -2668,9 +2930,9 @@ fn Viewport() -> Element {
                 if let Some((class, place)) = highlight {
                     div { class, style: "transform: translateY({place.top}px); height: {place.height}px" }
                 }
-                for (row , a) in drawn.rows.iter().zip(&list[first..last]) {
+                for (row , &i) in drawn.rows.iter().zip(&shown) {
                     {
-                        let summary = a.clone();
+                        let summary = list[i].clone();
                         let app = Arc::clone(&app);
                         rsx! {
                             div {
@@ -2901,17 +3163,79 @@ fn ReaderButtons(article: ArticleSummary) -> Element {
     }
 }
 
+/// The width a list laid out as `layout` says shows at in a window `window_width` CSS px
+/// wide: its own, or less in a window too narrow for it beside the sidebar, but never
+/// less than its least (`.list`'s `min-width`).
+fn list_shown_width(layout: &Layout, window_width: f64) -> f64 {
+    let sidebar = if layout.sidebar_open {
+        layout.sidebar_width + RESIZER
+    } else {
+        0.0
+    };
+    let room = window_width - sidebar - RESIZER;
+    layout.list_width.min(room).max(LIST_WIDTH.min)
+}
+
+/// The list's viewport's height in a window `window_height` CSS px high.
+fn viewport_height(window_height: f64) -> f64 {
+    (window_height - TOOLBAR).max(0.0)
+}
+
+/// `window`'s width and height in CSS px.
+fn window_size(window: &dyn dioxus_native::winit::window::Window) -> (f64, f64) {
+    let size = window
+        .surface_size()
+        .to_logical::<f64>(window.scale_factor());
+    (size.width, size.height)
+}
+
+/// The height of a Large thumbnail, 16:9 at the width a list `list_width` wide gives it.
+fn large_height(list_width: f64) -> f64 {
+    ((list_width - 2.0 * PAD_X).max(0.0) * 9.0 / 16.0).round()
+}
+
+/// The size of a thumbnail beside the text, in CSS px, if `size` puts one there.
+fn thumb_beside(size: ThumbnailSize) -> Option<f64> {
+    match size {
+        ThumbnailSize::Small => Some(40.0),
+        ThumbnailSize::Medium => Some(64.0),
+        ThumbnailSize::Large | ThumbnailSize::None => None,
+    }
+}
+
+/// The width a headline wraps at in a list `list_width` wide, beside a thumbnail if
+/// `size` puts one there and the article has one.
+fn title_width(size: ThumbnailSize, list_width: f64, thumbnail: bool) -> f64 {
+    let full = list_width - 2.0 * PAD_X;
+    match thumb_beside(size).filter(|_| thumbnail) {
+        Some(thumb) => full - thumb - GAP,
+        None => full,
+    }
+}
+
 /// Where each of `rows` starts, in CSS pixels, and then where the last one ends.
-fn row_offsets(rows: &[ArticleSummary], size: ThumbnailSize) -> Vec<f64> {
+///
+/// A row fits its headline's lines, `counts` for each row at its width (`title_width`),
+/// and its thumbnail: one beside the text at least as tall as it, a Large one below.
+/// Each height is rounded up to a whole pixel, so rows never start between pixels.
+fn row_offsets(
+    rows: &[ArticleSummary],
+    size: ThumbnailSize,
+    list_width: f64,
+    counts: &[u32],
+) -> Vec<f64> {
+    let large = (size == ThumbnailSize::Large).then(|| LARGE_GAP + large_height(list_width));
     let mut offsets = Vec::with_capacity(rows.len() + 1);
     let mut at = 0.0;
     offsets.push(at);
-    for a in rows {
-        at += if size == ThumbnailSize::Large && a.thumbnail {
-            ROW_HEIGHT + LARGE_THUMB_EXTRA
-        } else {
-            ROW_HEIGHT
-        };
+    for (a, &lines) in rows.iter().zip(counts) {
+        let mut content = META + f64::from(lines) * TITLE_LINE;
+        if let Some(thumb) = thumb_beside(size).filter(|_| a.thumbnail) {
+            content = content.max(THUMB_MARGIN + thumb);
+        } else if let Some(large) = large.filter(|_| a.thumbnail) {
+            content += large;
+        }
+        at += (2.0 * PAD_Y + content).ceil();
         offsets.push(at);
     }
     offsets
@@ -2950,32 +3274,158 @@ mod tests {
             .collect()
     }
 
+    /// A headline's lines as the tests count them: every character 10 px wide, wrapped
+    /// anywhere at `width`.
+    fn count_lines(title: &str, width: f64) -> u32 {
+        #[expect(clippy::cast_precision_loss, reason = "test headlines are short")]
+        let px = title.len() as f64 * 10.0;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a count of lines, small and not negative"
+        )]
+        let lines = (px / width).ceil().max(1.0) as u32;
+        lines.min(TITLE_LINES)
+    }
+
+    /// Where each of `rows` starts, its headline's lines counted by [`count_lines`].
+    fn place(rows: &[ArticleSummary], size: ThumbnailSize, width: f64) -> Vec<f64> {
+        let counts: Vec<u32> = rows
+            .iter()
+            .map(|a| count_lines(&a.title, title_width(size, width, a.thumbnail)))
+            .collect();
+        row_offsets(rows, size, width, &counts)
+    }
+
     #[test]
     fn only_the_visible_rows_and_some_either_side_render() {
-        let offsets = row_offsets(&articles(&[false; 5_000]), ThumbnailSize::Large);
-        assert_eq!(visible_rows(&offsets, 0.0, 870.0), (0, 19));
-        assert_eq!(visible_rows(&offsets, 87_000.0, 870.0), (992, 1019));
-        assert_eq!(visible_rows(&offsets, 434_913.0, 870.0), (4_991, 5_000));
-        let three = row_offsets(&articles(&[false; 3]), ThumbnailSize::Medium);
+        let offsets = place(&articles(&[false; 5_000]), ThumbnailSize::Large, 340.0);
+        let row = offsets[1];
+        assert_eq!(visible_rows(&offsets, 0.0, 10.0 * row), (0, 19));
+        assert_eq!(
+            visible_rows(&offsets, 1_000.0 * row, 10.0 * row),
+            (992, 1019)
+        );
+        assert_eq!(
+            visible_rows(&offsets, 4_999.0 * row, 10.0 * row),
+            (4_991, 5_000)
+        );
+        let three = place(&articles(&[false; 3]), ThumbnailSize::Medium, 340.0);
         assert_eq!(visible_rows(&three, 0.0, 870.0), (0, 3));
         assert_eq!(visible_rows(&[0.0], 0.0, 870.0), (0, 0));
     }
 
     #[test]
-    fn only_a_large_thumbnail_makes_its_row_taller() {
-        let list = articles(&[true, false, true]);
-        let tall = ROW_HEIGHT + LARGE_THUMB_EXTRA;
+    fn a_row_fits_its_headline_and_thumbnail() {
+        let mut list = articles(&[true, false, true, false]);
+        list[2].title = "x".repeat(45);
+        list[3].title = "x".repeat(100);
+        let heights = |size, width: f64| {
+            let offsets = place(&list, size, width);
+            offsets.windows(2).map(|w| w[1] - w[0]).collect::<Vec<_>>()
+        };
+        let line = |n: f64| (2.0 * PAD_Y + META + n * TITLE_LINE).ceil();
+        // At 340 px, the text is 300 px wide: the 450 px headline takes two lines, the
+        // longest three, however long.
         assert_eq!(
-            row_offsets(&list, ThumbnailSize::Large),
-            [0.0, tall, tall + ROW_HEIGHT, 2.0 * tall + ROW_HEIGHT]
+            heights(ThumbnailSize::None, 340.0),
+            [line(1.0), line(1.0), line(2.0), line(3.0)]
         );
+        // Beside a 64 px thumbnail, the text is 224 px wide, which the 450 px headline
+        // takes three lines of; an empty headline's row grows to fit the thumbnail.
+        let medium = (2.0 * PAD_Y + THUMB_MARGIN + 64.0).ceil();
+        assert!(line(2.0) < medium && medium < line(3.0));
         assert_eq!(
-            row_offsets(&list, ThumbnailSize::Medium),
-            [0.0, ROW_HEIGHT, 2.0 * ROW_HEIGHT, 3.0 * ROW_HEIGHT]
+            heights(ThumbnailSize::Medium, 340.0),
+            [medium, line(1.0), line(3.0), line(3.0)]
         );
+        // A Large thumbnail is 16:9 at the text's width: 300 × 169, then 600 × 338.
+        let large = |n: f64, h: f64| (2.0 * PAD_Y + META + n * TITLE_LINE + LARGE_GAP + h).ceil();
+        assert_eq!(
+            heights(ThumbnailSize::Large, 340.0),
+            [large(1.0, 169.0), line(1.0), large(2.0, 169.0), line(3.0)]
+        );
+        assert_eq!(heights(ThumbnailSize::Large, 640.0)[0], large(1.0, 338.0));
         // Past the end, the last rows render.
-        let offsets = row_offsets(&list, ThumbnailSize::Large);
-        assert_eq!(visible_rows(&offsets, 10_000.0, 500.0), (0, 3));
+        let offsets = place(&list, ThumbnailSize::Large, 340.0);
+        assert_eq!(visible_rows(&offsets, 10_000.0, 500.0), (0, 4));
+    }
+
+    #[test]
+    fn a_window_too_narrow_squeezes_the_list_down_to_its_least() {
+        let layout = Layout {
+            sidebar_open: true,
+            sidebar_width: 230.0,
+            list_width: 340.0,
+        };
+        // The sidebar, the list and their borders fit: the list has its width.
+        assert_eq!(list_shown_width(&layout, 1200.0), 340.0);
+        assert_eq!(list_shown_width(&layout, 230.0 + 340.0 + 2.0), 340.0);
+        // One less, and the list gives it up, down to its least.
+        assert_eq!(list_shown_width(&layout, 230.0 + 340.0 + 1.0), 339.0);
+        assert_eq!(list_shown_width(&layout, 400.0), LIST_WIDTH.min);
+        // A hidden sidebar leaves the list its room.
+        let hidden = Layout {
+            sidebar_open: false,
+            ..layout
+        };
+        assert_eq!(list_shown_width(&hidden, 300.0), 299.0);
+    }
+
+    #[test]
+    fn the_list_stays_in_place_when_its_rows_change_height() {
+        let list = articles(&[true; 100]);
+        let narrow: Rc<[f64]> = place(&list, ThumbnailSize::Large, 340.0).into();
+        let wide: Rc<[f64]> = place(&list, ThumbnailSize::Large, 560.0).into();
+        // Halfway into row 10, the top row: halfway into it still.
+        let top = narrow[10] + (narrow[11] - narrow[10]) / 2.0;
+        let anchor = Anchor::at(&narrow, &list, top, top, 600.0, None).unwrap();
+        assert_eq!(anchor.hold(&narrow, &list, top, None), None);
+        assert_eq!(
+            anchor.hold(&wide, &list, top, None),
+            Some(wide[10] + (wide[11] - wide[10]) / 2.0)
+        );
+        // The open article's row, showing, keeps its place in the viewport.
+        let anchor = Anchor::at(&narrow, &list, top, top, 600.0, Some(11)).unwrap();
+        let below = narrow[11] - top;
+        assert_eq!(anchor.hold(&wide, &list, top, None), Some(wide[11] - below));
+        // One out of view doesn't, and the top of the list stays there.
+        let anchor = Anchor::at(&narrow, &list, top, top, 600.0, Some(90)).unwrap();
+        assert_eq!(anchor.id, "10");
+        assert!(Anchor::at(&narrow, &list, 0.0, 0.0, 600.0, Some(11)).is_none());
+        // A row synced in above moves the anchor's row down.
+        let mut synced = articles(&[true; 101]);
+        synced.rotate_right(1);
+        synced[0].id = "new".into();
+        let moved: Rc<[f64]> = place(&synced, ThumbnailSize::Large, 340.0).into();
+        let anchor = Anchor::at(&narrow, &list, top, top, 600.0, None).unwrap();
+        assert_eq!(
+            anchor.hold(&moved, &synced, top, None),
+            Some(top + narrow[1])
+        );
+        // Also when the rows are as high as before, and the offsets stay as they were.
+        synced.pop();
+        assert_eq!(
+            anchor.hold(&narrow, &synced, top, None),
+            Some(top + narrow[1])
+        );
+        // A scroll since the anchor was taken moves the list too, by the scroll
+        // position: not by where the viewport shows, which a shorter list clamps.
+        let anchor = Anchor::at(&narrow, &list, top, top, 600.0, None).unwrap();
+        assert_eq!(
+            anchor.hold(&wide, &list, top, Some(top + 50.0)),
+            Some(wide[10] + (wide[11] - wide[10]) / 2.0 + 50.0)
+        );
+        // Deep in the list, rows grown shorter make the viewport clamp to the end.
+        let short: Rc<[f64]> = place(&list, ThumbnailSize::None, 340.0).into();
+        let deep = narrow[60] + (narrow[61] - narrow[60]) / 2.0;
+        let anchor = Anchor::at(&narrow, &list, deep, deep, 600.0, None).unwrap();
+        let clamped = short[100] - 600.0;
+        assert!(clamped < deep);
+        assert_eq!(
+            anchor.hold(&short, &list, clamped, Some(deep)),
+            Some(short[60] + (short[61] - short[60]) / 2.0)
+        );
     }
 
     #[test]

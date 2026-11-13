@@ -15,6 +15,7 @@ mod dropdown;
 mod fonts;
 mod i18n;
 mod icons;
+mod lines;
 mod live;
 mod settings;
 mod shortcuts;

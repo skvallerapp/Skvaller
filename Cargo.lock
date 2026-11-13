@@ -6024,6 +6024,7 @@ dependencies = [
  "icu_calendar",
  "icu_datetime",
  "icu_locale_core",
+ "icu_segmenter",
  "jiff",
  "mimalloc",
  "parley",

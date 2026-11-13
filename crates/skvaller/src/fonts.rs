@@ -7,7 +7,7 @@
 //! License (`fonts/*/OFL.txt`). They cover at least Latin, Cyrillic and Vietnamese;
 //! every other script falls back to the system's fonts.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use dioxus_native::FontContext;
 use parley::fontique::Blob;
@@ -24,14 +24,23 @@ const BUNDLED: [&[u8]; 8] = [
     include_bytes!("../fonts/literata/Literata-Italic-Variable.ttf"),
 ];
 
-/// The system's fonts with the bundled ones added. Article frames get a copy.
+/// The system's fonts with the bundled ones added.
+///
+/// The system's fonts are scanned once: each window, its article frames and the article
+/// list's line counter get a copy that shares the scan and the font files loaded. The
+/// collection itself isn't shared, as Blitz doesn't share it: an article's web fonts
+/// go into its frame's copy only, never into the fonts the app draws with.
 pub fn font_context() -> FontContext {
-    let mut ctx = FontContext::new();
-    for data in BUNDLED {
-        ctx.collection
-            .register_fonts(Blob::new(Arc::new(data) as _), None);
-    }
-    ctx
+    static SHARED: LazyLock<FontContext> = LazyLock::new(|| {
+        let mut ctx = FontContext::new();
+        for data in BUNDLED {
+            ctx.collection
+                .register_fonts(Blob::new(Arc::new(data) as _), None);
+        }
+        ctx.source_cache.make_shared();
+        ctx
+    });
+    SHARED.clone()
 }
 
 const SANS: &str = "system-ui, 'Segoe UI', 'Noto Sans', sans-serif";

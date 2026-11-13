@@ -77,6 +77,8 @@ The windows, in Dioxus Native (Blitz).
 - `settings`, `add_account`: the Settings window and sign-in.
 - `article`: the reader's `<iframe srcdoc>` document.
 - `thumbs`: serves cached thumbnails to `<img>` through `thumb:` URLs.
+- `lines`: counts the lines a headline wraps to, from each character's advance, so
+  the list sizes its rows without measuring them.
 - `live`: each window's view of the settings, following `watch_config()`.
 - `chrome`: the windows' frame. On macOS the title bar is hidden: the window buttons
   sit over the toolbars, which grow to the title bar's 52px, and the window drags from
@@ -117,10 +119,19 @@ The windows, in Dioxus Native (Blitz).
 - **A bad `config.json` doesn't stop the app.** `config` reads unknown or broken values
   as defaults and leaves out accounts it can't read.
 - **5,000+ items scroll smoothly.** The list renders only the visible rows plus some
-  either side (`ui::visible_rows`). Thumbnails are served cropped to their box, since
-  Blitz keeps every image decoded. The Large box follows the list's saved width in
-  steps of 40 px, so resizing the list loads new thumbnails only now and then.
-  `--seed-test <count>` fills a local account for testing this.
+  either side (`ui::visible_rows`). Rows are placed from computed heights, never
+  measured: each fits its headline's lines, as `lines` counts them at the width the
+  list shows, and its thumbnail. A headline is cut once, where it may wrap, so a
+  new width only wraps the pieces again. It is clamped to its count, so one counted
+  short loses its last line rather than showing half of it. When the heights change,
+  the list keeps its place (`ui::Anchor`). Thumbnails are served cropped to their box,
+  since Blitz keeps every image decoded. The Large box is 16:9 at the list's width;
+  its image is served for the saved width in steps of 40 px, so resizing the list
+  loads new thumbnails only now and then. `--seed-test <count>` fills a local account
+  for testing this.
+- **One font scan.** `fonts::font_context` scans the system's fonts once; each window
+  and the line counter get a copy that shares it. The collection isn't shared, so an
+  article's web fonts stay in its frame.
 
 ## On disk
 

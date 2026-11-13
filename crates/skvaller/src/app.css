@@ -1,5 +1,6 @@
 /* The palettes are app.css's from the Tauri version, and must stay the same. */
 .root {
+  /* ui.rs's TOOLBAR, which sizes the article list's viewport by it. */
   --toolbar-height: 44px;
   --sidebar-bg: #f1f0ee;
   --list-bg: #fafaf9;
@@ -224,6 +225,7 @@ button {
 /* macOS: no title bar (chrome.rs). The window buttons sit in the top 52px, where
    macOS's unified title bar centers them, so the toolbars are as tall. */
 .root.mac {
+  /* ui.rs's TOOLBAR on macOS. */
   --toolbar-height: 52px;
 }
 
@@ -644,13 +646,14 @@ button {
   right: 0;
   display: flex;
   gap: 12px;
-  padding: 11px 20px 0;
+  padding: 11px 20px;
   overflow: hidden;
   transition: color 120ms ease-out;
 }
 
-/* The meta line and headline, and a Large thumbnail at the bottom, so every one sits
-   at the same place in its row whatever the headline's lines. */
+/* The meta line and headline, and a Large thumbnail at the bottom. Rows fit their
+   headline's lines as ui.rs counts them, which can be one too many: the thumbnail
+   still sits at the bottom. */
 .row .text {
   display: flex;
   flex-direction: column;
@@ -658,7 +661,7 @@ button {
   min-width: 0;
 }
 
-/* Cropped to fill a fixed box, so rows never change height. The hairline keeps a light
+/* Cropped to fill its box, which ui.rs sizes the row by. The hairline keeps a light
    image from melting into a light list. */
 .thumb {
   flex: none;
@@ -680,13 +683,16 @@ button {
   margin-top: 2px;
 }
 
-/* As wide as the row lets it, 180 px high: ui.rs's LARGE_THUMB_EXTRA counts these
-   sizes, and thumbs.rs serves it cropped to its width. */
+/* As wide as the row lets it, and 16:9 at the width the list shows: ui.rs sets its
+   height and counts it with LARGE_GAP, and thumbs.rs serves it cropped to that box. */
 .thumb.large {
   width: 100%;
-  height: 180px;
   margin-top: auto;
-  margin-bottom: 11px;
+}
+
+/* ui.rs's LARGE_GAP. */
+.text.below .title {
+  margin-bottom: 8px;
 }
 
 .row:hover:not(.selected) {
@@ -717,9 +723,9 @@ button {
   white-space: nowrap;
 }
 
+/* ui.rs sets its max-height to the lines it counted, three at most, as line-clamp
+   would. */
 .title {
-  /* Three lines, as line-clamp would. */
-  max-height: calc(3 * 1.3em);
   overflow: hidden;
   margin-top: 3px;
   font-size: 14.5px;

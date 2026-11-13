@@ -27,15 +27,15 @@ pub const SCHEME: &str = "thumb";
 /// The box a thumbnail is served for, in pixels: its CSS box on a 2× screen.
 ///
 /// Decoded, an image takes four bytes a pixel in Blitz's image cache and as much on the
-/// GPU: 64 KB for a square, 0.9 MB for the wide box.
+/// GPU: 64 KB for a square, 0.9 MB for the wide box of the default list. Stored
+/// thumbnails are at most 800 px and never enlarged, so a wide one stays under 1.5 MB.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fit {
     /// 128 × 128, for the Small and Medium boxes beside the headline. Medium is 64 px,
     /// Small 40 px; both get the same, to keep one variant.
     Square,
-    /// 360 px high and this many wide, for the Large box below the headline, 180 CSS px
-    /// high (`.thumb.large` and `LARGE_THUMB_EXTRA`) and as wide as the list lets it.
-    /// See [`Fit::wide`].
+    /// This many px wide and 16:9, for the Large box below the headline: as wide as the
+    /// list lets it, and as high as that makes it (`.thumb.large`). See [`Fit::wide`].
     Wide(u32),
 }
 
@@ -63,7 +63,7 @@ impl Fit {
     fn size(self) -> (u32, u32) {
         match self {
             Self::Square => (128, 128),
-            Self::Wide(width) => (width, 360),
+            Self::Wide(width) => (width, width * 9 / 16),
         }
     }
 
@@ -199,6 +199,7 @@ mod tests {
     fn a_wide_fit_rounds_the_box_up_to_steps_of_40_px() {
         // The default list's box, 300 px, on a 2× screen.
         assert_eq!(Fit::wide(300.0), Fit::Wide(640));
+        assert_eq!(Fit::Wide(640).size(), (640, 360));
         assert_eq!(Fit::wide(280.0), Fit::Wide(560));
         assert_eq!(Fit::wide(281.0), Fit::Wide(640));
         // The widest list's box.
