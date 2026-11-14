@@ -180,30 +180,24 @@
   max-width: 60%;
 }
 
-/* An editable value, drawn like the read-only ones until focused. */
+/* An editable value: a field, as the sign-in form's, so it doesn't pass for a read-only
+   one like the server's. As wide as a dropdown may be. */
 .settings input.text {
   flex: 1;
   min-width: 0;
+  max-width: 60%;
   height: 26px;
   padding: 0 8px;
-  border: 0;
+  border: 1px solid var(--separator);
   border-radius: 6px;
-  background: none;
+  background: var(--reader-bg);
   font: inherit;
-  color: var(--text-2);
-  text-align: right;
-}
-
-.settings input.text:hover {
-  background: var(--hover);
+  color: var(--text);
 }
 
 .settings input.text:focus {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
-  background: var(--reader-bg);
-  color: var(--text);
-  text-align: left;
 }
 
 /* A switch: a track with a knob. */
