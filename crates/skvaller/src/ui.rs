@@ -1629,6 +1629,16 @@ pub fn Root() -> Element {
     });
     let windows = use_windows();
     let settings = use_context_provider(SettingsWindow::default);
+    #[cfg(target_os = "macos")]
+    crate::menu::use_menu_bar(&app, reading.account, live.revision, {
+        use crate::menu::Command;
+        let (app, settings, windows) = (Arc::clone(&app), settings.clone(), windows.clone());
+        move |command| match command {
+            Command::Settings => settings.open(&windows, &app),
+            Command::AddAccount => settings.open_at(&windows, &app, SettingsPane::AddAccount),
+            Command::Account(id) => reading.switch_account(&app, &id),
+        }
+    });
     // Settings goes with the main window, as the app does, and the list follows the
     // window's size: its width may squeeze the list, its height the list's viewport.
     use_window_event({

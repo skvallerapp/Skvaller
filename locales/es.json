@@ -77,6 +77,18 @@
   "accounts.menu": "Cuentas",
   "accounts.add": "Añadir cuenta…",
 
+  "menu.about": "Acerca de Skvaller",
+  "menu.settings": "Ajustes…",
+  "menu.services": "Servicios",
+  "menu.hide": "Ocultar Skvaller",
+  "menu.hideOthers": "Ocultar otros",
+  "menu.showAll": "Mostrar todo",
+  "menu.quit": "Salir de Skvaller",
+  "menu.window": "Ventana",
+  "menu.minimize": "Minimizar",
+  "menu.zoom": "Zoom",
+  "menu.bringAllToFront": "Traer todo al frente",
+
   "list.label": "Artículos",
   "list.showSidebar": "Mostrar la barra lateral",
   "list.hideSidebar": "Ocultar la barra lateral",

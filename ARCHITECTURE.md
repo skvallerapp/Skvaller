@@ -88,6 +88,10 @@ The windows, in Dioxus Native (Blitz).
 - `chrome`: the windows' frame. On macOS the title bar is hidden: the window buttons
   sit over the toolbars, which grow to the title bar's 52px, and the window drags from
   their empty space. Windows and Linux keep the system's title bar.
+- `menu`: the macOS menu bar (muda), with Settings…, the Accounts menu and the Window
+  menu. Its items send commands to the main window's root, which runs them as its own
+  shortcuts do. `build.rs` embeds `Info.plist` so the menu bar names the app Skvaller.
+  Windows and Linux have no menu bar.
 - `i18n`, `dates`, `fonts`, `icons`, `shortcuts`: text, date formats, font stacks,
   icons and key bindings.
 

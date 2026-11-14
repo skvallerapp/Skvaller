@@ -17,6 +17,8 @@ mod i18n;
 mod icons;
 mod lines;
 mod live;
+#[cfg(target_os = "macos")]
+mod menu;
 mod overscroll;
 mod settings;
 mod shortcuts;
