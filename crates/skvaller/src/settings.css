@@ -241,7 +241,8 @@
   transform: translateX(14px);
 }
 
-/* The OPML buttons, and Remove Account: each as wide as a group. */
+/* The OPML buttons, and Remove Account: each as wide as a group, otherwise drawn as
+   every other button. */
 .settings .buttons {
   display: flex;
   flex-direction: column;
@@ -251,13 +252,7 @@
 .settings .button.wide {
   width: 100%;
   height: 40px;
-  border: 1px solid var(--separator);
   border-radius: 10px;
-  background: var(--hover);
-}
-
-.settings .button.wide:hover {
-  background: var(--active);
 }
 
 /* Leads to a destructive action, so red text; the confirmation's button is filled red. */

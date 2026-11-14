@@ -217,6 +217,12 @@ button {
   color: #ffffff;
 }
 
+/* Hovered, a layer of --active over any button's fill: darker in the light theme,
+   lighter in the dark ones. */
+.button:hover:not(:disabled) {
+  background-image: linear-gradient(var(--active), var(--active));
+}
+
 .spacer {
   flex: 1;
   min-width: 0;
