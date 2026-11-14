@@ -2,7 +2,7 @@
 target/
 **/*.rs.bk
 
-# Left behind by the tauri branch
+# Left behind by an earlier version
 node_modules/
 dist/
 src-tauri/

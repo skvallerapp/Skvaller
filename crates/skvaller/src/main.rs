@@ -41,7 +41,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            // Until the app shows a native dialog, as the Tauri version did.
+            // Until the app shows a native dialog.
             eprintln!("Skvaller couldn't start: {message}");
             ExitCode::FAILURE
         }

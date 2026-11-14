@@ -23,8 +23,8 @@ use crate::sync::SyncStatus;
 
 /// Where the app keeps its settings and caches.
 ///
-/// [`Dirs::system`] gives the folders the Tauri version of Skvaller used, so its
-/// accounts carry over; tests pass temporary folders instead.
+/// [`Dirs::system`] gives the system's folders for Skvaller; tests pass temporary
+/// folders instead.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dirs {
     /// Holds `accounts/<id>.db`, one cache per account.
@@ -43,8 +43,7 @@ impl Dirs {
     /// The system's folders for Skvaller, named after its bundle identifier.
     ///
     /// The cache is in the local data folder, not the roaming one on Windows: it has no
-    /// business following the user between machines. These are the folders Tauri's
-    /// `app_local_data_dir` and `app_config_dir` gave the Tauri version.
+    /// business following the user between machines.
     ///
     /// # Errors
     ///
@@ -383,9 +382,8 @@ impl App {
         Ok(())
     }
 
-    /// Changes the account's name or sync settings, as the Tauri version's
-    /// `update_account` does, saved and told to every window. A schedule change reaches
-    /// its background sync at once.
+    /// Changes the account's name or sync settings, saved and told to every window. A
+    /// schedule change reaches its background sync at once.
     ///
     /// # Errors
     ///

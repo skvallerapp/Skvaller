@@ -1,7 +1,6 @@
 //! The bundled fonts and the CSS font stacks the font settings pick from.
 //!
-//! The stacks are the Tauri version's `fonts.ts`, for the `uiFont`, `headlineFont` and
-//! `articleFont` settings.
+//! The stacks are for the `uiFont`, `headlineFont` and `articleFont` settings.
 //!
 //! The bundled fonts are the variable versions from Google Fonts, under the SIL Open Font
 //! License (`fonts/*/OFL.txt`). They cover at least Latin, Cyrillic and Vietnamese;

@@ -629,7 +629,7 @@ input.search-field {
 }
 
 /* The next list slides in from below as the old one's ghost slides up out of sight,
-   as in the Tauri version. ui.rs's LIST_SLIDE is how long the ghost stays. */
+   ui.rs's LIST_SLIDE is how long the ghost stays. */
 .list-body.sliding > .viewport {
   animation: list-in 320ms cubic-bezier(0.3, 0, 0, 1);
 }

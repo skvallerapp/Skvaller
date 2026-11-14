@@ -1,9 +1,8 @@
 //! The settings and accounts in `config.json`.
 //!
-//! The file is the one the Tauri version of Skvaller wrote, in the same place, so its
-//! accounts and settings carry over. Tokens are not here; they live in the keychain.
-//! Reading is forgiving: an unknown or broken value gives that setting's default, and an
-//! account that can't be read is left out, instead of failing the whole file.
+//! Tokens are not here; they live in the keychain. Reading is forgiving: an unknown or
+//! broken value gives that setting's default, and an account that can't be read is left
+//! out, instead of failing the whole file.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -51,14 +50,14 @@ impl PaneWidth {
     }
 }
 
-/// The sidebar's width, as in the Tauri version.
+/// The sidebar's width.
 pub const SIDEBAR_WIDTH: PaneWidth = PaneWidth {
     min: 180.0,
     max: 360.0,
     default: 230.0,
 };
 
-/// The article list's width, as in the Tauri version.
+/// The article list's width.
 pub const LIST_WIDTH: PaneWidth = PaneWidth {
     min: 260.0,
     max: 560.0,
@@ -84,8 +83,7 @@ impl Default for Layout {
     }
 }
 
-/// The layout, each part within its range or else its default, as the Tauri version
-/// loads it.
+/// The layout, each part within its range or else its default.
 fn layout_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<Layout, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
     let width = |key: &str, range: PaneWidth| {

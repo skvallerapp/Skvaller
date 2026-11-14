@@ -1,7 +1,7 @@
 //! Managing feeds and folders from the sidebar: the feed and folder menus, renaming in
 //! place, the questions before removing, and Add Feed.
 //!
-//! Only the local account manages its own feeds, as in the Tauri version; a sync
+//! Only the local account manages its own feeds; a sync
 //! account's feed menu has only Reader View. Blitz has no native menus, so these are
 //! drawn in the page, as the account menu is.
 
@@ -105,7 +105,7 @@ enum Item {
     DeleteFolder,
 }
 
-/// The menu's items for `target`, as the Tauri version has them. Empty when it has none,
+/// The menu's items for `target`. Empty when it has none,
 /// as a sync account's folder.
 fn items(target: &Target, lib: &Library, local: bool) -> Vec<Item> {
     match target {
@@ -645,7 +645,7 @@ pub(super) fn AddFeed() -> Element {
     }
 }
 
-/// Why adding a feed failed, as the Tauri version says it.
+/// Why adding a feed failed, as the user is told.
 fn add_error(e: &skvaller_app::Error) -> String {
     match e {
         skvaller_app::Error::Core(skvaller_core::Error::NoFeed) => t("addFeed.noFeed"),

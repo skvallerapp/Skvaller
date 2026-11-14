@@ -1,5 +1,5 @@
 //! Dates and times as the user reads them: in the system's time zone, formatted for the
-//! system's region, as the Tauri version's `format.svelte.ts` did with `Intl`.
+//! system's region.
 //!
 //! The settings can pick the clock (24 or 12 hours) and the order of day and month.
 //! Month and weekday names follow the region either way.

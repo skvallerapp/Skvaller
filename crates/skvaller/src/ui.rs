@@ -82,12 +82,12 @@ const TOOLBAR: f64 = if MAC { 52.0 } else { 44.0 };
 /// How long an article is open before it is marked read, with [`MarkReadOn::Delay`].
 const MARK_READ_DELAY: Duration = Duration::from_secs(2);
 /// How long an article of a Reader View feed waits for its text before showing the
-/// feed's content, as in the Tauri version. Long enough for the cache, which most
+/// feed's content. Long enough for the cache, which most
 /// pages come from after a sync's prefetch; short enough not to feel stuck.
 const READER_VIEW_HOLD: Duration = Duration::from_millis(400);
 
 /// How much of the article's height reading on scrolls: a page, less some lines to keep
-/// the place, as in the Tauri version.
+/// the place.
 const READ_ON_PAGE: f64 = 0.9;
 
 /// How long the sidebar takes to slide open or closed: app.css's `.sidebar-slot`
@@ -385,7 +385,7 @@ impl Anchor {
     }
 }
 
-/// The open article's Reader View, as the Tauri version's store keeps it.
+/// The open article's Reader View.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct ReaderView {
     /// The account and article it is for.
@@ -648,8 +648,8 @@ impl Reading {
         // The list a search replaced is no longer the one to go back to.
         self.restore.set(None);
         self.article.set(None);
-        // Reader View starts over, as in the Tauri version, and a load under way is
-        // dropped: reopening the article doesn't find it stuck loading.
+        // Reader View starts over, and a load under way is dropped: reopening the
+        // article doesn't find it stuck loading.
         self.reset_reader_view(None);
         self.confirming.set(false);
         // A delayed mark of the article left is off.
@@ -938,7 +938,7 @@ impl Reading {
     /// Marks every article in the list read.
     ///
     /// In Unread, the next row with unread articles is then selected, or All Unread,
-    /// as in the Tauri version, and the open article closes. With All Unread already
+    /// and the open article closes. With All Unread already
     /// selected, the list empties at once, except for the article being read.
     fn mark_all_read(mut self, app: &App) {
         self.close_confirm();
@@ -982,7 +982,7 @@ impl Reading {
     }
 
     /// Slides the list as last drawn up out of sight, as the next one slides in from
-    /// below, as in the Tauri version. `list` is the old list's [`list_key`].
+    /// below. `list` is the old list's [`list_key`].
     fn slide_away(mut self, list: String) {
         // Taken, so a list not drawn since never slides away twice.
         let Some(drawn) = self.drawn.write().take() else {
@@ -1228,7 +1228,7 @@ impl Reading {
     }
 
     /// Moves the sidebar's selection to the next (1) or previous (-1) scope, keeping
-    /// the view, as the Tauri version does. `sort` is the sidebar's order.
+    /// the view. `sort` is the sidebar's order.
     fn step_sidebar(self, delta: isize, sort: SortSubscriptions) {
         // Before the library's guard: reading `pinned` may recompute it, which reads
         // the library.
@@ -1692,7 +1692,7 @@ pub fn Root() -> Element {
                     && e.modifiers() == COMMAND_MODIFIER | Modifiers::SHIFT
                     && reading.panes_shown()
                 {
-                    // As in the Tauri version: Cmd+Shift+S on macOS, Ctrl+Shift+S elsewhere.
+                    // Cmd+Shift+S on macOS, Ctrl+Shift+S elsewhere.
                     reading.toggle_sidebar(&app);
                     e.prevent_default();
                 } else if e.code() == Code::KeyF
@@ -2000,7 +2000,7 @@ fn Sidebar() -> Element {
         format!("{}+,", t("keys.ctrl"))
     };
     let status_line = match status {
-        // The Tauri version shows the reason on hover, but Blitz shows no titles yet.
+        // The reason belongs in a hover title, but Blitz shows no titles yet.
         Some(SyncStatus {
             cache_broken: true,
             error,
@@ -2456,8 +2456,8 @@ fn ViewSwitcher() -> Element {
                     onmounted: move |e: MountedEvent| buttons.write()[i] = Some(e.data()),
                     onclick: move |_| {
                         reading.select_view(view);
-                        // As in the Tauri version, a clicked button lets the arrow keys
-                        // go back to the sidebar and the list. Tab still reaches it.
+                        // A clicked button lets the arrow keys go back to the sidebar and
+                        // the list. Tab still reaches it.
                         reading.refocus();
                     },
                     match view {
@@ -2569,7 +2569,7 @@ fn AccountSwitcher() -> Element {
 }
 
 /// A folder's feeds, with their unread counts, under its row. They slide open and
-/// closed, as in the Tauri version: the box's height goes from 0 to its rows' or back,
+/// closed: the box's height goes from 0 to its rows' or back,
 /// and closing, the rows stay in it until the slide ends.
 #[component]
 fn FolderFeeds(feeds: Vec<(skvaller_core::Feed, i64)>, expanded: bool) -> Element {

@@ -1,5 +1,4 @@
-//! Adding an account, as the Tauri version's `AddAccount` and `SignIn`: the services to add
-//! one for, then the chosen one's sign-in form.
+//! Adding an account: the services to add one for, then the chosen one's sign-in form.
 //!
 //! In the Settings window, on the main window while there is no account, and filled in
 //! to sign in again once the server rejected an account's token.

@@ -1,7 +1,7 @@
 //! The access token lives in the OS keychain. The password is never stored.
 //!
 //! These calls block, and can wait for the user to unlock the keychain. Call them from a
-//! blocking thread (`spawn_blocking` or a non-async Tauri command), never on the async
+//! blocking thread (`spawn_blocking`), never on the async
 //! runtime. On Linux without a running Secret Service they return [`Error::Keychain`].
 //!
 //! [`Error::Keychain`]: crate::Error::Keychain

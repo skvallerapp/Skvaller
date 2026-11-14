@@ -1,4 +1,4 @@
-//! The Settings window, a window of its own as in the Tauri version.
+//! The Settings window, a window of its own.
 //!
 //! It runs its own `VirtualDom`, so it shares nothing with the main window but what it
 //! is given: the [`App`], and the [`SettingsWindow`] slot that says whether it is open.
@@ -238,7 +238,7 @@ fn SettingsRoot() -> Element {
                             class: "back",
                             aria_label: t_with("settings.back", &[("account", &a.description)]),
                             // The row that opened the page is gone: focus moves to the way
-                            // back, as in the Tauri version.
+                            // back.
                             onmounted: move |e: MountedEvent| async move {
                                 if let Err(err) = e.data().set_focus(true).await {
                                     tracing::warn!("focusing Back failed: {err}");
@@ -540,7 +540,7 @@ fn AppearancePane(settings: Settings, feedback: Feedback) -> Element {
     }
 }
 
-/// The fonts in the order the Tauri version lists them.
+/// The fonts in the order the Settings window lists them.
 const FONTS: [Font; 6] = [
     Font::Inter,
     Font::Geist,
@@ -624,7 +624,7 @@ fn ReadingPane(settings: Settings, feedback: Feedback) -> Element {
     }
 }
 
-/// Each action and its key, as the Tauri version's `ShortcutList`.
+/// Each action and its key.
 ///
 /// Clicking a key waits for the next key press on that button, which has the focus
 /// then; leaving the button stops waiting.
@@ -796,7 +796,7 @@ fn ReaderViewPane(
     }
 }
 
-/// The sync schedules, as the Tauri version offers them.
+/// The sync schedules, in the order offered.
 const SCHEDULES: [SyncSchedule; 6] = [
     SyncSchedule::OnStart,
     SyncSchedule::Every(5),
@@ -948,7 +948,7 @@ fn AccountPane(
                                 e.stop_propagation();
                                 match key {
                                     Key::Named(NamedKey::Enter) => rename(),
-                                    // Undoes the typing, as the Tauri version does.
+                                    // Undoes the typing.
                                     Key::Named(NamedKey::Escape) => name.set(current.clone()),
                                     _ => {}
                                 }
@@ -1125,7 +1125,7 @@ fn import_note(report: &ImportReport) -> String {
     }
 }
 
-/// A sync schedule's name, as the Tauri version names it.
+/// A sync schedule's name.
 fn schedule_label(schedule: SyncSchedule) -> String {
     match schedule {
         SyncSchedule::OnStart => t("settings.syncSchedules.onStart"),
@@ -1137,7 +1137,7 @@ fn schedule_label(schedule: SyncSchedule) -> String {
     }
 }
 
-/// A retention period in the largest unit that fits, as the Tauri version names them.
+/// A retention period in the largest unit that fits.
 fn period(days: u32) -> String {
     match days {
         0 => t("settings.keepForever"),
@@ -1165,7 +1165,7 @@ fn Row(label: String, children: Element) -> Element {
 }
 
 /// A dropdown of `choices`, by index. A value not among them, as one set by hand in
-/// config.json, shows first as `other` until another is picked, as in the Tauri version.
+/// config.json, shows first as `other` until another is picked.
 #[component]
 fn Select(
     label: String,
@@ -1194,7 +1194,7 @@ fn Select(
     }
 }
 
-/// An on/off switch, drawn as the Tauri version's: a track with a knob.
+/// An on/off switch, drawn as a track with a knob.
 #[component]
 fn Switch(label: String, on: bool, onchange: EventHandler<bool>) -> Element {
     rsx! {

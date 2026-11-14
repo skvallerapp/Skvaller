@@ -1,5 +1,4 @@
-//! Adding, signing in to and removing accounts, and their subscriptions as OPML, as the
-//! Tauri version's commands do.
+//! Adding, signing in to and removing accounts, and their subscriptions as OPML.
 //!
 //! Each change saves config.json first and only then takes, and tells every window
 //! through [`App::watch_config`].

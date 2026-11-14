@@ -1,4 +1,4 @@
-//! Single-key shortcuts, as the Tauri version has them (its `shortcuts.ts`).
+//! Single-key shortcuts.
 //!
 //! Keys are named as [`key_name`] returns them: `j`, ` ` (Space), `Shift+ `, `Enter`.
 //! The user can rebind every action; config.json keeps only the keys that differ from
@@ -156,7 +156,7 @@ pub enum Refusal {
     Enter,
 }
 
-/// What a key pressed while waiting for a new key comes to, as in the Tauri version.
+/// What a key pressed while waiting for a new key comes to.
 pub fn capture(key: &Key, code: &str, mods: Modifiers) -> Capture {
     match key {
         Key::Named(NamedKey::Escape) => return Capture::Cancel,

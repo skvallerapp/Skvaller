@@ -1,5 +1,4 @@
-/* The Settings window, after the Tauri version's Settings.svelte and settings.css. The
-   theme's colors come from app.css, on the same .root. */
+/* The Settings window. The theme's colors come from app.css, on the same .root. */
 
 .settings nav {
   display: flex;
@@ -207,7 +206,7 @@
   text-align: left;
 }
 
-/* A switch: a track with a knob, as the Tauri version draws over its checkbox. */
+/* A switch: a track with a knob. */
 .switch {
   position: relative;
   flex: none;
@@ -272,7 +271,7 @@
   width: 100%;
   padding: 12px;
   animation: appear 140ms ease-out;
-  /* From its middle, as in the Tauri version, not app.css's .confirm corner. */
+  /* From its middle, not app.css's .confirm corner. */
   transform-origin: center;
 }
 

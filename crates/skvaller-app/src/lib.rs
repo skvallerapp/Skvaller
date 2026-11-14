@@ -4,9 +4,6 @@
 //! [`Dirs`]. The UI then reads folders, feeds and articles from the local caches only,
 //! and [`App::start_sync`] keeps them up to date in the background, reporting through
 //! [`App::subscribe`]. Nothing the UI calls waits for the network.
-//!
-//! The file formats and folders are those of the Tauri version of Skvaller, so its
-//! accounts carry over.
 
 mod accounts;
 mod app;
