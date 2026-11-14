@@ -1,4 +1,5 @@
-/* The palettes are app.css's from the Tauri version, and must stay the same. */
+/* The themes' palettes. In the dark themes a black shadow barely shows, so a popover
+   is lighter than what's behind it, as macOS draws them. */
 .root {
   /* ui.rs's TOOLBAR, which sizes the article list's viewport by it. */
   --toolbar-height: 44px;
@@ -14,6 +15,8 @@
   --switch-knob: #ffffff;
   --thumb-edge: rgb(0 0 0 / 0.15);
   --segment-bg: #ffffff;
+  --popover-bg: var(--reader-bg);
+  --popover-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
   --accent: #9a5136;
   --accent-text: #ffffff;
   --destructive: #c4352b;
@@ -36,6 +39,8 @@
     --switch-knob: #d4d4d8;
     --thumb-edge: rgb(255 255 255 / 0.2);
     --segment-bg: #4a4a4e;
+    --popover-bg: #2a2a2d;
+    --popover-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
     --accent: #52709c;
     --unread: #8aa4c8;
     --star: #f0b63a;
@@ -56,6 +61,8 @@
   --switch-knob: #d4d4d8;
   --thumb-edge: rgb(255 255 255 / 0.2);
   --segment-bg: #4a4a4e;
+  --popover-bg: #2a2a2d;
+  --popover-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
   --accent: #52709c;
   --unread: #8aa4c8;
   --star: #f0b63a;
@@ -75,6 +82,8 @@
   --switch-knob: #dcd2cc;
   --thumb-edge: rgb(255 236 224 / 0.2);
   --segment-bg: #4f3c36;
+  --popover-bg: #382a26;
+  --popover-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
   --accent: #9a6342;
   --unread: #cfa080;
   --star: #f0b63a;
@@ -661,8 +670,8 @@ input.search-field {
   z-index: 10;
   border: 1px solid var(--separator);
   border-radius: 10px;
-  background: var(--reader-bg);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+  background: var(--popover-bg);
+  box-shadow: var(--popover-shadow);
   animation: appear 140ms ease-out;
   transform-origin: top;
 }
