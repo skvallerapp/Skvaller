@@ -8,6 +8,7 @@
 #![cfg_attr(all(not(test), target_os = "windows"), windows_subsystem = "windows")]
 
 mod add_account;
+mod appearance;
 mod article;
 mod chrome;
 mod dates;
@@ -51,6 +52,8 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
+    // Read while the app loads; the window waits for it below.
+    appearance::start();
     let dirs = Dirs::system().map_err(|e| e.to_string())?;
     let mut args = std::env::args().skip(1);
     if let Some(flag) = args.next() {
@@ -105,6 +108,7 @@ fn run() -> Result<(), String> {
             thumbs::SCHEME,
             Arc::new(thumbs::Thumbnails(Arc::clone(&app))),
         );
+    appearance::wait_for_first_answer();
     let context = Arc::clone(&app);
     dioxus_native::launch_cfg(
         ui::Root,

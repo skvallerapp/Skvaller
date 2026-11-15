@@ -6067,6 +6067,7 @@ dependencies = [
  "tracing-subscriber",
  "webbrowser",
  "writeable",
+ "zbus",
 ]
 
 [[package]]

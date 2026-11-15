@@ -1668,7 +1668,7 @@ pub fn Root() -> Element {
     let dragging = use_memo(move || reading.drag.read().is_some())();
     let drag_app = Arc::clone(&app);
     let settings_now = live.settings.read();
-    let theme = article::theme_name(settings_now.theme);
+    let theme = article::theme_name((live.theme)());
     let ui_font = format!("--ui-font: {}", fonts::stack(settings_now.ui_font));
     let motion = motion(settings_now.animations);
     drop(settings_now);
@@ -2053,7 +2053,7 @@ fn Sidebar() -> Element {
     let sidebar_width = use_memo(move || reading.layout.read().sidebar_width)();
     let feeds_pane = use_signal(|| None::<Rc<MountedData>>);
     // Pulled past their ends, the feeds stretch, with no refresh.
-    let pull = use_hook(|| Pull::new(live, feeds_pane, None));
+    let pull = use_hook(|| Pull::new(&live, feeds_pane, None));
     // Unlike the article list, the feeds don't know their scroll range: measured again
     // when rows come or go, a folder opens or closes, or the window resizes.
     use_effect(move || {
@@ -3091,7 +3091,7 @@ fn Viewport() -> Element {
     let mut mounted = use_signal(|| None::<Rc<MountedData>>);
     let pull = use_hook(|| {
         Pull::new(
-            live,
+            &live,
             mounted,
             Some(&ListPull {
                 top,
@@ -3489,7 +3489,7 @@ struct Pull {
 }
 
 impl Pull {
-    fn new(live: Live, mounted: Signal<Option<Rc<MountedData>>>, list: Option<&ListPull>) -> Self {
+    fn new(live: &Live, mounted: Signal<Option<Rc<MountedData>>>, list: Option<&ListPull>) -> Self {
         let animate = live.settings.peek().animations;
         Self {
             state: CopyValue::new(Overscroll::new(animate, list.is_some())),
@@ -3501,7 +3501,7 @@ impl Pull {
                 height: 600.0,
             }),
             mounted,
-            live,
+            live: *live,
             list: list.copied(),
         }
     }
@@ -3692,7 +3692,7 @@ fn Reader() -> Element {
     let live = use_context::<Live>();
     // Only what the document shows remakes it: remade, the frame loads again, back at
     // the top.
-    let look = use_memo(move || article::Look::from(&*live.settings.read()));
+    let look = use_memo(move || article::Look::new(&live.settings.read(), (live.theme)()));
     // The Reader View text to show, apart: its loading states don't remake the document.
     let full_text = use_memo(move || {
         let rv = reading.reader_view.read();

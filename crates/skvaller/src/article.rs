@@ -20,10 +20,12 @@ pub struct Look {
     pub animations: bool,
 }
 
-impl From<&Settings> for Look {
-    fn from(settings: &Settings) -> Self {
+impl Look {
+    /// The look of `settings`, in `theme`: the setting resolved for the system's mode
+    /// (`Live::theme`), not the setting itself.
+    pub fn new(settings: &Settings, theme: Theme) -> Self {
         Self {
-            theme: settings.theme,
+            theme,
             article_font: settings.article_font,
             headline_font: settings.headline_font,
             animations: settings.animations,
@@ -116,16 +118,12 @@ mod tests {
             starred: false,
             thumbnail: false,
         };
-        let settings = Settings {
-            theme: Theme::Dark,
-            ..Settings::default()
-        };
         let doc = document(
             &article,
             None,
             "<img src=\"/i.png\">",
             "today",
-            Look::from(&settings),
+            Look::new(&Settings::default(), Theme::Dark),
         );
         assert!(doc.contains("&lt;b&gt;Bold&lt;/b&gt;"));
         assert!(doc.contains("A &amp; B"));

@@ -45,6 +45,8 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false }
 webbrowser = "1.2.6"
 writeable = "0.6.4"
+# Already in the tree through keyring (Secret Service), with these default features.
+zbus = "5.19.0"
 
 # The guideline set (M-STATIC-VERIFICATION).
 [workspace.lints.rust]

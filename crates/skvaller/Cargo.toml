@@ -54,5 +54,8 @@ webbrowser.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 muda.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus.workspace = true
+
 [lints]
 workspace = true

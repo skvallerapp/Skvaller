@@ -189,7 +189,7 @@ fn SettingsRoot() -> Element {
         _ => Ok(Vec::new()),
     };
     let ui_font = format!("--ui-font: {}", fonts::stack(settings.ui_font));
-    let theme = article::theme_name(settings.theme);
+    let theme = article::theme_name((live.theme)());
     let motion = crate::ui::motion(settings.animations);
 
     rsx! {

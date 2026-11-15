@@ -1,7 +1,8 @@
 //! The settings as they are now, for a window to follow as they change.
 //!
 //! Each window runs its own `VirtualDom`, so each makes its own [`Live`] from the
-//! [`App`]'s config revision, which every settings or account change bumps.
+//! [`App`]'s config revision, which every settings or account change bumps, and from
+//! the system's dark mode where the app reads it ([`appearance`]).
 
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -9,17 +10,23 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use dioxus_native::prelude::*;
-use skvaller_app::{App, Settings};
+use skvaller_app::{App, Settings, Theme};
+use tokio::sync::watch;
 
+use crate::appearance;
 use crate::dates::Dates;
 use crate::shortcuts::{Action, bindings};
 
-/// The settings and what is made from them, each changing when they do.
+/// The settings and what is made from them and the system's mode, each changing when
+/// they do.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Live {
     /// Bumped on every change to the settings or an account's.
     pub revision: Signal<u64>,
     pub settings: Memo<Settings>,
+    /// The theme to show: the setting, with System made Light or Dark where the app
+    /// reads the system's mode itself ([`appearance`]).
+    pub theme: Memo<Theme>,
     pub dates: Memo<SharedDates>,
     /// The shortcut keys, by key name.
     pub keys: Memo<Rc<HashMap<String, Action>>>,
@@ -46,24 +53,9 @@ impl Deref for SharedDates {
 
 /// This window's [`Live`], following the app's config.
 pub fn use_live(app: &Arc<App>) -> Live {
-    let mut revision = use_signal(|| *app.watch_config().borrow());
-    use_hook({
+    let revision = use_followed({
         let app = Arc::clone(app);
-        move || {
-            spawn(async move {
-                let mut changes = app.watch_config();
-                // A change made before this task started counts as seen to `changes`.
-                loop {
-                    let (now, shown) = (*changes.borrow_and_update(), *revision.peek());
-                    if now != shown {
-                        revision.set(now);
-                    }
-                    if changes.changed().await.is_err() {
-                        break;
-                    }
-                }
-            });
-        }
+        move || app.watch_config()
     });
     let settings = use_memo({
         let app = Arc::clone(app);
@@ -83,10 +75,37 @@ pub fn use_live(app: &Arc<App>) -> Live {
         SharedDates(Rc::new(Dates::system(clock, order)))
     });
     let keys = use_memo(move || Rc::new(bindings(&settings.read().shortcuts)));
+    let dark = use_followed(appearance::watch);
+    let theme = use_memo(move || appearance::resolve(settings.read().theme, dark()));
     Live {
         revision,
         settings,
+        theme,
         dates,
         keys,
     }
+}
+
+/// A signal holding what `watch` makes as it changes, for as long as the component
+/// lives.
+fn use_followed<T: Copy + PartialEq + 'static>(
+    watch: impl Fn() -> watch::Receiver<T> + 'static,
+) -> Signal<T> {
+    let mut signal = use_signal(|| *watch().borrow());
+    use_hook(move || {
+        spawn(async move {
+            let mut changes = watch();
+            // A change made before this task started counts as seen to `changes`.
+            loop {
+                let now = *changes.borrow_and_update();
+                if now != *signal.peek() {
+                    signal.set(now);
+                }
+                if changes.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+    });
+    signal
 }

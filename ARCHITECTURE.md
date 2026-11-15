@@ -84,7 +84,10 @@ The windows, in Dioxus Native (Blitz).
   the list sizes its rows without measuring them.
 - `overscroll`: a list stretched past its ends by trackpad or touch, and pull to
   refresh, as state alone: `ui` feeds it the events and draws the offset.
-- `live`: each window's view of the settings, following `watch_config()`.
+- `live`: each window's view of the settings, following `watch_config()`, and of the
+  system's dark mode, following `appearance::watch()`. Its `theme` is the one to show.
+- `appearance`: the system's dark mode on Linux, which winit doesn't report, read from
+  the XDG desktop portal over D-Bus. It makes the System theme Light or Dark.
 - `chrome`: the windows' frame. On macOS the title bar is hidden: the window buttons
   sit over the toolbars, which grow to the title bar's 52px, and the window drags from
   their empty space. Windows and Linux keep the system's title bar.
@@ -100,6 +103,9 @@ The windows, in Dioxus Native (Blitz).
 - **Two Tokio runtimes.** `main` makes one for syncs and background work; Dioxus Native
   runs its own for loading images. Blocking calls (keychain, heavy parsing) go through
   `spawn_blocking`.
+- **On Linux, an `appearance` thread** follows the portal's dark mode, plus the
+  executor thread zbus starts for its connection. `main` starts it before loading the app, and the
+  first window waits up to 300 ms for its first answer, a local call, not the network.
 - **One `VirtualDom` per window.** Windows share only the `Arc<App>` they're given.
   Each follows the app through `live::use_live` and its own `subscribe()`.
 - **One sync per account at a time.** A second one asked for meanwhile reports `Busy`
