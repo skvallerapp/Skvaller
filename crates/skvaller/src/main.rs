@@ -90,17 +90,18 @@ fn run() -> Result<(), String> {
     app.start_sync();
     drop(entered);
 
-    let window = chrome::frame(
-        WindowAttributes::default()
-            .with_title("Skvaller")
-            .with_surface_size(LogicalSize::new(1200.0, 800.0))
-            .with_min_surface_size(LogicalSize::new(640.0, 400.0)),
-    );
     // Every document's requests, the article frame's among them, may reach only public
     // web addresses: article HTML is untrusted. The app's own UI loads only cached
     // thumbnails, from the cache.
     let net = ArticleNet::new().map_err(|e| format!("building the HTTP client failed: {e}"))?;
-    let config = chrome::surface(Config::default())
+    let (config, window) = chrome::window(
+        Config::default(),
+        WindowAttributes::default()
+            .with_title("Skvaller")
+            .with_surface_size(LogicalSize::new(1200.0, 800.0))
+            .with_min_surface_size(LogicalSize::new(ui::MIN_WINDOW_WIDTH, 400.0)),
+    );
+    let config = config
         .with_font_ctx(fonts::font_context())
         .with_http_client(net.client())
         .with_request_filter(move |request| {

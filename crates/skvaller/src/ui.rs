@@ -66,6 +66,19 @@ const THUMB_MARGIN: f64 = 2.0;
 /// What a pane's border takes of the window: 9 px, less 4 px of margin a side
 /// (`.resizer`).
 const RESIZER: f64 = 1.0;
+/// The reader's least width (`.linux .reader`'s `min-width`): on Linux, room for the
+/// window buttons at the end of its toolbar, the wider GNOME ones, with its padding.
+/// The list gives up width before the reader does.
+const READER_LEAST: f64 = if LINUX { 116.0 } else { 0.0 };
+/// The reader's width that holds an open article's buttons too, on Linux: their four
+/// and the window buttons, with the toolbar's gaps. A narrower reader leaves them
+/// out, as they would run under the window buttons: Blitz clips what overflows but
+/// still lets it take presses.
+const READER_WITH_BUTTONS: f64 = 248.0;
+/// The main window's least width: on Linux the widest sidebar, the narrowest list and
+/// the reader's least, so the window buttons always show; never under 640 px.
+pub const MIN_WINDOW_WIDTH: f64 =
+    (SIDEBAR_WIDTH.max + RESIZER + LIST_WIDTH.min + RESIZER + READER_LEAST).max(640.0);
 /// The space above a Large thumbnail (`.text.below .title`).
 const LARGE_GAP: f64 = 8.0;
 
@@ -1194,7 +1207,8 @@ impl Reading {
     }
 
     /// The width the list shows at, as CSS lays it out: its own, or less in a window
-    /// too narrow for it beside the sidebar, but never less than its least.
+    /// too narrow for it beside the sidebar and the reader's least, but never less
+    /// than its own least.
     fn list_shown_width(&self) -> f64 {
         list_shown_width(&self.layout.read(), (self.window_size)().0)
     }
@@ -1619,6 +1633,7 @@ pub fn Root() -> Element {
         restore: CopyValue::new(None),
     });
     use_context_provider(|| live);
+    let window_state = chrome::use_window_state_provider();
     // The active account, as changed elsewhere: one added or removed in Settings.
     use_effect({
         let app = Arc::clone(&app);
@@ -1675,7 +1690,7 @@ pub fn Root() -> Element {
     let settings_now = live.settings.read();
     let theme = article::theme_name((live.theme)());
     let root_style = chrome::root_style(&fonts::stack(settings_now.ui_font), (live.frame)());
-    let framed = (chrome::use_window_state_provider().framed)();
+    let framed = (window_state.framed)();
     let motion = motion(settings_now.animations);
     drop(settings_now);
 
@@ -3741,6 +3756,21 @@ fn Reader() -> Element {
         }
     });
     let open = reading.open_article();
+    // The sidebar counts until its closing slide ends, as the reader widens only then.
+    let sidebar_open = use_memo(move || reading.layout.read().sidebar_open)();
+    let sidebar_shown = use_closing(sidebar_open, SIDEBAR_SLIDE);
+    // A memo, so a resize re-renders the reader only when this changes.
+    let buttons_fit = use_memo(use_reactive!(|sidebar_shown| {
+        // Off Linux they always fit, without following the window's size.
+        if !LINUX {
+            return true;
+        }
+        let layout = Layout {
+            sidebar_open: sidebar_shown,
+            ..*reading.layout.read()
+        };
+        reader_width(&layout, (reading.window_size)().0) >= READER_WITH_BUTTONS
+    }))();
     // Reader View on its way, just after opening: no feed content to swap out yet.
     let holding = {
         let rv = reading.reader_view.read();
@@ -3751,7 +3781,7 @@ fn Reader() -> Element {
         section { class: "reader", aria_label: t("reader.label"),
             div { class: "toolbar",
                 DragArea {}
-                if let Some(a) = open {
+                if let Some(a) = open.filter(|_| buttons_fit) {
                     ReaderButtons { article: a }
                 }
                 MainWindowButtons {}
@@ -3920,16 +3950,26 @@ fn ReaderButtons(article: ArticleSummary) -> Element {
 }
 
 /// The width a list laid out as `layout` says shows at in a window `window_width` CSS px
-/// wide: its own, or less in a window too narrow for it beside the sidebar, but never
-/// less than its least (`.list`'s `min-width`).
+/// wide: its own, or less in a window too narrow for it beside the sidebar and the
+/// reader's least, but never less than its own least (`.list`'s `min-width`).
 fn list_shown_width(layout: &Layout, window_width: f64) -> f64 {
-    let sidebar = if layout.sidebar_open {
+    let room = window_width - sidebar_taken(layout) - RESIZER - READER_LEAST;
+    layout.list_width.min(room).max(LIST_WIDTH.min)
+}
+
+/// The reader's width in a window `window_width` CSS px wide, beside the sidebar and
+/// the list as `layout` lays them out.
+fn reader_width(layout: &Layout, window_width: f64) -> f64 {
+    window_width - sidebar_taken(layout) - list_shown_width(layout, window_width) - RESIZER
+}
+
+/// What the sidebar and its border take of the window's width, as `layout` has them.
+fn sidebar_taken(layout: &Layout) -> f64 {
+    if layout.sidebar_open {
         layout.sidebar_width + RESIZER
     } else {
         0.0
-    };
-    let room = window_width - sidebar - RESIZER;
-    layout.list_width.min(room).max(LIST_WIDTH.min)
+    }
 }
 
 /// The list's viewport's height in a window `window_height` CSS px high.
@@ -4134,17 +4174,21 @@ mod tests {
             list_width: 340.0,
         };
         // The sidebar, the list and their borders fit: the list has its width.
+        let fit = 230.0 + 340.0 + 2.0 + READER_LEAST;
         assert_eq!(list_shown_width(&layout, 1200.0), 340.0);
-        assert_eq!(list_shown_width(&layout, 230.0 + 340.0 + 2.0), 340.0);
+        assert_eq!(list_shown_width(&layout, fit), 340.0);
         // One less, and the list gives it up, down to its least.
-        assert_eq!(list_shown_width(&layout, 230.0 + 340.0 + 1.0), 339.0);
+        assert_eq!(list_shown_width(&layout, fit - 1.0), 339.0);
         assert_eq!(list_shown_width(&layout, 400.0), LIST_WIDTH.min);
         // A hidden sidebar leaves the list its room.
         let hidden = Layout {
             sidebar_open: false,
             ..layout
         };
-        assert_eq!(list_shown_width(&hidden, 300.0), 299.0);
+        assert_eq!(list_shown_width(&hidden, 300.0 + READER_LEAST), 299.0);
+        // The reader takes the rest, and never less than its least.
+        assert_eq!(reader_width(&layout, 1200.0), 1200.0 - 231.0 - 340.0 - 1.0);
+        assert_eq!(reader_width(&layout, fit - 1.0), READER_LEAST);
     }
 
     #[test]

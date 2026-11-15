@@ -92,10 +92,9 @@
   padding: 20px 28px 8px;
 }
 
-/* Below where the title bar was, on macOS, and below the window buttons on Linux
-   (chrome.rs). */
-.mac.settings main > header,
-.linux.settings main > header {
+/* Where there is no title bar (chrome.rs): below where it was, on macOS, and below
+   the window buttons on Linux. */
+.frameless.settings main > header {
   padding-top: var(--toolbar-height);
 }
 

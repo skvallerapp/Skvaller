@@ -265,10 +265,8 @@ button {
 /* Linux: no frame at all (chrome.rs). The app draws the window buttons, at the end of
    the reader's toolbar, Settings' header or the add-account screen's corner, and the
    edges. */
-.root.linux {
-  position: relative;
-}
 
+/* Presses between and around the buttons go through to the drag area under them. */
 .window-buttons {
   display: flex;
   align-items: center;
@@ -276,6 +274,16 @@ button {
   flex: none;
   margin-left: auto;
   padding-left: 8px;
+  pointer-events: none;
+}
+
+.window-button {
+  pointer-events: auto;
+}
+
+/* But not while a pane's border is dragged, so its release closes no window. */
+.root.resizing .window-button {
+  pointer-events: none;
 }
 
 /* KDE's Breeze buttons: 20px apart by 4px, with a circle 18px across on hover, in the
@@ -315,10 +323,12 @@ button {
   color: #ffffff;
 }
 
+/* The height of the toolbars, the buttons centered in it, whichever their size. */
 .frameless.settings main > header .window-buttons {
   position: absolute;
-  top: calc((var(--toolbar-height) - 28px) / 2);
+  top: 0;
   right: 10px;
+  height: var(--toolbar-height);
 }
 
 /* The frame, but where the window meets the screen's edges (chrome.rs's Frame): the
@@ -326,6 +336,7 @@ button {
    radius and the outline's color come from the system (appearance.rs), set on the
    root; where the system's outline isn't known, the theme's separator stands in. */
 .root.framed {
+  position: relative;
   border-radius: var(--frame-radius);
   overflow: hidden;
 }
@@ -359,7 +370,6 @@ button {
 .resize-edge.w {
   top: 8px;
   bottom: 8px;
-  width: 4px;
   cursor: ew-resize;
 }
 
@@ -367,7 +377,7 @@ button {
 .resize-edge.s { bottom: 0; }
 /* Narrower on the right, clear of the scroll thumbs there, 2px in from the edge. */
 .resize-edge.e { right: 0; width: 2px; }
-.resize-edge.w { left: 0; }
+.resize-edge.w { left: 0; width: 4px; }
 
 .resize-edge.ne,
 .resize-edge.nw,
@@ -992,6 +1002,11 @@ input.search-field {
   background: var(--reader-bg);
 }
 
+/* Room for the window buttons at the end of its toolbar (ui.rs's READER_LEAST). */
+.linux .reader {
+  min-width: 116px;
+}
+
 .reader iframe {
   flex: 1;
   width: 100%;
@@ -1121,11 +1136,21 @@ input.search-field {
   right: 10px;
   display: flex;
   align-items: center;
+  /* Presses around its contents go through to the drag strip (`.other-accounts`
+     takes its own). */
+  pointer-events: none;
+}
+
+/* The window buttons centered where the title bar was, whichever their size. */
+.linux .screen-corner {
+  top: 0;
+  height: var(--toolbar-height);
 }
 
 .other-accounts {
   position: relative;
   width: 260px;
+  pointer-events: auto;
   display: flex;
   justify-content: flex-end;
 }

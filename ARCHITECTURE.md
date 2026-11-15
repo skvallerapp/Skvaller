@@ -96,8 +96,10 @@ The windows, in Dioxus Native (Blitz).
   no decorations and a transparent surface: the app draws minimize, maximize and
   close at the window's top right, as the system's frames draw them (Breeze's on KDE,
   GNOME's elsewhere), and a frame with the system's outline and rounded corners, and
-  edges to resize by, while not maximized or full screen. On macOS and Linux the
-  window drags from the toolbars' empty space. Windows keeps the system's title bar.
+  edges to resize by, while not maximized or full screen. The reader keeps a least
+  width for the buttons (`ui::READER_LEAST`), which the list gives up width to, and
+  the main window's least width follows from it. On macOS and Linux the window drags
+  from the toolbars' empty space. Windows keeps the system's title bar.
 - `shadow`: the window's drop shadow on KDE Plasma, which KWin draws only for windows
   with a decoration. It renders Breeze's shadow as Breeze does and hands it to KWin
   through `org_kde_kwin_shadow` on winit's own Wayland connection, or on X11 through
@@ -118,7 +120,7 @@ The windows, in Dioxus Native (Blitz).
 - **On Linux, an `appearance` thread** follows the portal's dark mode and window
   frame, plus the executor thread zbus starts for its connection. `main` starts it
   before loading the app, and the first window waits up to 300 ms for its first
-  answer, a local call, not the network. On KDE under X11, each window's shadow keeps
+  answers, two local calls, not the network. On KDE under X11, each window's shadow keeps
   a connection of its own to the X server.
 - **One `VirtualDom` per window.** Windows share only the `Arc<App>` they're given.
   Each follows the app through `live::use_live` and its own `subscribe()`.

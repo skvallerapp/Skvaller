@@ -61,7 +61,8 @@ impl SettingsWindow {
             window.focus_window();
             return;
         }
-        let attributes = chrome::frame(
+        let (config, attributes) = chrome::window(
+            Config::new(),
             WindowAttributes::default()
                 .with_title(t("settings.label"))
                 .with_surface_size(LogicalSize::new(720.0, 520.0))
@@ -70,7 +71,7 @@ impl SettingsWindow {
         let vdom = VirtualDom::new(SettingsRoot)
             .with_root_context(Arc::clone(app))
             .with_root_context(self.clone());
-        let config = chrome::surface(Config::new())
+        let config = config
             .with_font_ctx(fonts::font_context())
             .with_window_attributes(attributes);
         windows.new_window(vdom, config);
@@ -117,6 +118,7 @@ fn SettingsRoot() -> Element {
     let live = use_live(&app);
     // For the window buttons and the frame's shadow.
     use_context_provider(|| live);
+    let window_state = chrome::use_window_state_provider();
     let mut pane = use_signal(|| slot.pane.borrow_mut().take().unwrap_or(Pane::Appearance));
     // A pane asked for while the window is open, as by the main window's Add Account.
     use_hook(|| {
@@ -191,7 +193,7 @@ fn SettingsRoot() -> Element {
         _ => Ok(Vec::new()),
     };
     let root_style = chrome::root_style(&fonts::stack(settings.ui_font), (live.frame)());
-    let framed = (chrome::use_window_state_provider().framed)();
+    let framed = (window_state.framed)();
     let theme = article::theme_name((live.theme)());
     let motion = crate::ui::motion(settings.animations);
 

@@ -52,15 +52,6 @@ impl SystemFrame {
         radius: 12.0,
         buttons: Buttons::Adwaita,
     };
-
-    /// The frame's CSS variables, for a window's root.
-    pub fn css(self) -> String {
-        let radius = format!("--frame-radius: {}px", self.radius);
-        match self.outline {
-            Some([r, g, b]) => format!("{radius}; --frame-outline: rgb({r} {g} {b})"),
-            None => radius,
-        }
-    }
 }
 
 /// `theme` as the window shows it: System made Light or Dark when the app knows the
@@ -164,7 +155,8 @@ mod imp {
     /// Groups of settings by namespace, as the portal's `ReadAll` answers.
     type Groups = HashMap<String, HashMap<String, OwnedValue>>;
 
-    /// How long [`wait_for_first_answer`] waits. The portal answers in about 10 ms.
+    /// How long [`wait_for_first_answer`] waits: for two calls to the portal, the mode's
+    /// and the frame's, which each answer in about 10 ms.
     const FIRST_ANSWER: Duration = Duration::from_millis(300);
 
     /// The mode and the frame, and the first answer's signal until something waits for
@@ -246,13 +238,20 @@ mod imp {
             }
             Err(err) => tracing::info!("the system's dark mode can't be read: {err}"),
         }
-        let refresh_frame = || match read_frame(&proxy) {
-            Ok(now) => {
-                frame.send_if_modified(|was| std::mem::replace(was, now) != now);
-            }
-            Err(err) => tracing::info!("the system's window frame can't be read: {err}"),
+        // Read once: later changes come with their values. No call is made while the
+        // changes are followed, as its answer would wait behind a burst of them (a new
+        // color scheme changes many keys at once) once their queue is full.
+        let mut groups = proxy
+            .call::<_, _, Groups>("ReadAll", &(FRAME_NAMESPACES.as_slice(),))
+            .unwrap_or_else(|err| {
+                tracing::info!("the system's window frame can't be read: {err}");
+                Groups::new()
+            });
+        let send_frame = |groups: &Groups| {
+            let now = kde_frame(groups).unwrap_or(SystemFrame::UNKNOWN);
+            frame.send_if_modified(|was| std::mem::replace(was, now) != now);
         };
-        refresh_frame();
+        send_frame(&groups);
         let _ = first.send(());
         for message in changes? {
             let Ok((namespace, key, value)) =
@@ -263,8 +262,8 @@ mod imp {
             if namespace == NAMESPACE && key == KEY {
                 sender.send_replace(dark(&value));
             } else if FRAME_NAMESPACES.contains(&namespace.as_str()) {
-                // A new color scheme changes many keys at once; each reads them all.
-                refresh_frame();
+                groups.entry(namespace).or_default().insert(key, value);
+                send_frame(&groups);
             }
         }
         Ok(())
@@ -281,12 +280,6 @@ mod imp {
             }
             Err(err) => Err(err),
         }
-    }
-
-    /// The system's window frame now, from KDE's settings where the portal has them.
-    fn read_frame(proxy: &Proxy<'_>) -> zbus::Result<SystemFrame> {
-        let groups: Groups = proxy.call("ReadAll", &(FRAME_NAMESPACES.as_slice(),))?;
-        Ok(kde_frame(&groups).unwrap_or(SystemFrame::UNKNOWN))
     }
 
     /// The frame Breeze draws, from `kdeglobals`' `groups`: an outline of the window's

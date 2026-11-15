@@ -39,13 +39,13 @@ pub const LINUX: bool = cfg!(target_os = "linux");
 pub const FRAMELESS: bool = MAC || LINUX;
 
 /// How soon a second press counts as a double-click, which zooms the window as a
-/// double-click on a title bar does by default. 500 ms is macOS's and GTK's default
-/// speed. The user's own speed and title-bar action aren't read.
-const DOUBLE_CLICK: Duration = Duration::from_millis(500);
+/// double-click on a title bar does by default: macOS's default speed, 500 ms, and
+/// GTK's and KDE's, 400 ms. The user's own speed and title-bar action aren't read.
+const DOUBLE_CLICK: Duration = Duration::from_millis(if MAC { 500 } else { 400 });
 
 /// Hides the title bar, keeping the window buttons over the window's content.
 #[cfg(target_os = "macos")]
-pub fn frame(attributes: WindowAttributes) -> WindowAttributes {
+fn frame(attributes: WindowAttributes) -> WindowAttributes {
     use dioxus_native::winit::platform::macos::WindowAttributesMacOS;
 
     let mac = WindowAttributesMacOS::default()
@@ -62,20 +62,20 @@ pub fn frame(attributes: WindowAttributes) -> WindowAttributes {
 /// Wayland compositor that draws them, winit's own (sctk-adwaita) on one that doesn't.
 /// The window is transparent, for its rounded corners ([`surface`]).
 #[cfg(target_os = "linux")]
-pub fn frame(attributes: WindowAttributes) -> WindowAttributes {
+fn frame(attributes: WindowAttributes) -> WindowAttributes {
     attributes.with_decorations(false).with_transparent(true)
 }
 
 /// Keeps the system's title bar: `attributes` as they are.
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub fn frame(attributes: WindowAttributes) -> WindowAttributes {
+fn frame(attributes: WindowAttributes) -> WindowAttributes {
     attributes
 }
 
 /// On Linux, renders the window onto a transparent surface, so that what the window's
 /// root leaves out, its rounded corners, shows what's behind it. Elsewhere `config` as
 /// it is.
-pub fn surface(config: Config) -> Config {
+fn surface(config: Config) -> Config {
     if LINUX {
         config
             .with_alpha_mode(CompositeAlphaMode::Transparent)
@@ -83,6 +83,12 @@ pub fn surface(config: Config) -> Config {
     } else {
         config
     }
+}
+
+/// A window's `config` and `attributes` for its frame, together: on Linux the window's
+/// transparency needs both ([`frame`], [`surface`]).
+pub fn window(config: Config, attributes: WindowAttributes) -> (Config, WindowAttributes) {
+    (surface(config), frame(attributes))
 }
 
 /// A layer that drags the window from a toolbar's empty space, where there is no title
@@ -152,43 +158,62 @@ pub fn WindowButtons(on_close: Option<EventHandler<()>>) -> Element {
     let maximized = (use_context::<WindowState>().maximized)();
     let id = window.id();
     let (minimize, zoom) = (Arc::clone(&window), window);
-    let (minimize_label, close_label) = (t("window.minimize"), t("window.close"));
     let (zoom_label, zoom_glyph) = if maximized {
-        (t("window.restore"), Glyph::Restore)
+        ("window.restore", Glyph::Restore)
     } else {
-        (t("window.maximize"), Glyph::Maximize)
+        ("window.maximize", Glyph::Maximize)
     };
 
     rsx! {
         div {
             class: "window-buttons",
             class: if style == Buttons::Breeze { "breeze" },
-            button {
-                class: "icon-button window-button",
-                aria_label: minimize_label.clone(),
-                title: minimize_label,
+            WindowButton {
+                label: t("window.minimize"),
+                glyph: Glyph::Minimize,
+                style,
                 onclick: move |_| minimize.set_minimized(true),
-                ButtonGlyph { glyph: Glyph::Minimize, style }
             }
-            button {
-                class: "icon-button window-button",
-                aria_label: zoom_label.clone(),
-                title: zoom_label,
+            WindowButton {
+                label: t(zoom_label),
+                glyph: zoom_glyph,
+                style,
                 onclick: move |_| zoom.set_maximized(!maximized),
-                ButtonGlyph { glyph: zoom_glyph, style }
             }
-            button {
-                class: "icon-button window-button close",
-                aria_label: close_label.clone(),
-                title: close_label,
+            WindowButton {
+                label: t("window.close"),
+                glyph: Glyph::Close,
+                style,
+                close: true,
                 onclick: move |_| {
                     if let Some(on_close) = on_close {
                         on_close.call(());
                     }
                     windows.close_window(id);
                 },
-                ButtonGlyph { glyph: Glyph::Close, style }
             }
+        }
+    }
+}
+
+/// One of [`WindowButtons`]: `glyph` in `style`, named `label`; `close` for the close
+/// button's colors.
+#[component]
+fn WindowButton(
+    label: String,
+    glyph: Glyph,
+    style: Buttons,
+    #[props(default)] close: bool,
+    onclick: EventHandler<MouseEvent>,
+) -> Element {
+    rsx! {
+        button {
+            class: "icon-button window-button",
+            class: if close { "close" },
+            aria_label: label.clone(),
+            title: label,
+            onclick,
+            ButtonGlyph { glyph, style }
         }
     }
 }
@@ -263,7 +288,13 @@ fn use_kwin_shadow(window: &Arc<dyn Window>) {
         let (shadow, window) = (Rc::clone(&shadow), Arc::clone(window));
         move || {
             if frame().buttons == Buttons::Breeze {
-                shadow.get_or_init(|| KwinShadow::new(&*window).map(RefCell::new));
+                shadow.get_or_init(|| {
+                    let made = KwinShadow::new(&*window);
+                    if made.is_none() {
+                        tracing::info!("the window's shadow can't be handed to KWin");
+                    }
+                    made.map(RefCell::new)
+                });
             }
         }
     });
@@ -308,6 +339,13 @@ pub struct WindowState {
 /// asks the window only on Linux, where something shows it: on X11 `is_maximized` is
 /// a round trip to the server.
 pub fn use_window_state_provider() -> WindowState {
+    // A constant, so the hooks below run on every render or on none.
+    if !LINUX {
+        return use_context_provider(|| WindowState {
+            maximized: Signal::new(false),
+            framed: Signal::new(false),
+        });
+    }
     let window = use_window();
     let x11 = use_hook(|| on_x11(&*window));
     let read = move |w: &dyn Window, size| {
@@ -315,11 +353,7 @@ pub fn use_window_state_provider() -> WindowState {
         (maximized, !maximized && !is_fullscreen(w, size, x11))
     };
     let state = use_context_provider(|| {
-        let (maximized, framed) = if LINUX {
-            read(&*window, window.surface_size())
-        } else {
-            (false, false)
-        };
+        let (maximized, framed) = read(&*window, window.surface_size());
         WindowState {
             maximized: Signal::new(maximized),
             framed: Signal::new(framed),
@@ -327,19 +361,17 @@ pub fn use_window_state_provider() -> WindowState {
     });
     use_window_event(move |event, _| {
         // Maximizing or full screen resizes the window, whoever asks for it.
-        if let WindowEvent::SurfaceResized(size) = event
-            && LINUX
-        {
-            let (maximized, framed) = read(&*window, *size);
+        if let WindowEvent::SurfaceResized(size) = event {
+            let (now_maximized, now_framed) = read(&*window, *size);
             let WindowState {
-                maximized: mut m,
-                framed: mut f,
+                mut maximized,
+                mut framed,
             } = state;
-            if *m.peek() != maximized {
-                m.set(maximized);
+            if *maximized.peek() != now_maximized {
+                maximized.set(now_maximized);
             }
-            if *f.peek() != framed {
-                f.set(framed);
+            if *framed.peek() != now_framed {
+                framed.set(now_framed);
             }
         }
     });
@@ -381,9 +413,19 @@ fn is_fullscreen(window: &dyn Window, size: PhysicalSize<u32>, x11: bool) -> boo
         })
 }
 
-/// The CSS variables of a window's root: its UI font `stack`, and the system's frame.
+/// The CSS variables of a window's root: its UI font `stack`, and on Linux the
+/// system's frame (app.css).
 pub fn root_style(stack: &str, frame: SystemFrame) -> String {
-    format!("--ui-font: {stack}; {}", frame.css())
+    use std::fmt::Write as _;
+
+    let mut style = format!("--ui-font: {stack}");
+    if LINUX {
+        let _ = write!(style, "; --frame-radius: {}px", frame.radius);
+        if let Some([r, g, b]) = frame.outline {
+            let _ = write!(style, "; --frame-outline: rgb({r} {g} {b})");
+        }
+    }
+    style
 }
 
 /// The window's frame on Linux, in a root whose class has `framed` while

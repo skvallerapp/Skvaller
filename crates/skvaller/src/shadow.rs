@@ -156,8 +156,7 @@ fn render_one(box_size: usize, params: &Params, strength: f64) -> Shadow {
         alpha[y * size + extent..y * size + extent + box_size].fill(255);
     }
     // Symmetrical: Breeze blurs the top-left quadrant and mirrors it.
-    let half = size.div_ceil(2);
-    blur(&mut alpha, size, half, params.radius);
+    blur(&mut alpha, size, params.radius);
     mirror(&mut alpha, size);
     #[expect(
         clippy::cast_possible_truncation,
@@ -259,12 +258,13 @@ fn blur_line(src: &[u8], dst: &mut [u8], (left_lobe, right_lobe): (usize, usize)
     }
 }
 
-/// Breeze's `boxBlurAlpha` over the top-left `half` by `half` of a `size`-wide image:
-/// three box blurs across, then three down.
-fn blur(alpha: &mut [u8], size: usize, half: usize, radius: u32) {
+/// Breeze's `boxBlurAlpha` over the top-left quarter of a `size`-wide image, rounded
+/// up as [`mirror`] copies it: three box blurs across, then three down.
+fn blur(alpha: &mut [u8], size: usize, radius: u32) {
     if radius < 2 {
         return;
     }
+    let half = size.div_ceil(2);
     let lobes = lobes(radius);
     let (mut a, mut b) = (vec![0_u8; half], vec![0_u8; half]);
     let mut line = vec![0_u8; half];
@@ -467,10 +467,8 @@ pub mod kwin {
         shadow: OrgKdeKwinShadow,
         /// The tiles of the active shadow, then the inactive one.
         buffers: [[WlBuffer; 8]; 2],
-        pool: WlShmPool,
         /// Bound for this window, and let go with it.
         manager: OrgKdeKwinShadowManager,
-        shm: WlShm,
         /// Left, top, right and bottom, the same at either strength.
         padding: [u32; 4],
         active: Option<bool>,
@@ -500,11 +498,9 @@ pub mod kwin {
             queue.roundtrip(&mut globals).ok()?;
             let (manager_name, manager_version) = globals.manager?;
             let (shm_name, shm_version) = globals.shm?;
-            let manager: OrgKdeKwinShadowManager =
-                registry.bind(manager_name, manager_version.min(2), &qh, ());
-            let shm: WlShm = registry.bind(shm_name, shm_version.min(2), &qh, ());
-
-            // Made once KWin's shadows are known to be there.
+            // Made once KWin's shadows are known to be there, and before binding
+            // anything on winit's connection, so that a failure here leaves only the
+            // registry there.
             let textures = textures();
             let tiles = textures.each_ref().map(Texture::tiles);
             let fd = rustix::fs::memfd_create("skvaller-shadow", rustix::fs::MemfdFlags::CLOEXEC)
@@ -519,34 +515,39 @@ pub mod kwin {
                 }
             }
             std::io::Write::write_all(&mut file, &data).ok()?;
-            let pool = shm.create_pool(file.as_fd(), i32::try_from(data.len()).ok()?, &qh, ());
-            let mut offset = 0;
-            let mut make = |tiles: &[(usize, usize, Vec<u8>); 8]| -> Option<[WlBuffer; 8]> {
-                let mut out = Vec::with_capacity(8);
-                for (w, h, _) in tiles {
-                    let (wi, hi) = (i32::try_from(*w).ok()?, i32::try_from(*h).ok()?);
-                    out.push(pool.create_buffer(
-                        offset,
-                        wi,
-                        hi,
-                        wi * 4,
-                        wl_shm::Format::Argb8888,
-                        &qh,
-                        (),
-                    ));
-                    offset += wi * hi * 4;
+            let pool_size = i32::try_from(data.len()).ok()?;
+            let mut sizes = [[(0_i32, 0_i32); 8]; 2];
+            for (out, tiles) in sizes.iter_mut().zip(&tiles) {
+                for (size, (w, h, _)) in out.iter_mut().zip(tiles) {
+                    *size = (i32::try_from(*w).ok()?, i32::try_from(*h).ok()?);
                 }
-                out.try_into().ok()
-            };
-            let buffers = [make(&tiles[0])?, make(&tiles[1])?];
+            }
+
+            let manager: OrgKdeKwinShadowManager =
+                registry.bind(manager_name, manager_version.min(2), &qh, ());
+            let shm: WlShm = registry.bind(shm_name, shm_version.min(2), &qh, ());
+            let pool = shm.create_pool(file.as_fd(), pool_size, &qh, ());
+            // In the order `data` holds the tiles.
+            let mut offset = 0;
+            let buffers = sizes.map(|tiles| {
+                tiles.map(|(w, h)| {
+                    let buffer =
+                        pool.create_buffer(offset, w, h, w * 4, wl_shm::Format::Argb8888, &qh, ());
+                    offset += w * h * 4;
+                    buffer
+                })
+            });
+            // The buffers keep the pool's memory, and need neither it nor `shm`.
+            pool.destroy();
+            if shm.version() >= 2 {
+                shm.release();
+            }
             let shadow = manager.create(&surface, &qh, ());
             let padding = textures[0].padding;
             Some(Self {
                 shadow,
                 buffers,
-                pool,
                 manager,
-                shm,
                 padding,
                 active: None,
                 connection,
@@ -591,10 +592,6 @@ pub mod kwin {
             }
             for b in self.buffers.iter().flatten() {
                 b.destroy();
-            }
-            self.pool.destroy();
-            if self.shm.version() >= 2 {
-                self.shm.release();
             }
             if self.manager.version() >= 2 {
                 self.manager.destroy();
@@ -730,10 +727,8 @@ pub mod kwin {
     impl Drop for X11Shadow {
         fn drop(&mut self) {
             // The window may be gone already; then so is its property.
+            // The pixmaps go with the connection, which closes after this.
             let _ = self.connection.delete_property(self.window, self.atom);
-            for id in self.pixmaps.iter().flatten() {
-                let _ = self.connection.free_pixmap(*id);
-            }
             let _ = self.connection.flush();
         }
     }
