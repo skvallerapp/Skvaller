@@ -18,8 +18,8 @@ use dioxus_native::{
     BlitzScrollSource, BlitzWheelPhase, NativeWheelData, use_window, use_window_event, use_windows,
 };
 use skvaller_app::{
-    App, LIST_WIDTH, Layout, Library, MarkReadOn, PaneWidth, SIDEBAR_WIDTH, SortSubscriptions,
-    SyncStatus, ThumbnailSize,
+    App, Error as AppError, LIST_WIDTH, Layout, Library, MarkReadOn, PaneWidth, SIDEBAR_WIDTH,
+    SortSubscriptions, SyncStatus, ThumbnailSize,
 };
 use skvaller_core::{ArticleSummary, Counts, Scope, Selection, View};
 use tokio::sync::broadcast::error::RecvError;
@@ -1251,8 +1251,11 @@ impl Reading {
             return;
         }
         // Only the next start misses a choice that wasn't saved.
-        if let Err(e) = app.set_active(id) {
-            tracing::error!("saving account {id} as the one shown failed: {e}");
+        match app.set_active(id) {
+            // Removed since the pick was offered, as from a menu not yet updated.
+            Err(AppError::NoAccount) => return,
+            Err(e) => tracing::error!("saving account {id} as the one shown failed: {e}"),
+            Ok(()) => {}
         }
         self.show_account(app, Some(id.to_owned()));
     }
@@ -1391,6 +1394,8 @@ impl Reading {
 
 /// The account a key switches to, by index: ⌘1 to ⌘9 on macOS, Alt+1 to Alt+9
 /// elsewhere. Goes by the key's place, not its character, which depends on the layout.
+/// On macOS the menu bar takes the key first, except where the layout's digits need
+/// Shift.
 fn account_index(code: &str, mods: Modifiers) -> Option<usize> {
     if mods != ACCOUNT_MODIFIER {
         return None;
@@ -1695,6 +1700,7 @@ pub fn Root() -> Element {
                 }
             },
             onkeydown: move |e: Event<KeyboardData>| {
+                // On macOS the menu bar's Settings… takes ⌘, first.
                 if e.code() == Code::Comma && e.modifiers() == COMMAND_MODIFIER {
                     settings.open(&windows, &app);
                     e.prevent_default();

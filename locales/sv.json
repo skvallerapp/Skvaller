@@ -85,6 +85,7 @@
   "menu.showAll": "Visa alla",
   "menu.quit": "Avsluta Skvaller",
   "menu.window": "Fönster",
+  "menu.closeWindow": "Stäng fönster",
   "menu.minimize": "Minimera",
   "menu.zoom": "Zooma",
   "menu.bringAllToFront": "Lägg alla överst",

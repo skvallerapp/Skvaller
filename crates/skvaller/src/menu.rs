@@ -3,12 +3,15 @@
 //!
 //! A menu item's key, such as ⌘, or ⌘1, reaches the menu before the window, so on macOS
 //! the menu runs those shortcuts and the window never sees them.
+//!
+//! No Edit menu: Blitz handles ⌘C, ⌘V and ⌘A itself, and the standard Edit items would
+//! claim those keys for actions the window doesn't implement.
 
 use std::rc::Rc;
 use std::sync::Arc;
 
 use dioxus_native::prelude::*;
-use muda::accelerator::{Accelerator, Code, Modifiers};
+use muda::accelerator::Accelerator;
 use muda::{AboutMetadata, CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use skvaller_app::{Account, App};
 use tokio::sync::mpsc;
@@ -65,7 +68,6 @@ impl MenuBar {
         let about = PredefinedMenuItem::about(
             Some(t("menu.about").as_str()),
             Some(AboutMetadata {
-                name: Some("Skvaller".to_owned()),
                 version: Some(env!("CARGO_PKG_VERSION").to_owned()),
                 ..AboutMetadata::default()
             }),
@@ -99,6 +101,7 @@ impl MenuBar {
             t("menu.window"),
             true,
             &[
+                &PredefinedMenuItem::close_window(Some(t("menu.closeWindow").as_str())),
                 &PredefinedMenuItem::minimize(Some(t("menu.minimize").as_str())),
                 &PredefinedMenuItem::zoom(Some(t("menu.zoom").as_str())),
                 &PredefinedMenuItem::separator(),
@@ -178,12 +181,15 @@ pub fn use_menu_bar(
             }));
             spawn(async move {
                 while let Some(id) = commands.recv().await {
-                    if let Some(command) = Command::from_id(&id) {
-                        on_command(command);
-                    }
-                    // A check item checks or unchecks itself when picked, even the shown
-                    // account's: put the checks back.
-                    if let Some(bar) = &bar {
+                    let Some(command) = Command::from_id(&id) else {
+                        continue;
+                    };
+                    let account = matches!(command, Command::Account(_));
+                    on_command(command);
+                    // A check item checks or unchecks itself when picked. The effect
+                    // below puts the checks back when the shown account changes; picking
+                    // the shown one changes nothing, so put them back here.
+                    if let (true, Some(bar)) = (account, &bar) {
                         bar.refresh(&app, shown.peek().as_deref());
                     }
                 }

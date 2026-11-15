@@ -85,6 +85,7 @@
   "menu.showAll": "Mostrar todo",
   "menu.quit": "Salir de Skvaller",
   "menu.window": "Ventana",
+  "menu.closeWindow": "Cerrar ventana",
   "menu.minimize": "Minimizar",
   "menu.zoom": "Zoom",
   "menu.bringAllToFront": "Traer todo al frente",
