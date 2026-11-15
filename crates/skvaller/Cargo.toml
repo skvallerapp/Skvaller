@@ -55,6 +55,11 @@ webbrowser.workspace = true
 muda.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+rustix.workspace = true
+wayland-backend.workspace = true
+wayland-client.workspace = true
+wayland-protocols-plasma.workspace = true
+x11rb.workspace = true
 zbus.workspace = true
 
 [lints]

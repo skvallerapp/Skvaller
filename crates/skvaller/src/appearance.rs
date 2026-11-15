@@ -12,6 +12,11 @@
 //! stays light, so scrollbar thumbs keep their light colors; and a change of mode
 //! remakes the open article's document, which loads again at the top. Telling Blitz
 //! the scheme would take a change to the fork.
+//!
+//! On Linux the app also draws the window's frame itself (`chrome`), and the portal
+//! says how the system draws its own: [`SystemFrame`]. KDE Plasma passes its
+//! `kdeglobals` through the portal, and the outline is made from those colors as
+//! Breeze, Plasma's window decoration, makes its own.
 
 use skvaller_app::Theme;
 use tokio::sync::watch;
@@ -19,6 +24,44 @@ use tokio::sync::watch;
 /// The system's dark mode: `Some(true)` dark, `Some(false)` light, `None` when only
 /// `prefers-color-scheme` knows (or nothing does).
 pub type SystemDark = Option<bool>;
+
+/// How the system draws a window's frame, on Linux, for the frame the app draws.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SystemFrame {
+    /// The outline's color, `None` where the system's isn't known: the theme's then.
+    pub outline: Option<[u8; 3]>,
+    /// The corners' radius in CSS pixels.
+    pub radius: f32,
+    /// How the window buttons look.
+    pub buttons: Buttons,
+}
+
+/// The window buttons' look, as the system's window frames draw them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Buttons {
+    /// GNOME's (libadwaita's): a line, a square, two squares for restore.
+    Adwaita,
+    /// KDE's Breeze: chevrons down and up, a diamond for restore, in a circle on hover.
+    Breeze,
+}
+
+impl SystemFrame {
+    /// Where the system isn't known: GNOME's (libadwaita's) corners.
+    pub const UNKNOWN: Self = Self {
+        outline: None,
+        radius: 12.0,
+        buttons: Buttons::Adwaita,
+    };
+
+    /// The frame's CSS variables, for a window's root.
+    pub fn css(self) -> String {
+        let radius = format!("--frame-radius: {}px", self.radius);
+        match self.outline {
+            Some([r, g, b]) => format!("{radius}; --frame-outline: rgb({r} {g} {b})"),
+            None => radius,
+        }
+    }
+}
 
 /// `theme` as the window shows it: System made Light or Dark when the app knows the
 /// system's mode itself.
@@ -46,13 +89,22 @@ pub fn watch() -> watch::Receiver<SystemDark> {
     imp::sender().subscribe()
 }
 
+/// Breeze's corner radius, for the shadow KWin draws around it (`shadow`).
+#[cfg(target_os = "linux")]
+pub use imp::BREEZE_RADIUS;
+
+/// The system's window frame as it changes, starting to read it if [`start`] hasn't.
+pub fn watch_frame() -> watch::Receiver<SystemFrame> {
+    imp::frame_sender().subscribe()
+}
+
 #[cfg(not(target_os = "linux"))]
 mod imp {
     use std::sync::OnceLock;
 
     use tokio::sync::watch;
 
-    use super::SystemDark;
+    use super::{SystemDark, SystemFrame};
 
     /// Nothing to read: winit reports the system's mode here.
     pub fn start() {}
@@ -64,10 +116,17 @@ mod imp {
         static SENDER: OnceLock<watch::Sender<SystemDark>> = OnceLock::new();
         SENDER.get_or_init(|| watch::channel(None).0)
     }
+
+    /// Always [`SystemFrame::UNKNOWN`]: the system draws the frame here.
+    pub fn frame_sender() -> &'static watch::Sender<SystemFrame> {
+        static SENDER: OnceLock<watch::Sender<SystemFrame>> = OnceLock::new();
+        SENDER.get_or_init(|| watch::channel(SystemFrame::UNKNOWN).0)
+    }
 }
 
 #[cfg(target_os = "linux")]
 mod imp {
+    use std::collections::HashMap;
     use std::sync::mpsc;
     use std::sync::{Mutex, OnceLock, PoisonError};
     use std::time::Duration;
@@ -76,7 +135,7 @@ mod imp {
     use zbus::blocking::{Connection, Proxy};
     use zbus::zvariant::{OwnedValue, Value};
 
-    use super::SystemDark;
+    use super::{Buttons, SystemDark, SystemFrame};
 
     const PORTAL: &str = "org.freedesktop.portal.Desktop";
     const PATH: &str = "/org/freedesktop/portal/desktop";
@@ -84,13 +143,35 @@ mod imp {
     const NAMESPACE: &str = "org.freedesktop.appearance";
     const KEY: &str = "color-scheme";
     const UNKNOWN_METHOD: &str = "org.freedesktop.DBus.Error.UnknownMethod";
+    /// KDE's `kdeglobals`, a namespace per group, such as `org.kde.kdeglobals.WM`.
+    const KDEGLOBALS: &str = "org.kde.kdeglobals";
+
+    /// Breeze's corner radius: its `Frame_FrameRadius`, 2.5, times the decoration's
+    /// small spacing, 2 px at the usual font sizes.
+    pub const BREEZE_RADIUS: f32 = 5.0;
+    /// The `kdeglobals` groups the frame is made from. KDE's portal answers `ReadAll`
+    /// for these, though not `ReadOne`.
+    const FRAME_NAMESPACES: [&str; 5] = [
+        "org.kde.kdeglobals.Colors:Header",
+        "org.kde.kdeglobals.Colors:View",
+        "org.kde.kdeglobals.Colors:Window",
+        "org.kde.kdeglobals.KDE",
+        "org.kde.kdeglobals.WM",
+    ];
+    /// `KColorScheme::frameContrast`'s default, where `[KDE] frameContrast` isn't set.
+    const FRAME_CONTRAST: f64 = 0.2;
+
+    /// Groups of settings by namespace, as the portal's `ReadAll` answers.
+    type Groups = HashMap<String, HashMap<String, OwnedValue>>;
 
     /// How long [`wait_for_first_answer`] waits. The portal answers in about 10 ms.
     const FIRST_ANSWER: Duration = Duration::from_millis(300);
 
-    /// The mode, and the first answer's signal until something waits for it.
+    /// The mode and the frame, and the first answer's signal until something waits for
+    /// it.
     struct Reader {
         sender: watch::Sender<SystemDark>,
+        frame: watch::Sender<SystemFrame>,
         first: Mutex<Option<mpsc::Receiver<()>>>,
     }
 
@@ -98,13 +179,15 @@ mod imp {
         static READER: OnceLock<Reader> = OnceLock::new();
         READER.get_or_init(|| {
             let (sender, _) = watch::channel(None);
+            let (frame, _) = watch::channel(SystemFrame::UNKNOWN);
             let (first, answered) = mpsc::channel();
             let thread_sender = sender.clone();
+            let thread_frame = frame.clone();
             let started = std::thread::Builder::new()
                 .name("appearance".into())
                 .spawn(move || {
-                    if let Err(err) = follow(&thread_sender, &first) {
-                        tracing::info!("the system's dark mode can't be followed: {err}");
+                    if let Err(err) = follow(&thread_sender, &thread_frame, &first) {
+                        tracing::info!("the system's appearance can't be followed: {err}");
                     }
                     // Dropping `first` ends a wait for it if nothing was sent.
                 });
@@ -113,6 +196,7 @@ mod imp {
             }
             Reader {
                 sender,
+                frame,
                 first: Mutex::new(Some(answered)),
             }
         })
@@ -138,9 +222,17 @@ mod imp {
         &reader().sender
     }
 
-    /// Reads the portal's setting into `sender`, telling `first` once it has, then
-    /// follows its changes until the session bus goes away.
-    fn follow(sender: &watch::Sender<SystemDark>, first: &mpsc::Sender<()>) -> zbus::Result<()> {
+    pub fn frame_sender() -> &'static watch::Sender<SystemFrame> {
+        &reader().frame
+    }
+
+    /// Reads the portal's settings into `sender` and `frame`, telling `first` once it
+    /// has, then follows their changes until the session bus goes away.
+    fn follow(
+        sender: &watch::Sender<SystemDark>,
+        frame: &watch::Sender<SystemFrame>,
+        first: &mpsc::Sender<()>,
+    ) -> zbus::Result<()> {
         let connection = Connection::session()?;
         let proxy = Proxy::new(&connection, PORTAL, PATH, SETTINGS)?;
         // Subscribed before reading, so a change between the two isn't missed. A bus
@@ -154,6 +246,13 @@ mod imp {
             }
             Err(err) => tracing::info!("the system's dark mode can't be read: {err}"),
         }
+        let refresh_frame = || match read_frame(&proxy) {
+            Ok(now) => {
+                frame.send_if_modified(|was| std::mem::replace(was, now) != now);
+            }
+            Err(err) => tracing::info!("the system's window frame can't be read: {err}"),
+        };
+        refresh_frame();
         let _ = first.send(());
         for message in changes? {
             let Ok((namespace, key, value)) =
@@ -163,6 +262,9 @@ mod imp {
             };
             if namespace == NAMESPACE && key == KEY {
                 sender.send_replace(dark(&value));
+            } else if FRAME_NAMESPACES.contains(&namespace.as_str()) {
+                // A new color scheme changes many keys at once; each reads them all.
+                refresh_frame();
             }
         }
         Ok(())
@@ -181,6 +283,76 @@ mod imp {
         }
     }
 
+    /// The system's window frame now, from KDE's settings where the portal has them.
+    fn read_frame(proxy: &Proxy<'_>) -> zbus::Result<SystemFrame> {
+        let groups: Groups = proxy.call("ReadAll", &(FRAME_NAMESPACES.as_slice(),))?;
+        Ok(kde_frame(&groups).unwrap_or(SystemFrame::UNKNOWN))
+    }
+
+    /// The frame Breeze draws, from `kdeglobals`' `groups`: an outline of the window's
+    /// Frame color mixed toward the text color by `[KDE] frameContrast`, and Breeze's
+    /// corners. `None` without KDE's colors.
+    ///
+    /// The Frame color is KWin's: the Header colors' background where the scheme has
+    /// them, else `[WM] frame`, else the window background. An inactive window's
+    /// outline is taken as the same, as it is without Header colors.
+    fn kde_frame(groups: &Groups) -> Option<SystemFrame> {
+        let entry = |group: &str, key: &str| {
+            groups
+                .get(&format!("{KDEGLOBALS}.{group}"))
+                .and_then(|g| g.get(key))
+                .and_then(|v| string(v))
+        };
+        let color = |group: &str, key: &str| entry(group, key).and_then(rgb);
+        let background = color("Colors:Window", "BackgroundNormal")?;
+        let frame = if groups.contains_key(&format!("{KDEGLOBALS}.Colors:Header")) {
+            color("Colors:Header", "BackgroundNormal").unwrap_or(background)
+        } else {
+            color("WM", "frame").unwrap_or(background)
+        };
+        let text = color("Colors:View", "ForegroundNormal")?;
+        let contrast = entry("KDE", "frameContrast")
+            .and_then(|c| c.trim().parse::<f64>().ok())
+            .unwrap_or(FRAME_CONTRAST)
+            .clamp(0.0, 1.0);
+        Some(SystemFrame {
+            outline: Some(mix(frame, text, contrast)),
+            radius: BREEZE_RADIUS,
+            buttons: Buttons::Breeze,
+        })
+    }
+
+    /// A string setting, in a variant or not.
+    fn string<'a>(value: &'a Value<'a>) -> Option<&'a str> {
+        match value {
+            Value::Value(inner) => string(inner),
+            Value::Str(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    /// A KDE color, `r,g,b` (an alpha after them is left out).
+    fn rgb(text: &str) -> Option<[u8; 3]> {
+        let mut parts = text.split(',').map(|p| p.trim().parse::<u8>());
+        let mut next = || parts.next()?.ok();
+        Some([next()?, next()?, next()?])
+    }
+
+    /// `a` moved toward `b` by `amount`, channel by channel, as `KColorUtils::mix`.
+    fn mix(a: [u8; 3], b: [u8; 3], amount: f64) -> [u8; 3] {
+        let channel = |i: usize| {
+            let (a, b) = (f64::from(a[i]), f64::from(b[i]));
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "within 0 to 255, as both ends are"
+            )]
+            let mixed = (a + (b - a) * amount).round() as u8;
+            mixed
+        };
+        [channel(0), channel(1), channel(2)]
+    }
+
     /// The portal's `color-scheme`: 1 prefers dark, 2 prefers light, 0 (or anything
     /// else) states no preference.
     fn dark(value: &Value<'_>) -> SystemDark {
@@ -196,7 +368,7 @@ mod imp {
     mod tests {
         use zbus::zvariant::Value;
 
-        use super::dark;
+        use super::{Groups, SystemFrame, dark, kde_frame, mix, rgb};
 
         #[test]
         fn the_portals_color_scheme_reads_as_dark_light_or_unknown() {
@@ -207,6 +379,54 @@ mod imp {
             assert_eq!(dark(&Value::Value(Box::new(Value::U32(1)))), Some(true));
             // Not the portal's type.
             assert_eq!(dark(&Value::from("dark")), None);
+        }
+
+        fn groups(entries: &[(&str, &str, &str)]) -> Groups {
+            let mut groups = Groups::new();
+            for (group, key, value) in entries {
+                groups
+                    .entry(format!("org.kde.kdeglobals.{group}"))
+                    .or_default()
+                    .insert((*key).to_owned(), Value::from(*value).try_into().unwrap());
+            }
+            groups
+        }
+
+        #[test]
+        fn kde_colors_read_as_r_g_b() {
+            assert_eq!(rgb("36,39,44"), Some([36, 39, 44]));
+            assert_eq!(rgb("36, 39, 44, 255"), Some([36, 39, 44]));
+            assert_eq!(rgb("36,39"), None);
+            assert_eq!(rgb("#24272c"), None);
+            assert_eq!(mix([0, 100, 255], [255, 100, 0], 0.2), [51, 100, 204]);
+        }
+
+        #[test]
+        fn the_outline_mixes_the_frame_toward_the_text_as_breeze_does() {
+            // The Steam Deck's Vapor scheme: [WM] without a frame color, no Header.
+            let vapor = groups(&[
+                ("Colors:Window", "BackgroundNormal", "36,39,44"),
+                ("Colors:View", "ForegroundNormal", "239,240,241"),
+                ("WM", "activeBackground", "36,39,47"),
+            ]);
+            let frame = kde_frame(&vapor).unwrap();
+            assert_eq!(frame.outline, Some([77, 79, 83]));
+            assert!((frame.radius - 5.0).abs() < f32::EPSILON);
+            assert_eq!(frame.buttons, super::Buttons::Breeze);
+
+            // Header colors come first, and frameContrast sets the mix.
+            let header = groups(&[
+                ("Colors:Window", "BackgroundNormal", "239,240,241"),
+                ("Colors:Header", "BackgroundNormal", "222,224,226"),
+                ("Colors:View", "ForegroundNormal", "35,38,41"),
+                ("WM", "frame", "0,0,0"),
+                ("KDE", "frameContrast", "0.5"),
+            ]);
+            assert_eq!(kde_frame(&header).unwrap().outline, Some([129, 131, 134]));
+
+            // Not KDE.
+            assert_eq!(kde_frame(&Groups::new()), None);
+            assert_eq!(SystemFrame::UNKNOWN.outline, None);
         }
     }
 }

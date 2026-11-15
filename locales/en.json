@@ -276,5 +276,9 @@
   "settings.removeQuestion": "Remove {account}?",
   "settings.removeLocal": "This removes its subscriptions, folders and articles from this computer. They are kept nowhere else.",
   "settings.removeSync": "This removes the account and its articles from this computer. Changes that haven’t synced yet are lost.",
-  "settings.remove": "Remove"
+  "settings.remove": "Remove",
+  "window.minimize": "Minimize",
+  "window.maximize": "Maximize",
+  "window.restore": "Restore",
+  "window.close": "Close"
 }

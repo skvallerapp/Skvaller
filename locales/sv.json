@@ -276,5 +276,9 @@
   "settings.removeQuestion": "Ta bort {account}?",
   "settings.removeLocal": "Det här tar bort kontots prenumerationer, mappar och artiklar från den här datorn. De finns inte sparade någon annanstans.",
   "settings.removeSync": "Det här tar bort kontot och dess artiklar från den här datorn. Ändringar som inte har synkroniserats går förlorade.",
-  "settings.remove": "Ta bort"
+  "settings.remove": "Ta bort",
+  "window.minimize": "Minimera",
+  "window.maximize": "Maximera",
+  "window.restore": "Återställ",
+  "window.close": "Stäng"
 }

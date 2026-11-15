@@ -244,22 +244,143 @@ button {
   --toolbar-height: 52px;
 }
 
-/* The window drags from the toolbars' and headers' empty space: chrome.rs's layer,
-   first in each, over their text. Their controls are positioned too, so they paint
-   above it in tree order and a press on one stays the control's. No z-index: a
-   stacking context would trap the toolbars' popovers or escape the sidebar's clip. */
+/* Without a title bar, the window drags from the toolbars' and headers' empty space:
+   chrome.rs's layer, first in each, over their text. Their controls are positioned
+   too, so they paint above it in tree order and a press on one stays the control's.
+   No z-index: a stacking context would trap the toolbars' popovers or escape the
+   sidebar's clip. */
 .drag-area {
   position: absolute;
   inset: 0;
 }
 
-.mac .toolbar,
-.mac header.account,
-.mac.settings main > header,
-.mac .toolbar button,
-.mac.settings main > header button {
+.frameless .toolbar,
+.frameless header.account,
+.frameless.settings main > header,
+.frameless .toolbar button,
+.frameless.settings main > header button {
   position: relative;
 }
+
+/* Linux: no frame at all (chrome.rs). The app draws the window buttons, at the end of
+   the reader's toolbar, Settings' header or the add-account screen's corner, and the
+   edges. */
+.root.linux {
+  position: relative;
+}
+
+.window-buttons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  margin-left: auto;
+  padding-left: 8px;
+}
+
+/* KDE's Breeze buttons: 20px apart by 4px, with a circle 18px across on hover, in the
+   text color with the glyph cut out of it, and red for close. */
+.window-buttons.breeze {
+  gap: 4px;
+}
+
+.window-buttons.breeze .window-button {
+  width: 18px;
+  height: 18px;
+  margin: 0 1px;
+  border-radius: 50%;
+}
+
+.window-buttons.breeze .window-button svg {
+  flex: none;
+}
+
+.window-buttons.breeze .window-button:hover {
+  background: var(--text);
+  color: var(--reader-bg);
+}
+
+.window-buttons.breeze .window-button:active {
+  background: var(--text-2);
+  color: var(--reader-bg);
+}
+
+.window-buttons.breeze .window-button.close:hover {
+  background: var(--destructive);
+  color: #ffffff;
+}
+
+.window-buttons.breeze .window-button.close:active {
+  background: var(--error);
+  color: #ffffff;
+}
+
+.frameless.settings main > header .window-buttons {
+  position: absolute;
+  top: calc((var(--toolbar-height) - 28px) / 2);
+  right: 10px;
+}
+
+/* The frame, but where the window meets the screen's edges (chrome.rs's Frame): the
+   corners rounded as the system's, on a transparent window, and its outline. The
+   radius and the outline's color come from the system (appearance.rs), set on the
+   root; where the system's outline isn't known, the theme's separator stands in. */
+.root.framed {
+  border-radius: var(--frame-radius);
+  overflow: hidden;
+}
+
+/* Inside the window, over everything, popovers too, as a frame would be. */
+.frame-outline {
+  position: absolute;
+  inset: 0;
+  z-index: 41;
+  border: 1px solid var(--frame-outline, var(--separator));
+  border-radius: var(--frame-radius);
+  pointer-events: none;
+}
+
+/* Corners go on top of edges. Above the context menu (20) but under a dropdown's
+   backdrop (30), so a press near the edge with a dropdown open closes it. */
+.resize-edge {
+  position: absolute;
+  z-index: 25;
+}
+
+.resize-edge.n,
+.resize-edge.s {
+  left: 8px;
+  right: 8px;
+  height: 4px;
+  cursor: ns-resize;
+}
+
+.resize-edge.e,
+.resize-edge.w {
+  top: 8px;
+  bottom: 8px;
+  width: 4px;
+  cursor: ew-resize;
+}
+
+.resize-edge.n { top: 0; }
+.resize-edge.s { bottom: 0; }
+/* Narrower on the right, clear of the scroll thumbs there, 2px in from the edge. */
+.resize-edge.e { right: 0; width: 2px; }
+.resize-edge.w { left: 0; }
+
+.resize-edge.ne,
+.resize-edge.nw,
+.resize-edge.se,
+.resize-edge.sw {
+  width: 8px;
+  height: 8px;
+}
+
+.resize-edge.ne { top: 0; right: 0; cursor: nesw-resize; }
+.resize-edge.sw { bottom: 0; left: 0; cursor: nesw-resize; }
+.resize-edge.nw { top: 0; left: 0; cursor: nwse-resize; }
+.resize-edge.se { bottom: 0; right: 0; cursor: nwse-resize; }
 
 /* Where there is no toolbar: a strip where the title bar was, to drag by. */
 .drag-strip {
@@ -992,11 +1113,18 @@ input.search-field {
   min-width: 0;
 }
 
-/* Over the add-account screen, the accounts that still work. */
-.other-accounts {
+/* Over the add-account screen's top right: the accounts that still work, then the
+   window buttons on Linux. */
+.screen-corner {
   position: absolute;
   top: 8px;
   right: 10px;
+  display: flex;
+  align-items: center;
+}
+
+.other-accounts {
+  position: relative;
   width: 260px;
   display: flex;
   justify-content: flex-end;

@@ -6058,6 +6058,7 @@ dependencies = [
  "muda",
  "parley",
  "rfd",
+ "rustix 1.1.6",
  "serde_json",
  "skvaller-app",
  "skvaller-core",
@@ -6065,8 +6066,12 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols-plasma",
  "webbrowser",
  "writeable",
+ "x11rb 0.14.0",
  "zbus",
 ]
 

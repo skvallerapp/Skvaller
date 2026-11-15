@@ -22,6 +22,8 @@ mod live;
 mod menu;
 mod overscroll;
 mod settings;
+#[cfg(target_os = "linux")]
+mod shadow;
 mod shortcuts;
 mod thumbs;
 mod ui;
@@ -98,7 +100,7 @@ fn run() -> Result<(), String> {
     // web addresses: article HTML is untrusted. The app's own UI loads only cached
     // thumbnails, from the cache.
     let net = ArticleNet::new().map_err(|e| format!("building the HTTP client failed: {e}"))?;
-    let config = Config::default()
+    let config = chrome::surface(Config::default())
         .with_font_ctx(fonts::font_context())
         .with_http_client(net.client())
         .with_request_filter(move |request| {

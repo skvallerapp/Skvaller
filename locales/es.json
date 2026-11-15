@@ -286,5 +286,9 @@
   "settings.removeQuestion": "¿Eliminar {account}?",
   "settings.removeLocal": "Se eliminan de este equipo sus suscripciones, carpetas y artículos. No se guardan en ningún otro sitio.",
   "settings.removeSync": "Se eliminan de este equipo la cuenta y sus artículos. Se pierden los cambios que aún no se han sincronizado.",
-  "settings.remove": "Eliminar"
+  "settings.remove": "Eliminar",
+  "window.minimize": "Minimizar",
+  "window.maximize": "Maximizar",
+  "window.restore": "Restaurar",
+  "window.close": "Cerrar"
 }

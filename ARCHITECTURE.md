@@ -85,12 +85,24 @@ The windows, in Dioxus Native (Blitz).
 - `overscroll`: a list stretched past its ends by trackpad or touch, and pull to
   refresh, as state alone: `ui` feeds it the events and draws the offset.
 - `live`: each window's view of the settings, following `watch_config()`, and of the
-  system's dark mode, following `appearance::watch()`. Its `theme` is the one to show.
+  system's dark mode and window frame, following `appearance::watch()` and
+  `watch_frame()`. Its `theme` is the one to show.
 - `appearance`: the system's dark mode on Linux, which winit doesn't report, read from
-  the XDG desktop portal over D-Bus. It makes the System theme Light or Dark.
+  the XDG desktop portal over D-Bus. It makes the System theme Light or Dark. It also
+  reads how the system draws a window's frame: on KDE, the outline's color made from
+  `kdeglobals` as Breeze makes it, and Breeze's corner radius.
 - `chrome`: the windows' frame. On macOS the title bar is hidden: the window buttons
-  sit over the toolbars, which grow to the title bar's 52px, and the window drags from
-  their empty space. Windows and Linux keep the system's title bar.
+  sit over the toolbars, which grow to the title bar's 52px. On Linux the window has
+  no decorations and a transparent surface: the app draws minimize, maximize and
+  close at the window's top right, as the system's frames draw them (Breeze's on KDE,
+  GNOME's elsewhere), and a frame with the system's outline and rounded corners, and
+  edges to resize by, while not maximized or full screen. On macOS and Linux the
+  window drags from the toolbars' empty space. Windows keeps the system's title bar.
+- `shadow`: the window's drop shadow on KDE Plasma, which KWin draws only for windows
+  with a decoration. It renders Breeze's shadow as Breeze does and hands it to KWin
+  through `org_kde_kwin_shadow` on winit's own Wayland connection, or on X11 through
+  the window's `_KDE_NET_WM_SHADOW` property, on a connection of its own, so KWin draws
+  it outside the window. Linux only.
 - `menu`: the macOS menu bar (muda), with Settings…, the Accounts menu and the Window
   menu. Its items send commands to the main window's root, which runs them as its own
   shortcuts do. `build.rs` embeds `Info.plist` so the menu bar names the app Skvaller.
@@ -103,9 +115,11 @@ The windows, in Dioxus Native (Blitz).
 - **Two Tokio runtimes.** `main` makes one for syncs and background work; Dioxus Native
   runs its own for loading images. Blocking calls (keychain, heavy parsing) go through
   `spawn_blocking`.
-- **On Linux, an `appearance` thread** follows the portal's dark mode, plus the
-  executor thread zbus starts for its connection. `main` starts it before loading the app, and the
-  first window waits up to 300 ms for its first answer, a local call, not the network.
+- **On Linux, an `appearance` thread** follows the portal's dark mode and window
+  frame, plus the executor thread zbus starts for its connection. `main` starts it
+  before loading the app, and the first window waits up to 300 ms for its first
+  answer, a local call, not the network. On KDE under X11, each window's shadow keeps
+  a connection of its own to the X server.
 - **One `VirtualDom` per window.** Windows share only the `Arc<App>` they're given.
   Each follows the app through `live::use_live` and its own `subscribe()`.
 - **One sync per account at a time.** A second one asked for meanwhile reports `Busy`

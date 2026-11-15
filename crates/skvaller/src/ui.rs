@@ -26,7 +26,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::add_account::AddAccount;
 use crate::article;
-use crate::chrome::{DragArea, MAC};
+use crate::chrome::{self, DragArea, FRAMELESS, Frame, LINUX, MAC, WindowButtons};
 use crate::fonts;
 use crate::i18n::{t, t_count, t_with};
 use crate::icons::{
@@ -1674,7 +1674,8 @@ pub fn Root() -> Element {
     let drag_app = Arc::clone(&app);
     let settings_now = live.settings.read();
     let theme = article::theme_name((live.theme)());
-    let ui_font = format!("--ui-font: {}", fonts::stack(settings_now.ui_font));
+    let root_style = chrome::root_style(&fonts::stack(settings_now.ui_font), (live.frame)());
+    let framed = (chrome::use_window_state_provider().framed)();
     let motion = motion(settings_now.animations);
     drop(settings_now);
 
@@ -1686,10 +1687,13 @@ pub fn Root() -> Element {
         div {
             class: "root",
             class: if dragging { "resizing" },
+            class: if FRAMELESS { "frameless" },
             class: if MAC { "mac" },
+            class: if LINUX { "linux" },
+            class: if framed { "framed" },
             "data-theme": theme,
             "data-motion": motion,
-            style: ui_font,
+            style: root_style,
             tabindex: "-1",
             onmounted: move |e: MountedEvent| {
                 // Without focus the app hears no keys, but works otherwise.
@@ -1759,6 +1763,7 @@ pub fn Root() -> Element {
                 Resizer { edge: Edge::List }
                 Reader {}
             }
+            Frame {}
         }
     }
 }
@@ -1780,10 +1785,25 @@ fn AddAccountScreen() -> Element {
     rsx! {
         div { class: "add-account-screen",
             AddAccount { embedded: false, again, initial_error: error, on_added: |_| {} }
-            if app.accounts().len() > 1 {
-                div { class: "other-accounts", AccountSwitcher {} }
+            // Over the drag strip, in a row, so the switcher leaves the buttons room.
+            div { class: "screen-corner",
+                if app.accounts().len() > 1 {
+                    div { class: "other-accounts", AccountSwitcher {} }
+                }
+                MainWindowButtons {}
             }
         }
+    }
+}
+
+/// The main window's [`WindowButtons`]: Settings closes with it, as on
+/// `CloseRequested`.
+#[component]
+fn MainWindowButtons() -> Element {
+    let settings = use_context::<SettingsWindow>();
+    let windows = use_windows();
+    rsx! {
+        WindowButtons { on_close: move |()| settings.close(&windows) }
     }
 }
 
@@ -3734,6 +3754,7 @@ fn Reader() -> Element {
                 if let Some(a) = open {
                     ReaderButtons { article: a }
                 }
+                MainWindowButtons {}
             }
             match doc() {
                 Some(_) if holding => rsx! {},

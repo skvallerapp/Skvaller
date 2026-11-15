@@ -22,7 +22,7 @@ use tokio::sync::Notify;
 
 use crate::add_account::AddAccount;
 use crate::article;
-use crate::chrome::{self, DragArea, MAC};
+use crate::chrome::{self, DragArea, FRAMELESS, Frame, LINUX, MAC, WindowButtons};
 use crate::dates::Dates;
 use crate::dropdown::Dropdown;
 use crate::fonts;
@@ -70,7 +70,7 @@ impl SettingsWindow {
         let vdom = VirtualDom::new(SettingsRoot)
             .with_root_context(Arc::clone(app))
             .with_root_context(self.clone());
-        let config = Config::new()
+        let config = chrome::surface(Config::new())
             .with_font_ctx(fonts::font_context())
             .with_window_attributes(attributes);
         windows.new_window(vdom, config);
@@ -115,6 +115,8 @@ fn SettingsRoot() -> Element {
     use_hook(|| *slot.window.borrow_mut() = Some(Arc::downgrade(&window)));
     let id = window.id();
     let live = use_live(&app);
+    // For the window buttons and the frame's shadow.
+    use_context_provider(|| live);
     let mut pane = use_signal(|| slot.pane.borrow_mut().take().unwrap_or(Pane::Appearance));
     // A pane asked for while the window is open, as by the main window's Add Account.
     use_hook(|| {
@@ -188,7 +190,8 @@ fn SettingsRoot() -> Element {
             .map_err(|e| sentence(&e.to_string())),
         _ => Ok(Vec::new()),
     };
-    let ui_font = format!("--ui-font: {}", fonts::stack(settings.ui_font));
+    let root_style = chrome::root_style(&fonts::stack(settings.ui_font), (live.frame)());
+    let framed = (chrome::use_window_state_provider().framed)();
     let theme = article::theme_name((live.theme)());
     let motion = crate::ui::motion(settings.animations);
 
@@ -197,10 +200,13 @@ fn SettingsRoot() -> Element {
         style { {SETTINGS_CSS} }
         div {
             class: "root settings",
+            class: if FRAMELESS { "frameless" },
             class: if MAC { "mac" },
+            class: if LINUX { "linux" },
+            class: if framed { "framed" },
             "data-theme": theme,
             "data-motion": motion,
-            style: ui_font,
+            style: root_style,
             tabindex: "-1",
             onmounted: move |e: MountedEvent| async move {
                 // Without focus the window hears no keys, so Escape wouldn't close it.
@@ -213,6 +219,7 @@ fn SettingsRoot() -> Element {
                     windows.close_window(id);
                 }
             },
+            Frame {}
             nav { aria_label: t("settings.label"),
                 if MAC {
                     // Where the title bar was: room for the window buttons, to drag by.
@@ -233,6 +240,7 @@ fn SettingsRoot() -> Element {
             main {
                 header {
                     DragArea {}
+                    WindowButtons {}
                     if let (Pane::ReaderView(id), Some(a)) = (&current, &account) {
                         button {
                             class: "back",

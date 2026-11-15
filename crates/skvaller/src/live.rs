@@ -2,7 +2,7 @@
 //!
 //! Each window runs its own `VirtualDom`, so each makes its own [`Live`] from the
 //! [`App`]'s config revision, which every settings or account change bumps, and from
-//! the system's dark mode where the app reads it ([`appearance`]).
+//! the system's dark mode and window frame where the app reads them ([`appearance`]).
 
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -13,7 +13,7 @@ use dioxus_native::prelude::*;
 use skvaller_app::{App, Settings, Theme};
 use tokio::sync::watch;
 
-use crate::appearance;
+use crate::appearance::{self, SystemFrame};
 use crate::dates::Dates;
 use crate::shortcuts::{Action, bindings};
 
@@ -30,6 +30,8 @@ pub struct Live {
     pub dates: Memo<SharedDates>,
     /// The shortcut keys, by key name.
     pub keys: Memo<Rc<HashMap<String, Action>>>,
+    /// How the system draws a window's frame, for the one the app draws on Linux.
+    pub frame: Signal<SystemFrame>,
 }
 
 /// [`Dates`], shared. Two are the same only when they are one, as building them is what
@@ -77,12 +79,14 @@ pub fn use_live(app: &Arc<App>) -> Live {
     let keys = use_memo(move || Rc::new(bindings(&settings.read().shortcuts)));
     let dark = use_followed(appearance::watch);
     let theme = use_memo(move || appearance::resolve(settings.read().theme, dark()));
+    let frame = use_followed(appearance::watch_frame);
     Live {
         revision,
         settings,
         theme,
         dates,
         keys,
+        frame,
     }
 }
 

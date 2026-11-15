@@ -47,6 +47,14 @@ webbrowser = "1.2.6"
 writeable = "0.6.4"
 # Already in the tree through keyring (Secret Service), with these default features.
 zbus = "5.19.0"
+# KDE's window shadows on Wayland (shadow.rs): already in the tree through winit, which
+# talks to the same compositor connection.
+rustix = { version = "1.1.6", default-features = false, features = ["fs", "std"] }
+wayland-backend = { version = "0.3.17", default-features = false, features = ["client_system"] }
+wayland-client = "0.31.15"
+wayland-protocols-plasma = { version = "0.3.12", features = ["client"] }
+# And on X11, through a property of the window: already in the tree through winit.
+x11rb = "0.14.0"
 
 # The guideline set (M-STATIC-VERIFICATION).
 [workspace.lints.rust]
