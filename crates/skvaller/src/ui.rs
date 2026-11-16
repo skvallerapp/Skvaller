@@ -650,7 +650,9 @@ impl Reading {
         let Some(root) = self.root.peek().clone() else {
             return;
         };
-        spawn(async move {
+        // Not the calling component's task: a field that closes its own overlay, as the
+        // rename field does on Enter, goes away in the same render, and its tasks with it.
+        dioxus_core::spawn_forever(async move {
             if let Err(e) = root.set_focus(true).await {
                 tracing::warn!("focusing the window's root failed: {e}");
             }
