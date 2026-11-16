@@ -35,6 +35,7 @@ use crate::icons::{
 use crate::lines::{self, Lines};
 use crate::live::{Live, use_live};
 use crate::overscroll::{Edges, HOLD, Out, Overscroll, SPRING_EASE, Shown, WHEEL_IDLE};
+use crate::place::{Keeper, ListView, Place, differs, reveal, reveal_row};
 use crate::settings::SettingsWindow;
 use crate::shortcuts::{ACCOUNT_MODIFIER, Action, COMMAND_MODIFIER};
 use crate::thumbs;
@@ -87,10 +88,6 @@ pub const MIN_WINDOW_WIDTH: f64 =
     (SIDEBAR_WIDTH.max + RESIZER + LIST_WIDTH.min + RESIZER + READER_LEAST).max(640.0);
 /// The space above a Large thumbnail (`.text.below .title`).
 const LARGE_GAP: f64 = 8.0;
-
-/// Rows rendered above and below the visible ones, so a fast scroll doesn't show gaps
-/// before the next render.
-const OVERSCAN: usize = 8;
 
 /// The list's toolbar above its viewport: app.css's `--toolbar-height`, its border
 /// inside (`border-box`). The list's pane is as tall as the window, so the viewport is
@@ -259,104 +256,6 @@ struct Ghost {
     drawn: Rc<Drawn>,
 }
 
-/// Where the article list was, by a row, so it stays in place when its rows' heights
-/// change: the open article's row keeps its place in the viewport while it shows,
-/// otherwise the top row keeps how far into it the viewport starts. A list at its top
-/// stays there.
-#[derive(Clone, Debug)]
-struct Anchor {
-    /// The offsets the list was placed by, so a change of them shows.
-    offsets: Rc<[f64]>,
-    /// Where the list was scrolled then, or where a hold waiting to scroll takes it:
-    /// the scroll position, not where the viewport shows it, which a list grown
-    /// shorter clamps.
-    scroll: f64,
-    id: String,
-    index: usize,
-    hold: Hold,
-}
-
-/// How an [`Anchor`]'s row keeps the list in place.
-#[derive(Clone, Copy, Debug)]
-enum Hold {
-    /// The row starts this far below the viewport's top.
-    Below(f64),
-    /// The viewport starts this fraction of the way into the row.
-    Into(f64),
-}
-
-impl Anchor {
-    /// The anchor for a list placed by `offsets`, held with the viewport at `top` and
-    /// scrolled to `scroll` ([`Anchor::scroll`]): by the open article's row,
-    /// `selected`, while it shows, or else by the top row. None at the top of the list.
-    fn at(
-        offsets: &Rc<[f64]>,
-        rows: &[ArticleSummary],
-        top: f64,
-        scroll: f64,
-        height: f64,
-        selected: Option<usize>,
-    ) -> Option<Self> {
-        if top <= 0.0 {
-            return None;
-        }
-        let shows = |&i: &usize| offsets[i + 1] > top && offsets[i] < top + height;
-        let (index, hold) = if let Some(i) = selected.filter(shows) {
-            (i, Hold::Below(offsets[i] - top))
-        } else {
-            let i = offsets.partition_point(|&o| o <= top).saturating_sub(1);
-            let row = offsets.get(i + 1)? - offsets[i];
-            (i, Hold::Into((top - offsets[i]) / row.max(1.0)))
-        };
-        Some(Self {
-            offsets: Rc::clone(offsets),
-            scroll,
-            id: rows.get(index)?.id.clone(),
-            index,
-            hold,
-        })
-    }
-
-    /// Where the viewport starts to keep the list in place now that it is placed by
-    /// `offsets` and has `rows`, if either moved its row, and the row is still there.
-    /// None while the viewport shows the list at its top, `top`, which stays there.
-    ///
-    /// `scroll` is where the list is scrolled now, or where a scroll waiting takes it: a
-    /// scroll since the anchor was taken, as in the render that brings rows synced in,
-    /// moves the list too. A hold's own wait is where the anchor was taken, so it adds
-    /// nothing. Under half a pixel is taken as rounding.
-    fn hold(
-        &self,
-        offsets: &Rc<[f64]>,
-        rows: &[ArticleSummary],
-        top: f64,
-        scroll: f64,
-    ) -> Option<f64> {
-        let in_place = rows.get(self.index).is_some_and(|a| a.id == self.id);
-        // Offsets kept as they were may still hold other rows, as after a sync that
-        // added one above and dropped one below.
-        if (Rc::ptr_eq(&self.offsets, offsets) && in_place) || top <= 0.0 {
-            return None;
-        }
-        let index = if in_place {
-            self.index
-        } else {
-            rows.iter().position(|a| a.id == self.id)?
-        };
-        let (start, end) = (offsets[index], offsets[index + 1]);
-        let held = match self.hold {
-            Hold::Below(below) => start - below,
-            Hold::Into(into) => start + into * (end - start),
-        };
-        let since = if differs(scroll, self.scroll) {
-            scroll - self.scroll
-        } else {
-            0.0
-        };
-        Some(held + since)
-    }
-}
-
 /// The open article's Reader View.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct ReaderView {
@@ -473,12 +372,6 @@ impl Edge {
             Self::List => &mut layout.list_width,
         }
     }
-}
-
-/// Whether two sizes or positions differ by half a pixel or more: less is rounding, as a
-/// pointer move within the same pixel.
-fn differs(a: f64, b: f64) -> bool {
-    (a - b).abs() >= 0.5
 }
 
 /// Whether a selection highlight moves at once rather than sliding.
@@ -1907,7 +1800,11 @@ fn Sidebar() -> Element {
         };
         let scrolls = Rc::clone(&scrolls);
         spawn(async move {
-            scroll_into_view(&pane, index, || scrolls.get() == scroll).await;
+            // Every feed's row shows the top too.
+            let place = sidebar_place(index);
+            let top = if index == 0 { 0.0 } else { place.top };
+            let row = Reveal::Span(top, place.top + place.height);
+            scroll_into_view(&pane, row, || scrolls.get() == scroll).await;
             // Code-driven scrolls send no scroll event.
             pull.measure().await;
         });
@@ -2419,13 +2316,6 @@ fn FeedItem(feed: skvaller_core::Feed, count: i64, nested: bool) -> Element {
     }
 }
 
-/// Where a highlight is drawn, in CSS pixels down its list's content.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Place {
-    top: f64,
-    height: f64,
-}
-
 /// How far toward `target` the list `el` can scroll once its rows are laid out.
 ///
 /// This runs before Blitz lays out the rows' new heights, and a scroll past the old
@@ -2446,15 +2336,52 @@ async fn reachable(el: &MountedData, target: f64) -> f64 {
     to
 }
 
-/// Scrolls the sidebar's feeds `pane` the least that shows its row `index`, or to the
-/// top for every feed's row.
+/// Scrolls the article list `el` to `target` once its layout reaches it, as the scroll
+/// waiting in `pending`, which it replaces; the user's scroll cancels it. `top` follows
+/// the scroll, before the next frame, as the rows drawn do. `what` names it in a
+/// warning if it fails.
+fn scroll_list(
+    el: Rc<MountedData>,
+    target: f64,
+    mut pending: CopyValue<Option<(f64, dioxus_core::Task)>>,
+    mut top: Signal<f64>,
+    what: &'static str,
+) {
+    if let Some((_, task)) = pending.take() {
+        task.cancel();
+    }
+    let task = spawn(async move {
+        let to = reachable(&el, target).await;
+        pending.set(None);
+        top.set(to);
+        let to = dioxus_html::geometry::PixelsVector2D::new(0.0, to);
+        if let Err(e) = el.scroll(to, ScrollBehavior::Instant).await {
+            tracing::warn!("{what} failed: {e}");
+        }
+    });
+    pending.set(Some((target, task)));
+}
+
+/// What [`scroll_into_view`] shows in a scrolling pane.
+pub(crate) enum Reveal<'a> {
+    /// This span of the pane's content, `top..bottom`, from its top.
+    Span(f64, f64),
+    /// This element in the pane, as laid out, with this much room either side.
+    Element(&'a MountedData, f64),
+}
+
+/// Scrolls `pane` the least that shows `what`.
 ///
-/// The effect that asks runs before Blitz lays out the render that changed the rows, and
-/// a sidebar just reopened has no size at all: a scroll then would stop at the old range.
-/// This waits, a few frames at most, for the pane's size and a range that reaches, and
-/// scrolls only if `latest` still says no newer scroll was asked for meanwhile.
-async fn scroll_into_view(pane: &MountedData, index: usize, latest: impl Fn() -> bool) {
-    let place = sidebar_place(index);
+/// The effect or mount that asks runs before Blitz lays out the render that changed the
+/// content, and a pane just shown has no size at all: a scroll then would stop at the
+/// old range. This waits, a few frames at most, for the pane's size and a range that
+/// reaches, and scrolls only if `latest` still says no newer scroll was asked for
+/// meanwhile. Blitz's `scroll_to` scrolls only the window, never a pane.
+pub(crate) async fn scroll_into_view(
+    pane: &MountedData,
+    what: Reveal<'_>,
+    latest: impl Fn() -> bool,
+) {
     for wait in 1..=LAYOUT_WAITS {
         tokio::time::sleep(FRAME).await;
         let (Ok(view), Ok(offset), Ok(range)) = (
@@ -2467,13 +2394,22 @@ async fn scroll_into_view(pane: &MountedData, index: usize, latest: impl Fn() ->
         if view.height() <= 0.0 {
             continue;
         }
-        let to = if index == 0 {
-            0.0
-        } else if place.top < offset.y {
-            place.top
-        } else if place.top + place.height > offset.y + view.height() {
-            place.top + place.height - view.height()
-        } else {
+        let (top, bottom) = match what {
+            Reveal::Span(top, bottom) => (top, bottom),
+            Reveal::Element(el, room) => {
+                let Ok(rect) = el.get_client_rect().await else {
+                    return;
+                };
+                if rect.height() <= 0.0 {
+                    continue;
+                }
+                // Blitz moves a pane's own rect by its scroll, as it does the element's:
+                // the difference is where the element is in the pane's content.
+                let top = rect.min_y() - view.min_y();
+                (top - room, top + rect.height() + room)
+            }
+        };
+        let Some(to) = reveal(offset.y, view.height(), top, bottom) else {
             return;
         };
         // A range short of the target may still be the old layout's; the last wait
@@ -2486,7 +2422,7 @@ async fn scroll_into_view(pane: &MountedData, index: usize, latest: impl Fn() ->
         }
         let to = dioxus_html::geometry::PixelsVector2D::new(offset.x, to);
         if let Err(e) = pane.scroll(to, ScrollBehavior::Instant).await {
-            tracing::warn!("scrolling the sidebar failed: {e}");
+            tracing::warn!("scrolling a pane failed: {e}");
         }
         return;
     }
@@ -2892,7 +2828,7 @@ fn Viewport() -> Element {
         let offsets = row_offsets(rows, size, width, &counts);
         (Rc::<[f64]>::from(offsets), counts)
     });
-    let mut anchor = use_hook(|| CopyValue::new(None::<Anchor>));
+    let mut keeper = use_hook(|| CopyValue::new(Keeper::default()));
     // The list's scroll to where it holds, while it waits for the layout, and where to.
     let mut pending = use_hook(|| CopyValue::new(None::<(f64, dioxus_core::Task)>));
     let mut top = use_signal(|| 0.0_f64);
@@ -2909,6 +2845,7 @@ fn Viewport() -> Element {
         )
     });
     let mut scrolled = pull.at;
+    let waiting = move || pending.peek().as_ref().map(|&(target, _)| target);
 
     // Brings a newly opened article's row into view, as when stepping with the keyboard.
     // Only a change of article does this: a reload must not pull the list back.
@@ -2920,48 +2857,19 @@ fn Viewport() -> Element {
             return;
         };
         spawn(async move {
-            let view_height = viewport_height(reading.window_size.peek().1);
+            let height = viewport_height(reading.window_size.peek().1);
             // Found now, not when the effect ran: a reload meanwhile may have moved the
             // row, or taken it away.
-            let place = {
+            let target = {
                 let (list, placed) = (reading.articles.peek(), placed.peek());
-                let offsets = &placed.0;
-                list.rows
-                    .iter()
-                    .position(|a| a.id == id)
-                    .and_then(|i| Some((*offsets.get(i)?, *offsets.get(i + 1)?)))
+                reveal_row(&placed.0, &list.rows, &id, *top.peek(), waiting(), height)
             };
-            let Some((row_top, row_bottom)) = place else {
-                return;
-            };
-            // From where a hold waiting to scroll takes the list, if one is.
-            let held = pending.peek().as_ref().map(|&(target, _)| target);
-            let view_top = held.unwrap_or(*top.peek());
-            let target = if row_top < view_top {
-                row_top
-            } else if row_bottom > view_top + view_height {
-                // A row taller than the list shows its top.
-                (row_bottom - view_height).min(row_top)
-            } else {
-                return;
-            };
-            // This scroll takes the hold's place.
-            if let Some((_, task)) = pending.take() {
-                task.cancel();
-            }
             // A list just mounted, as search results with the article open, isn't laid
             // out yet: the scroll would stop short while the rows drawn followed `top`.
             // It waits as a hold, which the user's scroll or a newer one replaces.
-            let task = spawn(async move {
-                let to = reachable(&el, target).await;
-                pending.set(None);
-                top.set(to);
-                let to = dioxus_html::geometry::PixelsVector2D::new(0.0, to);
-                if let Err(e) = el.scroll(to, ScrollBehavior::Instant).await {
-                    tracing::warn!("scrolling the list failed: {e}");
-                }
-            });
-            pending.set(Some((target, task)));
+            if let Some(target) = target {
+                scroll_list(el, target, pending, top, "scrolling the list");
+            }
         });
     });
 
@@ -2973,85 +2881,28 @@ fn Viewport() -> Element {
     let total = offsets[list.len()];
     let height = viewport_height((reading.window_size)().1);
     let selected = reading.article.read().as_ref().map(|a| a.id.clone());
-    // The furthest the list scrolls. A list grown shorter, as by a smaller thumbnail
-    // size, shows its end, but Blitz keeps the scroll position past it: the list
-    // scrolls back itself, below.
-    let end = (total - height).max(0.0);
+    let place = keeper.write().place(&ListView {
+        offsets: &offsets,
+        rows: list,
+        top: top(),
+        waiting: waiting(),
+        height,
+        selected: selected_row(),
+    });
     scrolled.set(Scrolled {
         top: *top.peek(),
-        end,
+        end: place.end,
         height,
     });
-    let mut view_top = top().min(end);
-    // Where the list is scrolled, or where a hold waiting to scroll takes it.
-    let waiting = pending.peek().as_ref().map(|&(target, _)| target);
-    let scroll = waiting.unwrap_or(*top.peek());
-    // Rows whose heights changed, for a new width, font or thumbnail size, or rows
-    // synced in above, keep the list where it was; a list scrolled past its end goes
-    // to the end.
-    let held = anchor.peek().as_ref().and_then(|a| {
-        a.hold(
-            &offsets, list, view_top,
-            // Also a waiting scroll's target: that of the open article or a search's
-            // end was set apart from the anchor, which moves with it.
-            scroll,
-        )
-    });
-    let goal = held
-        .map(|target| target.min(end).max(0.0))
-        .or_else(|| (scroll > end + 0.5).then_some(end));
-    // Where the viewport is until the list scrolls to its goal.
-    let still_at = view_top;
-    // Where the list is held, which the anchor is taken at: its goal, even when that is
-    // under half a pixel off and not scrolled to, so steps that small don't add up.
-    let mut anchor_top = waiting.unwrap_or(view_top);
-    if let Some(target) = goal {
-        anchor_top = target;
-        if differs(target, scroll)
-            && let Some(el) = mounted.peek().clone()
-        {
-            // A newer hold replaces one still waiting.
-            if let Some((_, task)) = pending.take() {
-                task.cancel();
-            }
-            view_top = target;
-            // `top` stays where the viewport is until the scroll: the renders until
-            // then draw the rows there. Whatever else scrolls the list cancels this.
-            let task = spawn(async move {
-                let to = reachable(&el, target).await;
-                pending.set(None);
-                // Both before the next frame: the rows drawn follow the scroll.
-                top.set(to);
-                let to = dioxus_html::geometry::PixelsVector2D::new(0.0, to);
-                if let Err(e) = el.scroll(to, ScrollBehavior::Instant).await {
-                    tracing::warn!("keeping the list in place failed: {e}");
-                }
-            });
-            pending.set(Some((target, task)));
-        }
+    let view_top = place.top;
+    let shown = place.shown;
+    // `top` stays where the viewport is until the scroll: the renders until then draw
+    // the rows there too. Whatever else scrolls the list cancels this.
+    if let Some(target) = place.scroll
+        && let Some(el) = mounted.peek().clone()
+    {
+        scroll_list(el, target, pending, top, "keeping the list in place");
     }
-    // The rows to render; in a render that holds the list, also those where the
-    // viewport still is, which may be far from the others.
-    let shown: Vec<usize> = {
-        let (first, last) = visible_rows(&offsets, view_top, height);
-        let (was_first, was_last) = visible_rows(&offsets, still_at, height);
-        (first..last)
-            .chain((was_first..was_last).filter(|i| !(first..last).contains(i)))
-            .collect()
-    };
-    // Read again: the hold above may have set a scroll waiting.
-    let scroll_after = pending
-        .peek()
-        .as_ref()
-        .map_or(*top.peek(), |&(target, _)| target);
-    anchor.set(Anchor::at(
-        &offsets,
-        list,
-        anchor_top,
-        scroll_after,
-        height,
-        selected_row(),
-    ));
     let account = reading.account.read().clone().unwrap_or_default();
     let (beside, below, fit) = match size {
         ThumbnailSize::Small => (Some("thumb small"), None, thumbs::Fit::Square),
@@ -3173,19 +3024,7 @@ fn Viewport() -> Element {
                     };
                     // A hold, as the list's own: bringing the open article into view
                     // takes its place.
-                    if let Some((_, task)) = pending.take() {
-                        task.cancel();
-                    }
-                    let task = spawn(async move {
-                        let to = reachable(&el, target).await;
-                        pending.set(None);
-                        top.set(to);
-                        let to = dioxus_html::geometry::PixelsVector2D::new(0.0, to);
-                        if let Err(e) = el.scroll(to, ScrollBehavior::Instant).await {
-                            tracing::warn!("scrolling the list back failed: {e}");
-                        }
-                    });
-                    pending.set(Some((target, task)));
+                    scroll_list(el, target, pending, top, "scrolling the list back");
                 }
             },
             onwheel: move |e| pull.on_wheel(&e),
@@ -3805,20 +3644,10 @@ fn row_offsets(
     offsets
 }
 
-/// The rows to render, `first..last`, for a viewport scrolled to `top` that is `height`
-/// tall, with `OVERSCAN` rows either side. `offsets` is [`row_offsets`]'s.
-fn visible_rows(offsets: &[f64], top: f64, height: f64) -> (usize, usize) {
-    let len = offsets.len().saturating_sub(1);
-    // The row that contains `y`: the last that starts at or above it.
-    let row_at = |y: f64| offsets.partition_point(|&o| o <= y).saturating_sub(1);
-    let first = row_at(top).saturating_sub(OVERSCAN).min(len);
-    let last = (row_at(top + height) + 1 + OVERSCAN).min(len);
-    (first.min(last), last)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::place::visible_rows;
 
     fn articles(thumbnails: &[bool]) -> Vec<ArticleSummary> {
         thumbnails
@@ -3957,65 +3786,6 @@ mod tests {
         // The reader takes the rest, and never less than its least.
         assert_eq!(reader_width(&layout, 1200.0), 1200.0 - 231.0 - 340.0 - 1.0);
         assert_eq!(reader_width(&layout, fit - 1.0), READER_LEAST);
-    }
-
-    #[test]
-    fn the_list_stays_in_place_when_its_rows_change_height() {
-        let list = articles(&[true; 100]);
-        let narrow: Rc<[f64]> = place(&list, ThumbnailSize::Large, 340.0).into();
-        let wide: Rc<[f64]> = place(&list, ThumbnailSize::Large, 560.0).into();
-        // Halfway into row 10, the top row: halfway into it still.
-        let top = narrow[10] + (narrow[11] - narrow[10]) / 2.0;
-        let anchor = Anchor::at(&narrow, &list, top, top, 600.0, None).unwrap();
-        assert_eq!(anchor.hold(&narrow, &list, top, anchor.scroll), None);
-        assert_eq!(
-            anchor.hold(&wide, &list, top, anchor.scroll),
-            Some(wide[10] + (wide[11] - wide[10]) / 2.0)
-        );
-        // The open article's row, showing, keeps its place in the viewport.
-        let anchor = Anchor::at(&narrow, &list, top, top, 600.0, Some(11)).unwrap();
-        let below = narrow[11] - top;
-        assert_eq!(
-            anchor.hold(&wide, &list, top, anchor.scroll),
-            Some(wide[11] - below)
-        );
-        // One out of view doesn't, and the top of the list stays there.
-        let anchor = Anchor::at(&narrow, &list, top, top, 600.0, Some(90)).unwrap();
-        assert_eq!(anchor.id, "10");
-        assert!(Anchor::at(&narrow, &list, 0.0, 0.0, 600.0, Some(11)).is_none());
-        // A row synced in above moves the anchor's row down.
-        let mut synced = articles(&[true; 101]);
-        synced.rotate_right(1);
-        synced[0].id = "new".into();
-        let moved: Rc<[f64]> = place(&synced, ThumbnailSize::Large, 340.0).into();
-        let anchor = Anchor::at(&narrow, &list, top, top, 600.0, None).unwrap();
-        assert_eq!(
-            anchor.hold(&moved, &synced, top, anchor.scroll),
-            Some(top + narrow[1])
-        );
-        // Also when the rows are as high as before, and the offsets stay as they were.
-        synced.pop();
-        assert_eq!(
-            anchor.hold(&narrow, &synced, top, anchor.scroll),
-            Some(top + narrow[1])
-        );
-        // A scroll since the anchor was taken moves the list too, by the scroll
-        // position: not by where the viewport shows, which a shorter list clamps.
-        let anchor = Anchor::at(&narrow, &list, top, top, 600.0, None).unwrap();
-        assert_eq!(
-            anchor.hold(&wide, &list, top, top + 50.0),
-            Some(wide[10] + (wide[11] - wide[10]) / 2.0 + 50.0)
-        );
-        // Deep in the list, rows grown shorter make the viewport clamp to the end.
-        let short: Rc<[f64]> = place(&list, ThumbnailSize::None, 340.0).into();
-        let deep = narrow[60] + (narrow[61] - narrow[60]) / 2.0;
-        let anchor = Anchor::at(&narrow, &list, deep, deep, 600.0, None).unwrap();
-        let clamped = short[100] - 600.0;
-        assert!(clamped < deep);
-        assert_eq!(
-            anchor.hold(&short, &list, clamped, deep),
-            Some(short[60] + (short[61] - short[60]) / 2.0)
-        );
     }
 
     fn feed(id: &str, folder: Option<&str>) -> skvaller_core::Feed {

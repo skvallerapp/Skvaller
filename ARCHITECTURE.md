@@ -94,6 +94,11 @@ The windows, in Dioxus Native (Blitz).
 - `thumbs`: serves cached thumbnails to `<img>` through `thumb:` URLs.
 - `lines`: counts the lines a headline wraps to, from each character's advance, so
   the list sizes its rows without measuring them.
+- `place`: where a scrolled list is, as plain arithmetic on row offsets: the article
+  list's visible rows, how it keeps its place from one render to the next (`Keeper`),
+  and how far to scroll to show a row, for the article list, `dropdown`, and the
+  panes `ui::scroll_into_view` scrolls: the sidebar and Settings. `ui`'s `Viewport`
+  reads the element and scrolls where it says.
 - `overscroll`: a list stretched past its ends by trackpad or touch, and pull to
   refresh, as state alone: `ui` feeds it the events and draws the offset.
 - `live`: each window's view of the settings, following `watch_config()`, and of the
@@ -164,12 +169,12 @@ The windows, in Dioxus Native (Blitz).
 - **A bad `config.json` doesn't stop the app.** `config` reads unknown or broken values
   as defaults and leaves out accounts it can't read.
 - **5,000+ items scroll smoothly.** The list renders only the visible rows plus some
-  either side (`ui::visible_rows`). Rows are placed from computed heights, never
+  either side (`place::visible_rows`). Rows are placed from computed heights, never
   measured: each fits its headline's lines, as `lines` counts them at the width the
   list shows, and its thumbnail. A headline is cut once, where it may wrap, so a
   new width only wraps the pieces again. It is clamped to its count, so one counted
   short loses its last line rather than showing half of it. When the heights change,
-  the list keeps its place (`ui::Anchor`). Thumbnails are served cropped to their box,
+  the list keeps its place (`place::Keeper`). Thumbnails are served cropped to their box,
   since Blitz keeps every image decoded. The Large box is 16:9 at the list's width;
   its image is served for the saved width in steps of 40 px, so resizing the list
   loads new thumbnails only now and then. `--seed-test <count>` fills a local account

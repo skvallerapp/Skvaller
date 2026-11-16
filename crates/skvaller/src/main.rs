@@ -21,6 +21,7 @@ mod live;
 #[cfg(target_os = "macos")]
 mod menu;
 mod overscroll;
+mod place;
 mod settings;
 #[cfg(target_os = "linux")]
 mod shadow;

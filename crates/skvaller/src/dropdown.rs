@@ -13,6 +13,7 @@ use dioxus_native::prelude::*;
 use dioxus_native::use_window;
 
 use crate::icons::{CHECK, CHEVRONS_UP_DOWN, Icon};
+use crate::place;
 use crate::shortcuts;
 use crate::ui::{FRAME, LAYOUT_WAITS};
 
@@ -383,15 +384,8 @@ fn rows(n: usize) -> f64 {
 
 /// The scroll offset that shows row `i` in a list of `height`, scrolled to `offset`.
 fn reveal(offset: f64, height: f64, i: usize) -> f64 {
-    let top = INSET + rows(i);
-    let bottom = top + ROW;
-    if top - INSET < offset {
-        top - INSET
-    } else if bottom + INSET > offset + height {
-        bottom + INSET - height
-    } else {
-        offset
-    }
+    let top = rows(i);
+    place::reveal(offset, height, top, top + ROW + 2.0 * INSET).unwrap_or(offset)
 }
 
 /// The first label after `at` that starts with `typed`, wrapping around, ignoring case.

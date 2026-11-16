@@ -32,7 +32,7 @@ use crate::icons::{
 };
 use crate::live::use_live;
 use crate::shortcuts::{self, Action, Capture, Refusal};
-use crate::ui::APP_CSS;
+use crate::ui::{APP_CSS, Reveal, scroll_into_view};
 
 const SETTINGS_CSS: &str = include_str!("settings.css");
 /// The smallest window in which every pane still lays out.
@@ -106,6 +106,10 @@ pub enum Pane {
 }
 
 /// The Settings window's root component.
+/// The room below the last group in a pane: settings.css's `.settings .content` bottom
+/// padding, which a group scrolled into view keeps.
+const CONTENT_PAD: f64 = 28.0;
+
 #[component]
 fn SettingsRoot() -> Element {
     let app = use_context::<Arc<App>>();
@@ -120,6 +124,8 @@ fn SettingsRoot() -> Element {
     use_context_provider(|| live);
     let window_state = chrome::use_window_state_provider();
     let mut pane = use_signal(|| slot.pane.borrow_mut().take().unwrap_or(Pane::Appearance));
+    // The pane's scrolling content, which a pane scrolls to show what it adds.
+    let mut content = use_signal(|| None::<Rc<MountedData>>);
     // A pane asked for while the window is open, as by the main window's Add Account.
     use_hook(|| {
         let slot = slot.clone();
@@ -278,6 +284,7 @@ fn SettingsRoot() -> Element {
                 // rather than what was picked.
                 for failures in [(feedback.failures)()] {
                     div { key: "{failures}", class: "content",
+                        onmounted: move |e: MountedEvent| content.set(Some(e.data())),
                         match (current.clone(), account.clone()) {
                             (Pane::Appearance, _) => rsx! { AppearancePane { settings: settings.clone(), feedback } },
                             (Pane::Reading, _) => rsx! { ReadingPane { settings: settings.clone(), feedback } },
@@ -290,6 +297,7 @@ fn SettingsRoot() -> Element {
                                         account,
                                         feedback,
                                         returned,
+                                        content,
                                         on_reader_view: move |()| pane.set(Pane::ReaderView(id.clone())),
                                     }
                                 }
@@ -827,6 +835,8 @@ fn AccountPane(
     feedback: Feedback,
     /// Back from the Reader View page, whose row then takes the focus.
     returned: Signal<bool>,
+    /// The pane's scrolling content.
+    content: Signal<Option<Rc<MountedData>>>,
     on_reader_view: EventHandler,
 ) -> Element {
     let app = use_context::<Arc<App>>();
@@ -1073,6 +1083,13 @@ fn AccountPane(
             h2 { {t("settings.account")} }
             if confirming() {
                 div { class: "group confirm", role: "alertdialog",
+                    // Opened under the fold of a short window: it scrolls into view.
+                    onmounted: move |e: MountedEvent| async move {
+                        let Some(pane) = content.peek().clone() else {
+                            return;
+                        };
+                        scroll_into_view(&pane, Reveal::Element(&e.data(), CONTENT_PAD), || true).await;
+                    },
                     // Keys here are the question's: Escape cancels it, not the window.
                     onkeydown: move |e: Event<KeyboardData>| {
                         if e.key() == Key::Named(NamedKey::Escape) {
