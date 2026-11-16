@@ -79,6 +79,16 @@ The windows, in Dioxus Native (Blitz).
   `ui/manage`: feed and folder menus. `ui/listed`: the rows each load of the article
   list shows, keeping those read or unstarred here and the open article, so a sync
   doesn't pull them away while you read.
+- `ui/command`: what the main window does. Every key, macOS menu bar item and button
+  that asks it for something becomes a `Command`, run by `Reading::run`, which holds
+  each command's guards, such as needing the panes rather than the sign-in screen.
+  `route` decides what a key does, in a fixed order: the app's chords, the account
+  chords, the open overlay's keys, Escape for the search, the arrow keys, then the
+  shortcuts. The window's one `Overlay` slot holds the account menu, the
+  mark-all-read question or a `ui/manage` menu, question or form, so two can't be
+  open at once; its methods say which stays open after a click, a hidden sidebar or
+  another list. `leave` says what selecting another list resets. These decisions are
+  plain functions, tested without a window, as `overscroll`'s are.
 - `settings`, `add_account`: the Settings window and sign-in.
 - `article`: the reader's `<iframe srcdoc>` document.
 - `thumbs`: serves cached thumbnails to `<img>` through `thumb:` URLs.
@@ -108,11 +118,13 @@ The windows, in Dioxus Native (Blitz).
   the window's `_KDE_NET_WM_SHADOW` property, on a connection of its own, so KWin draws
   it outside the window. Linux only.
 - `menu`: the macOS menu bar (muda), with Settings…, the Accounts menu and the Window
-  menu. Its items send commands to the main window's root, which runs them as its own
-  shortcuts do. `build.rs` embeds `Info.plist` so the menu bar names the app Skvaller.
+  menu. Each item is a `ui::Command`, which the main window runs through
+  `Reading::run`, as it does its keys. Its account items' keys, ⌘1 to ⌘9, are
+  `shortcuts::ACCOUNT_KEYS`, as the window's are. `build.rs` embeds `Info.plist` so the menu bar names the app Skvaller.
   Windows and Linux have no menu bar.
 - `i18n`, `dates`, `fonts`, `icons`, `shortcuts`: text, date formats, font stacks,
-  icons and key bindings.
+  icons and keys: the bindings, the account chords and how the arrow keys move a
+  menu's highlight, shared by the window's menus and `dropdown`.
 
 ## Runtime
 

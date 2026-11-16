@@ -13,6 +13,7 @@ use dioxus_native::prelude::*;
 use dioxus_native::use_window;
 
 use crate::icons::{CHECK, CHEVRONS_UP_DOWN, Icon};
+use crate::shortcuts;
 use crate::ui::{FRAME, LAYOUT_WAITS};
 
 /// A row's height: `.menu-item`'s.
@@ -135,6 +136,14 @@ pub fn Dropdown(
         }
         // Copied out: a borrow held into the match would make setting `open` panic.
         let state = *open.peek();
+        if let Some(s) = state
+            && let Some(i) = shortcuts::highlight(Some(s.at), count, &e.key())
+        {
+            highlight(i);
+            e.stop_propagation();
+            e.prevent_default();
+            return;
+        }
         let handled = match (state, e.key()) {
             // Return is left to the window, as on macOS.
             (None, Key::Named(NamedKey::ArrowDown | NamedKey::ArrowUp)) => {
@@ -146,22 +155,6 @@ pub fn Dropdown(
                 true
             }
             (None, _) => false,
-            (Some(s), Key::Named(NamedKey::ArrowDown)) => {
-                highlight((s.at + 1).min(count.saturating_sub(1)));
-                true
-            }
-            (Some(s), Key::Named(NamedKey::ArrowUp)) => {
-                highlight(s.at.saturating_sub(1));
-                true
-            }
-            (Some(_), Key::Named(NamedKey::Home)) => {
-                highlight(0);
-                true
-            }
-            (Some(_), Key::Named(NamedKey::End)) => {
-                highlight(count.saturating_sub(1));
-                true
-            }
             (Some(s), Key::Named(NamedKey::Enter)) => {
                 pick(s.at);
                 true

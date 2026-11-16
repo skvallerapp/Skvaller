@@ -1,14 +1,73 @@
-//! Single-key shortcuts.
+//! The app's keys: single-key shortcuts, the account chords and moving a menu's
+//! highlight.
 //!
-//! Keys are named as [`key_name`] returns them: `j`, ` ` (Space), `Shift+ `, `Enter`.
-//! The user can rebind every action; config.json keeps only the keys that differ from
-//! the defaults, by action name.
+//! Single keys are named as [`key_name`] returns them: `j`, ` ` (Space), `Shift+ `,
+//! `Enter`. The user can rebind every action; config.json keeps only the keys that
+//! differ from the defaults, by action name.
 
 use std::collections::{BTreeMap, HashMap};
 
-use dioxus_native::prelude::{Key, Modifiers, NamedKey};
+use dioxus_native::prelude::{Code, Key, Modifiers, NamedKey};
 
 use crate::i18n::t;
+
+/// The modifier of the app's own shortcuts, such as Settings: ⌘ on macOS, Ctrl elsewhere.
+pub const COMMAND_MODIFIER: Modifiers = if cfg!(target_os = "macos") {
+    Modifiers::META
+} else {
+    Modifiers::CONTROL
+};
+
+/// The modifier of the account shortcuts, ⌘ on macOS and Alt elsewhere.
+pub const ACCOUNT_MODIFIER: Modifiers = if cfg!(target_os = "macos") {
+    Modifiers::META
+} else {
+    Modifiers::ALT
+};
+
+/// The first nine accounts' keys, with [`ACCOUNT_MODIFIER`]: 1 to 9. They go by the
+/// key's place, not its character, which depends on the layout.
+pub const ACCOUNT_KEYS: [Code; 9] = [
+    Code::Digit1,
+    Code::Digit2,
+    Code::Digit3,
+    Code::Digit4,
+    Code::Digit5,
+    Code::Digit6,
+    Code::Digit7,
+    Code::Digit8,
+    Code::Digit9,
+];
+
+/// The account a key switches to, by index: ⌘1 to ⌘9 on macOS, Alt+1 to Alt+9
+/// elsewhere. On macOS the menu bar takes the key first, except where the layout's
+/// digits need Shift.
+pub fn account_index(code: Code, mods: Modifiers) -> Option<usize> {
+    if mods != ACCOUNT_MODIFIER {
+        return None;
+    }
+    ACCOUNT_KEYS.iter().position(|&key| key == code)
+}
+
+/// Where `key` moves the highlight of a menu of `count` items, highlighted at `at`:
+/// Down and Up step and wrap around, starting at the first or the last when none is
+/// highlighted; Home and End go to the ends. `None` for other keys, and in an empty
+/// menu.
+pub fn highlight(at: Option<usize>, count: usize, key: &Key) -> Option<usize> {
+    let last = count.checked_sub(1)?;
+    let at = at.filter(|&i| i <= last);
+    match key {
+        Key::Named(NamedKey::ArrowDown) => {
+            Some(at.map_or(0, |i| if i == last { 0 } else { i + 1 }))
+        }
+        Key::Named(NamedKey::ArrowUp) => {
+            Some(at.map_or(last, |i| i.checked_sub(1).unwrap_or(last)))
+        }
+        Key::Named(NamedKey::Home) => Some(0),
+        Key::Named(NamedKey::End) => Some(last),
+        _ => None,
+    }
+}
 
 /// Something a shortcut does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -422,6 +481,40 @@ mod tests {
             capture(&Key::Named(NamedKey::Enter), "Enter", Modifiers::SHIFT),
             Capture::Refuse(Refusal::Enter)
         );
+    }
+
+    #[test]
+    fn account_shortcuts_go_by_the_digit_key_with_the_platform_modifier() {
+        let (mods, other) = if cfg!(target_os = "macos") {
+            (Modifiers::META, Modifiers::ALT)
+        } else {
+            (Modifiers::ALT, Modifiers::META)
+        };
+        assert_eq!(account_index(Code::Digit1, mods), Some(0));
+        assert_eq!(account_index(Code::Digit9, mods), Some(8));
+        assert_eq!(account_index(Code::Digit0, mods), None);
+        assert_eq!(account_index(Code::KeyA, mods), None);
+        assert_eq!(account_index(Code::Digit1, other), None);
+        assert_eq!(account_index(Code::Digit1, mods | Modifiers::SHIFT), None);
+    }
+
+    #[test]
+    fn the_highlight_wraps_and_starts_at_the_end_it_moves_from() {
+        let (down, up) = (
+            Key::Named(NamedKey::ArrowDown),
+            Key::Named(NamedKey::ArrowUp),
+        );
+        assert_eq!(highlight(None, 3, &down), Some(0));
+        assert_eq!(highlight(None, 3, &up), Some(2));
+        assert_eq!(highlight(Some(0), 3, &down), Some(1));
+        assert_eq!(highlight(Some(2), 3, &down), Some(0));
+        assert_eq!(highlight(Some(0), 3, &up), Some(2));
+        assert_eq!(highlight(Some(1), 3, &Key::Named(NamedKey::Home)), Some(0));
+        assert_eq!(highlight(Some(1), 3, &Key::Named(NamedKey::End)), Some(2));
+        // A highlight left past the end by items that went.
+        assert_eq!(highlight(Some(5), 3, &down), Some(0));
+        assert_eq!(highlight(Some(0), 0, &down), None);
+        assert_eq!(highlight(Some(0), 3, &Key::Named(NamedKey::Enter)), None);
     }
 
     #[test]

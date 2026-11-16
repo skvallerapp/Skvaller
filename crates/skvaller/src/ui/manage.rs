@@ -11,7 +11,7 @@ use dioxus_native::prelude::*;
 use skvaller_app::{AccountKind, App, Library};
 use skvaller_core::Scope;
 
-use super::{ACCOUNT_MODIFIER, COMMAND_MODIFIER, Reading};
+use super::{ACCOUNT_MODIFIER, COMMAND_MODIFIER, Command, Overlay, Reading};
 use crate::dropdown::Dropdown;
 use crate::i18n::{sentence, t, t_with};
 use crate::icons::{CHECK, Icon, PLUS};
@@ -27,11 +27,9 @@ const MENU_CHROME: f64 = 12.0;
 /// The folder select's value for a folder made on the spot, which no folder ID can be.
 const NEW_FOLDER: &str = "\u{0}new";
 
-/// What the sidebar has open for managing feeds, one thing at a time.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// What the sidebar has open for managing feeds, as the window's [`Overlay`].
+#[derive(Clone, Debug, PartialEq)]
 pub(super) enum Manage {
-    #[default]
-    Closed,
     /// A feed's or folder's menu, at the pointer, with its highlighted item.
     Menu {
         target: Target,
@@ -90,7 +88,7 @@ impl Target {
 
 /// An item of a feed's or folder's menu.
 #[derive(Clone, Debug, PartialEq)]
-enum Item {
+pub(super) enum Item {
     ReaderView {
         on: bool,
     },
@@ -150,30 +148,30 @@ pub(super) fn is_local(app: &App, account_id: Option<&str>) -> bool {
 }
 
 impl Reading {
-    /// Opens `target`'s menu at the pointer, unless it has no items.
-    pub(super) fn open_manage_menu(mut self, app: &App, target: Target, x: f64, y: f64) {
+    /// The items of `target`'s menu.
+    pub(super) fn manage_items(&self, app: &App, target: &Target) -> Vec<Item> {
         let local = is_local(app, self.account.peek().as_deref());
-        if items(&target, &self.library.peek(), local).is_empty() {
+        items(target, &self.library.peek(), local)
+    }
+
+    /// Opens `target`'s menu at the pointer, unless it has no items.
+    pub(super) fn open_manage_menu(self, app: &App, target: Target, x: f64, y: f64) {
+        if self.manage_items(app, &target).is_empty() {
             return;
         }
-        self.menu.set(None);
-        self.confirming.set(false);
-        self.manage.set(Manage::Menu {
+        self.open_overlay(Overlay::Manage(Manage::Menu {
             target,
             x,
             y,
             at: None,
-        });
+        }));
     }
 
-    /// Closes what is open, unless Add Feed is busy. Focus goes back to the window,
-    /// as the focused field or button goes.
-    pub(super) fn close_manage(mut self) {
-        if matches!(*self.manage.peek(), Manage::AddFeed { busy: true }) {
-            return;
+    /// Does what the item at `at` of `target`'s menu says.
+    pub(super) fn pick_at(self, app: &App, target: Target, at: usize) {
+        if let Some(item) = self.manage_items(app, &target).get(at) {
+            self.pick(app, target, item);
         }
-        self.manage.set(Manage::Closed);
-        self.refocus();
     }
 
     /// Does what the menu item says, for `target`.
@@ -181,7 +179,7 @@ impl Reading {
         let Some(account) = self.account.peek().clone() else {
             return;
         };
-        self.manage.set(Manage::Closed);
+        self.overlay.set(Overlay::None);
         let saved = match (item, &target) {
             (Item::ReaderView { on }, Target::Feed(id)) => {
                 app.set_feed_reader_view(&account, id, !on)
@@ -201,11 +199,11 @@ impl Reading {
                 if let Target::Folder(id) = &target {
                     self.set_collapsed(id, false);
                 }
-                self.manage.set(Manage::Rename(target));
+                self.overlay.set(Overlay::Manage(Manage::Rename(target)));
                 return;
             }
             (Item::Unsubscribe | Item::DeleteFolder, _) => {
-                self.manage.set(Manage::Confirm(target));
+                self.overlay.set(Overlay::Manage(Manage::Confirm(target)));
                 return;
             }
             _ => Ok(()),
@@ -220,10 +218,10 @@ impl Reading {
     /// unchanged, and closes the field. Does nothing once it is closed, as on the blur
     /// that follows Enter.
     fn finish_rename(mut self, app: &App, target: &Target, title: Option<&str>) {
-        if *self.manage.peek() != Manage::Rename(target.clone()) {
+        if *self.overlay.peek() != Overlay::Manage(Manage::Rename(target.clone())) {
             return;
         }
-        self.close_manage();
+        self.close_overlay();
         let (Some(account), Some(title)) = (self.account.peek().clone(), title.map(str::trim))
         else {
             return;
@@ -244,8 +242,8 @@ impl Reading {
 
     /// Unsubscribes from the feed or deletes the folder, as just confirmed. A selected
     /// one gives way to All; any other list loads again, as it may have its articles.
-    fn remove(mut self, app: &App, target: &Target) {
-        self.close_manage();
+    pub(super) fn remove(mut self, app: &App, target: &Target) {
+        self.close_overlay();
         let Some(account) = self.account.peek().clone() else {
             return;
         };
@@ -263,70 +261,14 @@ impl Reading {
             self.revision += 1;
         }
     }
-
-    /// Acts on a key while something is open here. Returns whether it did: then the key
-    /// goes nowhere else. The fields take their own keys first.
-    pub(super) fn on_manage_key(mut self, app: &App, key: &Key, mods: Modifiers) -> bool {
-        let manage = self.manage.peek().clone();
-        // The app's and the accounts' shortcuts still work, except over the fields.
-        let shortcut = mods.intersects(COMMAND_MODIFIER | ACCOUNT_MODIFIER);
-        match manage {
-            Manage::Closed => false,
-            Manage::Menu {
-                target, x, y, at, ..
-            } => {
-                let local = is_local(app, self.account.peek().as_deref());
-                let items = items(&target, &self.library.peek(), local);
-                let count = items.len();
-                let next = |step: usize| {
-                    at.map_or(if step == 1 { 0 } else { count - 1 }, |i| {
-                        (i + step) % count
-                    })
-                };
-                match key {
-                    Key::Named(NamedKey::ArrowDown) if count > 0 => {
-                        let at = Some(next(1));
-                        self.manage.set(Manage::Menu { target, x, y, at });
-                    }
-                    Key::Named(NamedKey::ArrowUp) if count > 0 => {
-                        let at = Some(next(count - 1));
-                        self.manage.set(Manage::Menu { target, x, y, at });
-                    }
-                    Key::Named(NamedKey::Enter) => {
-                        if let Some(item) = at.and_then(|i| items.get(i)) {
-                            self.pick(app, target, item);
-                        }
-                    }
-                    Key::Named(NamedKey::Escape | NamedKey::Tab) => self.close_manage(),
-                    _ => return !shortcut,
-                }
-                true
-            }
-            Manage::Confirm(target) => {
-                match key {
-                    Key::Named(NamedKey::Escape) => self.close_manage(),
-                    Key::Named(NamedKey::Enter) => self.remove(app, &target),
-                    _ => return !shortcut,
-                }
-                true
-            }
-            Manage::Rename(_) | Manage::AddFeed { .. } => {
-                if *key == Key::Named(NamedKey::Escape) {
-                    self.close_manage();
-                    return true;
-                }
-                !shortcut
-            }
-        }
-    }
 }
 
 /// The open feed or folder menu, at the pointer.
 #[component]
 pub(super) fn ManageMenu() -> Element {
     let app = use_context::<Arc<App>>();
-    let mut reading = use_context::<Reading>();
-    let Manage::Menu { target, x, y, at } = (reading.manage)() else {
+    let reading = use_context::<Reading>();
+    let Overlay::Manage(Manage::Menu { target, at, x, y }) = (reading.overlay)() else {
         return rsx! {};
     };
     let local = is_local(&app, reading.account.read().as_deref());
@@ -364,7 +306,7 @@ pub(super) fn ManageMenu() -> Element {
                     div { class: "menu-heading", {t("sidebar.moveTo")} }
                 }
                 {
-                    let (app, target) = (Arc::clone(&app), target.clone());
+                    let (app, hover_app, target) = (Arc::clone(&app), Arc::clone(&app), target.clone());
                     let (label, checked, role) = match &item {
                         Item::ReaderView { on } => (t("sidebar.alwaysReaderView"), *on, "menuitemcheckbox"),
                         Item::Rename => (t("sidebar.rename"), false, "menuitem"),
@@ -372,17 +314,13 @@ pub(super) fn ManageMenu() -> Element {
                         Item::Unsubscribe => (t("sidebar.unsubscribe"), false, "menuitem"),
                         Item::DeleteFolder => (t("sidebar.deleteFolder"), false, "menuitem"),
                     };
-                    let mover_target = target.clone();
                     rsx! {
                         div {
                             key: "{i}",
                             class: if at == Some(i) { "menu-item highlighted" } else { "menu-item" },
                             role,
                             "aria-checked": "{checked}",
-                            onmouseenter: move |_| {
-                                let target = mover_target.clone();
-                                reading.manage.set(Manage::Menu { target, x, y, at: Some(i) });
-                            },
+                            onmouseenter: move |_| reading.run(&hover_app, Command::Highlight(i)),
                             onclick: move |_| reading.pick(&app, target.clone(), &item),
                             span { class: "check",
                                 if checked {
@@ -403,7 +341,7 @@ pub(super) fn ManageMenu() -> Element {
 pub(super) fn ConfirmRemove() -> Element {
     let app = use_context::<Arc<App>>();
     let reading = use_context::<Reading>();
-    let Manage::Confirm(target) = (reading.manage)() else {
+    let Overlay::Manage(Manage::Confirm(target)) = (reading.overlay)() else {
         return rsx! {};
     };
     let Some(title) = target.title(&(reading.library)()) else {
@@ -421,6 +359,7 @@ pub(super) fn ConfirmRemove() -> Element {
             t("sidebar.deleteFolderConfirm"),
         ),
     };
+    let cancel_app = Arc::clone(&app);
 
     rsx! {
         div { class: "confirm popover sidebar-popover", role: "alertdialog", "aria-labelledby": "remove-question",
@@ -428,8 +367,8 @@ pub(super) fn ConfirmRemove() -> Element {
             p { id: "remove-question", "{question}" }
             p { class: "message", "{message}" }
             div { class: "actions",
-                button { class: "button", onclick: move |_| reading.close_manage(), {t("common.cancel")} }
-                button { class: "button destructive", onclick: move |_| reading.remove(&app, &target), "{confirm}" }
+                button { class: "button", onclick: move |_| reading.run(&cancel_app, Command::CloseOverlay), {t("common.cancel")} }
+                button { class: "button destructive", onclick: move |_| reading.run(&app, Command::Accept), "{confirm}" }
             }
         }
     }
@@ -481,9 +420,12 @@ pub(super) fn RenameField(target: Target, title: String) -> Element {
 pub(super) fn AddFeed() -> Element {
     let app = use_context::<Arc<App>>();
     let mut reading = use_context::<Reading>();
-    let manage = (reading.manage)();
-    let open = matches!(manage, Manage::AddFeed { .. });
-    let busy = manage == Manage::AddFeed { busy: true };
+    let state = use_memo(move || match *reading.overlay.read() {
+        Overlay::Manage(Manage::AddFeed { busy }) => Some(busy),
+        _ => None,
+    })();
+    let open = state.is_some();
+    let busy = state == Some(true);
     let mut url = use_signal(String::new);
     let mut folder = use_signal(String::new);
     let mut new_folder = use_signal(String::new);
@@ -503,7 +445,8 @@ pub(super) fn AddFeed() -> Element {
         let Some(account) = reading.account.peek().clone() else {
             return;
         };
-        if *reading.manage.peek() != (Manage::AddFeed { busy: false }) {
+        let adding = Overlay::Manage(Manage::AddFeed { busy: false });
+        if *reading.overlay.peek() != adding {
             return;
         }
         let address = url.peek().trim().to_owned();
@@ -523,15 +466,19 @@ pub(super) fn AddFeed() -> Element {
             Some(chosen).filter(|f| !f.is_empty())
         };
         error.set(None);
-        reading.manage.set(Manage::AddFeed { busy: true });
+        let busy = Overlay::Manage(Manage::AddFeed { busy: true });
+        reading.overlay.set(busy.clone());
         spawn(async move {
             let added = app.add_feed(&account, &address, folder_id.as_deref()).await;
-            reading.manage.set(Manage::AddFeed { busy: false });
+            // Unless another account's showing closed it meanwhile.
+            if *reading.overlay.peek() == busy {
+                reading.overlay.set(adding);
+            }
             match added {
                 Ok(id) => {
                     url.set(String::new());
                     new_folder.set(String::new());
-                    reading.close_manage();
+                    reading.close_overlay();
                     // Another account showing now: the feed is in the one it went to.
                     if reading.account.peek().as_deref() == Some(account.as_str()) {
                         reading.select_scope(Scope::Feed { id });
@@ -553,7 +500,7 @@ pub(super) fn AddFeed() -> Element {
             e.stop_propagation();
             match e.key() {
                 Key::Named(NamedKey::Enter) => submit(Arc::clone(&app)),
-                Key::Named(NamedKey::Escape) => reading.close_manage(),
+                Key::Named(NamedKey::Escape) => reading.close_overlay(),
                 _ => {}
             }
         }
@@ -572,18 +519,18 @@ pub(super) fn AddFeed() -> Element {
                 "aria-expanded": "{open}",
                 onclick: move |_| {
                     if open {
-                        reading.close_manage();
+                        reading.close_overlay();
                         return;
                     }
-                    reading.menu.set(None);
-                    reading.confirming.set(false);
+                    if !reading.open_overlay(Overlay::Manage(Manage::AddFeed { busy: false })) {
+                        return;
+                    }
                     error.set(None);
                     // The selected folder, if any, is where a new feed most likely goes.
                     folder.set(match &reading.selection.peek().scope {
                         Scope::Folder { id } => id.clone(),
                         _ => String::new(),
                     });
-                    reading.manage.set(Manage::AddFeed { busy: false });
                 },
                 Icon { size: 18, stroke: "2", paths: PLUS }
             }
@@ -631,7 +578,7 @@ pub(super) fn AddFeed() -> Element {
                         p { class: "error", role: "alert", "{message}" }
                     }
                     div { class: "actions",
-                        button { class: "button", onclick: move |_| reading.close_manage(), {t("common.cancel")} }
+                        button { class: "button", onclick: move |_| reading.close_overlay(), {t("common.cancel")} }
                         button {
                             class: "button primary",
                             disabled: busy || url().trim().is_empty() || (folder() == NEW_FOLDER && new_folder().trim().is_empty()),

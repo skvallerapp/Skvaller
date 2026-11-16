@@ -35,13 +35,16 @@ use crate::icons::{
 use crate::lines::{self, Lines};
 use crate::live::{Live, use_live};
 use crate::overscroll::{Edges, HOLD, Out, Overscroll, SPRING_EASE, Shown, WHEEL_IDLE};
-use crate::settings::{Pane as SettingsPane, SettingsWindow};
-use crate::shortcuts::{ARROWS, Action, key_name};
+use crate::settings::SettingsWindow;
+use crate::shortcuts::{ACCOUNT_MODIFIER, Action, COMMAND_MODIFIER};
 use crate::thumbs;
 
+mod command;
 mod listed;
 mod manage;
 
+pub(crate) use command::Command;
+use command::{Overlay, leave};
 use listed::{Listed, Load, Marks, Relist};
 
 use manage::{AddFeed, ConfirmRemove, Manage, ManageMenu, RenameField, Target, is_local};
@@ -148,20 +151,6 @@ pub(crate) fn motion(animations: bool) -> &'static str {
 /// How near the end, in CSS pixels, counts as the end: scroll offsets can fall short of
 /// it by a rounded fraction.
 const END_SLACK: f64 = 1.0;
-
-/// The modifier of the app's own shortcuts, such as Settings: ⌘ on macOS, Ctrl elsewhere.
-const COMMAND_MODIFIER: Modifiers = if cfg!(target_os = "macos") {
-    Modifiers::META
-} else {
-    Modifiers::CONTROL
-};
-
-/// The modifier of the account shortcuts, ⌘ on macOS and Alt elsewhere.
-const ACCOUNT_MODIFIER: Modifiers = if cfg!(target_os = "macos") {
-    Modifiers::META
-} else {
-    Modifiers::ALT
-};
 
 /// The column the arrow keys move in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -415,8 +404,8 @@ struct Reading {
     pinned: Memo<Rc<HashSet<String>>>,
     articles: Memo<Listed>,
     pane: Signal<Pane>,
-    /// The mark-all-read question is open.
-    confirming: Signal<bool>,
+    /// The popover, question or form open over the window.
+    overlay: Signal<Overlay>,
     /// Bumped by every open and read change, so a delayed mark knows it is stale.
     mark_generation: Signal<u64>,
     /// The open article's frame, which "read on" scrolls.
@@ -426,13 +415,9 @@ struct Reading {
     /// Bumped by each sync asked for here, so the sync icon turns even for one that
     /// ends before its status says it runs.
     syncs_asked: Signal<u64>,
-    /// The account menu, when open: the index of its highlighted account.
-    menu: Signal<Option<usize>>,
     /// The window's root, which takes focus back when the focused element goes away.
     root: Signal<Option<Rc<MountedData>>>,
     reader_view: Signal<ReaderView>,
-    /// The feed or folder menu, rename, question or Add Feed open in the sidebar.
-    manage: Signal<Manage>,
     /// The ids of the folders whose feeds the sidebar hides, by account, for this
     /// session.
     collapsed: Signal<HashMap<String, HashSet<String>>>,
@@ -597,21 +582,26 @@ impl Reading {
         self.marks.write().record(load, ids, read, starred);
     }
 
+    /// Shows `selection`'s list, resetting what [`command::Leave`] says.
     fn select(mut self, selection: Selection) {
-        // Searching every feed is for the selection it was asked from.
-        let new_scope = selection.scope != self.selection.peek().scope;
-        if new_scope && self.search.peek().everywhere {
-            self.search.write().everywhere = false;
+        // Copied out: a borrow held into the writes would make them panic.
+        let left = leave(
+            &self.selection.peek(),
+            &selection,
+            &self.overlay.peek(),
+            &self.search.peek(),
+        );
+        if left.everywhere != self.search.peek().everywhere {
+            self.search.write().everywhere = left.everywhere;
+        }
+        if *self.overlay.peek() != left.overlay {
+            self.overlay.set(left.overlay);
         }
         self.selection.set(selection);
-        // The list a search replaced is no longer the one to go back to.
         self.restore.set(None);
         self.article.set(None);
-        // Reader View starts over, and a load under way is dropped: reopening the
-        // article doesn't find it stuck loading.
+        // Reopening the article doesn't find its Reader View stuck loading.
         self.reset_reader_view(None);
-        self.confirming.set(false);
-        // A delayed mark of the article left is off.
         self.mark_generation += 1;
         // A list sliding away goes at once: the one it slid to is left too.
         if self.ghost.peek().is_some() {
@@ -653,7 +643,10 @@ impl Reading {
         let unread = !self.is_read(&a);
         self.follow_reader_view(app, &a);
         self.article.set(Some(a));
-        self.confirming.set(false);
+        let overlay = self.overlay.peek().after_list_change();
+        if *self.overlay.peek() != overlay {
+            self.overlay.set(overlay);
+        }
         self.mark_generation += 1;
         // The old article's frame, if focused, goes away with it.
         self.refocus();
@@ -882,13 +875,14 @@ impl Reading {
         self.counts += 1;
     }
 
-    /// Marks all as read, asking first when the settings say so.
-    fn request_mark_all(mut self, app: &App) {
+    /// Marks all as read, asking first when the settings say so. Not while Add Feed is
+    /// busy, which the question can't replace.
+    fn request_mark_all(self, app: &App) {
         if self.unread_count() == 0 {
             return;
         }
         if app.settings().confirm_mark_all_read {
-            self.confirming.set(true);
+            self.open_overlay(Overlay::MarkAll);
         } else {
             self.mark_all_read(app);
         }
@@ -900,7 +894,11 @@ impl Reading {
     /// and the open article closes. With All Unread already
     /// selected, the list empties at once, except for the article being read.
     fn mark_all_read(mut self, app: &App) {
-        self.close_confirm();
+        if *self.overlay.peek() == Overlay::MarkAll {
+            self.overlay.set(Overlay::None);
+        }
+        // The question's focused button goes, or the one that asked keeps the focus.
+        self.refocus();
         // Read, not peek: `is_read` reads the list too, and a recompute under a peek's
         // guard panics.
         let ids: Vec<String> = self
@@ -967,16 +965,9 @@ impl Reading {
 
     /// Opens the search field, or focuses it if it is open.
     fn open_search(mut self) {
-        // Their keys would keep the field's, such as a paste, from it.
-        if self.menu.peek().is_some() {
-            self.menu.set(None);
-        }
-        if *self.confirming.peek() {
-            self.confirming.set(false);
-        }
-        if *self.manage.peek() != Manage::Closed {
-            self.close_manage();
-        }
+        // Their keys would keep the field's, such as a paste, from it. The field takes
+        // the focus.
+        self.open_overlay(Overlay::None);
         if !self.search.peek().open {
             // The field focuses itself as it mounts.
             self.search.write().open = true;
@@ -1032,12 +1023,6 @@ impl Reading {
         if !listed {
             self.step(app, 1);
         }
-    }
-
-    /// Closes the mark-all-read question; its focused button goes with it.
-    fn close_confirm(mut self) {
-        self.confirming.set(false);
-        self.refocus();
     }
 
     fn open_in_browser(self) {
@@ -1174,14 +1159,16 @@ impl Reading {
     /// the window. It stays while a feed is being added, which hiding would drop.
     fn toggle_sidebar(mut self, app: &App) {
         let open = !self.layout.peek().sidebar_open;
-        if !open && matches!(*self.manage.peek(), Manage::AddFeed { busy: true }) {
+        if !open && self.overlay.peek().busy() {
             return;
         }
         self.layout.write().sidebar_open = open;
         if !open {
             self.pane.set(Pane::List);
-            self.menu.set(None);
-            self.close_manage();
+            let overlay = self.overlay.peek().after_sidebar_hidden();
+            if *self.overlay.peek() != overlay {
+                self.overlay.set(overlay);
+            }
             self.refocus();
         }
         self.save_layout(app);
@@ -1206,7 +1193,9 @@ impl Reading {
 
     /// Shows the account and makes it the active one.
     fn switch_account(mut self, app: &App, id: &str) {
-        self.menu.set(None);
+        if matches!(*self.overlay.peek(), Overlay::AccountMenu { .. }) {
+            self.overlay.set(Overlay::None);
+        }
         if self.account.peek().as_deref() == Some(id) {
             return;
         }
@@ -1223,8 +1212,11 @@ impl Reading {
     /// Shows the account, keeping the view: its feeds, articles and status. `None` once
     /// there is no account.
     fn show_account(mut self, app: &App, id: Option<String>) {
-        // Another account's feeds are its own, and so are its articles.
-        self.manage.set(Manage::Closed);
+        // Another account's feeds are its own, and so are its articles: its overlays go,
+        // even a busy Add Feed, which then adds to the account it was for.
+        if *self.overlay.peek() != Overlay::None {
+            self.overlay.set(Overlay::None);
+        }
         self.close_search();
         let view = self.selection.peek().view;
         self.select(Selection {
@@ -1235,133 +1227,6 @@ impl Reading {
             .set(id.as_deref().and_then(|id| app.status(id).ok()));
         self.account.set(id);
     }
-
-    /// Up and Down move in the open account menu, Enter picks, Escape closes.
-    fn on_menu_key(mut self, app: &App, key: &Key, at: usize) {
-        let count = app.accounts().len();
-        match key {
-            Key::Named(NamedKey::ArrowDown) => self.menu.set(Some((at + 1) % count)),
-            Key::Named(NamedKey::ArrowUp) => self.menu.set(Some((at + count - 1) % count)),
-            Key::Named(NamedKey::Enter) => {
-                if let Some(account) = app.accounts().get(at) {
-                    self.switch_account(app, &account.id);
-                }
-            }
-            Key::Named(NamedKey::Escape | NamedKey::Tab) => self.menu.set(None),
-            _ => {}
-        }
-    }
-
-    /// Acts on a key pressed anywhere in the window. Returns whether it did, so the key
-    /// doesn't reach the article too.
-    fn on_key(mut self, app: &Arc<App>, keys: &HashMap<String, Action>, e: &KeyboardData) -> bool {
-        let (key, code) = (e.key(), e.code().to_string());
-        if let Some(index) = account_index(&code, e.modifiers()) {
-            if !e.is_auto_repeating()
-                && let Some(account) = app.accounts().get(index)
-            {
-                self.switch_account(app, &account.id);
-            }
-            return true;
-        }
-        // Copied out: a borrow held into the block would make setting the menu panic.
-        let menu = *self.menu.peek();
-        if let Some(at) = menu {
-            self.on_menu_key(app, &key, at);
-            return true;
-        }
-        if self.on_manage_key(app, &key, e.modifiers()) {
-            return true;
-        }
-        // A sync may have emptied the list meanwhile: then the question is gone.
-        if *self.confirming.peek() && self.unread_count() == 0 {
-            self.close_confirm();
-        }
-        if *self.confirming.peek() {
-            match key {
-                Key::Named(NamedKey::Escape) => self.close_confirm(),
-                Key::Named(NamedKey::Enter) => self.mark_all_read(app),
-                _ => {}
-            }
-            return true;
-        }
-        // Not over the sign-in screen, whose fields have the focus.
-        if key == Key::Named(NamedKey::Escape) && self.search.peek().open && self.panes_shown() {
-            self.close_search();
-            return true;
-        }
-        let Some(name) = key_name(&key, &code, e.modifiers()) else {
-            return false;
-        };
-        let repeat = e.is_auto_repeating();
-        if ARROWS.contains(&name.as_str()) {
-            let pane = self.active_pane();
-            let delta = match key {
-                Key::Named(NamedKey::ArrowDown) => 1,
-                Key::Named(NamedKey::ArrowUp) => -1,
-                _ => 0,
-            };
-            match key {
-                // With the sidebar hidden, there is nothing to the left.
-                Key::Named(NamedKey::ArrowLeft) => {
-                    if self.layout.peek().sidebar_open {
-                        self.pane.set(Pane::Sidebar);
-                    }
-                }
-                Key::Named(NamedKey::ArrowRight) => {
-                    self.pane.set(Pane::List);
-                    if self.article.peek().is_none() {
-                        self.step(app, 1);
-                    }
-                }
-                // Each sidebar step loads a whole list: they don't repeat.
-                _ if pane == Pane::Sidebar && !repeat => {
-                    self.step_sidebar(delta, app.settings().sort_subscriptions);
-                }
-                _ if pane == Pane::List => self.step(app, delta),
-                _ => {}
-            }
-            return true;
-        }
-        let Some(&action) = keys.get(&name) else {
-            return false;
-        };
-        if repeat && !action.repeats() {
-            return true;
-        }
-        match action {
-            Action::Next => {
-                self.pane.set(Pane::List);
-                self.step(app, 1);
-            }
-            Action::Previous => {
-                self.pane.set(Pane::List);
-                self.step(app, -1);
-            }
-            Action::ReadOn => self.read_on(app, true, repeat),
-            Action::ReadBack => self.read_on(app, false, repeat),
-            // Reader View comes with a later milestone.
-            Action::ToggleReaderView => self.toggle_reader_view(app),
-            Action::ToggleRead => self.toggle_read(app),
-            Action::ToggleStar => self.toggle_starred(app),
-            Action::OpenInBrowser => self.open_in_browser(),
-            Action::Sync => self.sync(app),
-            Action::MarkAllRead => self.request_mark_all(app),
-        }
-        true
-    }
-}
-
-/// The account a key switches to, by index: ⌘1 to ⌘9 on macOS, Alt+1 to Alt+9
-/// elsewhere. Goes by the key's place, not its character, which depends on the layout.
-/// On macOS the menu bar takes the key first, except where the layout's digits need
-/// Shift.
-fn account_index(code: &str, mods: Modifiers) -> Option<usize> {
-    if mods != ACCOUNT_MODIFIER {
-        return None;
-    }
-    let digit = code.strip_prefix("Digit")?.parse::<usize>().ok()?;
-    (1..=9).contains(&digit).then(|| digit - 1)
 }
 
 /// The window's root component.
@@ -1509,15 +1374,13 @@ pub fn Root() -> Element {
         pinned,
         articles,
         pane: Signal::new(Pane::List),
-        confirming: Signal::new(false),
+        overlay: Signal::new(Overlay::None),
         mark_generation: Signal::new(0),
         frame: Signal::new(None),
         status,
         syncs_asked: Signal::new(0),
-        menu: Signal::new(None),
         root: Signal::new(None),
         reader_view: Signal::new(ReaderView::default()),
-        manage: Signal::new(Manage::default()),
         collapsed: Signal::new(HashMap::new()),
         layout: Signal::new(app.layout()),
         drag: Signal::new(None),
@@ -1549,13 +1412,8 @@ pub fn Root() -> Element {
     let settings = use_context_provider(SettingsWindow::default);
     #[cfg(target_os = "macos")]
     crate::menu::use_menu_bar(&app, reading.account, live.revision, {
-        use crate::menu::Command;
-        let (app, settings, windows) = (Arc::clone(&app), settings.clone(), windows.clone());
-        move |command| match command {
-            Command::Settings => settings.open(&windows, &app),
-            Command::AddAccount => settings.open_at(&windows, &app, SettingsPane::AddAccount),
-            Command::Account(id) => reading.switch_account(&app, &id),
-        }
+        let app = Arc::clone(&app);
+        move |command| reading.run(&app, command)
     });
     // Settings goes with the main window, as the app does, and the list follows the
     // window's size: its width may squeeze the list, its height the list's viewport.
@@ -1617,24 +1475,7 @@ pub fn Root() -> Element {
                 }
             },
             onkeydown: move |e: Event<KeyboardData>| {
-                // On macOS the menu bar's Settings… takes ⌘, first.
-                if e.code() == Code::Comma && e.modifiers() == COMMAND_MODIFIER {
-                    settings.open(&windows, &app);
-                    e.prevent_default();
-                } else if e.code() == Code::KeyS
-                    && e.modifiers() == COMMAND_MODIFIER | Modifiers::SHIFT
-                    && reading.panes_shown()
-                {
-                    // Cmd+Shift+S on macOS, Ctrl+Shift+S elsewhere.
-                    reading.toggle_sidebar(&app);
-                    e.prevent_default();
-                } else if e.code() == Code::KeyF
-                    && e.modifiers() == COMMAND_MODIFIER
-                    && reading.panes_shown()
-                {
-                    reading.open_search();
-                    e.prevent_default();
-                } else if reading.on_key(&app, &live.keys.peek(), &e.data()) {
+                if reading.on_key(&app, &live.keys.peek(), &e.data()) {
                     e.prevent_default();
                 }
             },
@@ -1655,17 +1496,12 @@ pub fn Root() -> Element {
                 }
             },
             onmouseup: move |_| reading.end_drag(&drag_app),
-            // A click outside the account menu, the mark-all-read question or a sidebar
-            // popover closes it; their own clicks don't get here.
+            // A click outside the open overlay closes it; its own clicks don't get here.
+            // The click has moved the focus already.
             onclick: move |_| {
-                if reading.menu.peek().is_some() {
-                    reading.menu.set(None);
-                }
-                if *reading.confirming.peek() {
-                    reading.confirming.set(false);
-                }
-                if matches!(*reading.manage.peek(), Manage::Menu { .. } | Manage::Confirm(_) | Manage::AddFeed { busy: false }) {
-                    reading.close_manage();
+                let overlay = reading.overlay.peek().after_click();
+                if *reading.overlay.peek() != overlay {
+                    reading.overlay.set(overlay);
                 }
             },
             if (reading.account)().is_none() || signed_out {
@@ -1940,8 +1776,6 @@ fn Sidebar() -> Element {
     let status = (reading.status)();
     let spinning = use_spin(reading.status, reading.syncs_asked);
     let sync_app = Arc::clone(&app);
-    let settings = use_context::<SettingsWindow>();
-    let windows = use_windows();
     let settings_app = Arc::clone(&app);
     let settings_key = if COMMAND_MODIFIER == Modifiers::META {
         "⌘,".to_owned()
@@ -2067,14 +1901,14 @@ fn Sidebar() -> Element {
                     class: "icon-button",
                     aria_label: t("sidebar.settings"),
                     title: t_with("sidebar.settingsWithKey", &[("key", settings_key.as_str())]),
-                    onclick: move |_| settings.open(&windows, &settings_app),
+                    onclick: move |_| reading.run(&settings_app, Command::Settings),
                     Icon { size: 18, stroke: "2", paths: SETTINGS }
                 }
                 button {
                     class: if spinning { "icon-button sync spinning" } else { "icon-button sync" },
                     aria_label: t("sidebar.sync"),
                     title: t("sidebar.sync"),
-                    onclick: move |_| reading.sync(&sync_app),
+                    onclick: move |_| reading.run(&sync_app, Action::Sync.into()),
                     Icon { size: 18, stroke: "2", paths: ROTATE_CW }
                 }
             }
@@ -2435,9 +2269,10 @@ fn ViewSwitcher() -> Element {
 fn AccountSwitcher() -> Element {
     let app = use_context::<Arc<App>>();
     let mut reading = use_context::<Reading>();
-    let settings = use_context::<SettingsWindow>();
-    let windows = use_windows();
-    let menu = (reading.menu)();
+    let menu = use_memo(move || match *reading.overlay.read() {
+        Overlay::AccountMenu { at } => Some(at),
+        _ => None,
+    })();
     let active = (reading.account)();
     // The counts change with changes made here and with syncs, as the library does.
     (reading.library)();
@@ -2461,8 +2296,12 @@ fn AccountSwitcher() -> Element {
                 onclick: move |e| {
                     // The window closes the menu on any click that reaches it.
                     e.stop_propagation();
+                    if matches!(*reading.overlay.peek(), Overlay::AccountMenu { .. }) {
+                        reading.overlay.set(Overlay::None);
+                        return;
+                    }
                     let at = reading.account.peek().as_ref().and_then(|id| app.accounts().iter().position(|a| &a.id == id));
-                    reading.menu.set(if reading.menu.peek().is_some() { None } else { Some(at.unwrap_or(0)) });
+                    reading.open_overlay(Overlay::AccountMenu { at: at.unwrap_or(0) });
                 },
                 // Lucide's rss.
                 svg { width: "18", height: "18", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
@@ -2480,14 +2319,15 @@ fn AccountSwitcher() -> Element {
                             let checked = active.as_deref() == Some(account.id.as_str());
                             let count = app.unread_total(&account.id).unwrap_or(0);
                             let id = account.id.clone();
+                            let hover_app = Arc::clone(&app);
                             rsx! {
                                 div {
                                     key: "{account.id}",
                                     class: if i == at { "menu-item highlighted" } else { "menu-item" },
                                     role: "menuitemradio",
                                     "aria-checked": "{checked}",
-                                    onmouseenter: move |_| reading.menu.set(Some(i)),
-                                    onclick: move |_| reading.switch_account(&app, &id),
+                                    onmouseenter: move |_| reading.run(&hover_app, Command::Highlight(i)),
+                                    onclick: move |_| reading.run(&app, Command::Account(id.clone())),
                                     span { class: "check",
                                         if checked {
                                             Icon { size: 14, stroke: "2.5", paths: CHECK }
@@ -2504,10 +2344,7 @@ fn AccountSwitcher() -> Element {
                     div {
                         class: "menu-item",
                         role: "menuitem",
-                        onclick: move |_| {
-                            reading.menu.set(None);
-                            settings.open_at(&windows, &app_for_add, SettingsPane::AddAccount);
-                        },
+                        onclick: move |_| reading.run(&app_for_add, Command::AddAccount),
                         span { class: "check" }
                         span { class: "name", {t("accounts.add")} }
                     }
@@ -2653,10 +2490,14 @@ fn ScopeItem(
     let app = use_context::<Arc<App>>();
     let reading = use_context::<Reading>();
     let target = Target::of(&scope);
+    // Not every overlay change: each row re-renders only when renaming starts or ends.
+    let renamed = use_memo(move || match &*reading.overlay.read() {
+        Overlay::Manage(Manage::Rename(target)) => Some(target.clone()),
+        _ => None,
+    });
     let renaming = target
-        .as_ref()
-        .filter(|t| *reading.manage.read() == Manage::Rename((*t).clone()))
-        .cloned();
+        .clone()
+        .filter(|t| renamed.read().as_ref() == Some(t));
     let selected = reading.selection.read().scope == scope;
     let class = match (selected, nested) {
         (true, true) => "item nested selected",
@@ -2764,7 +2605,7 @@ fn ArticleList() -> Element {
     } else {
         "list-body"
     };
-    let confirming = (reading.confirming)() && unread > 0;
+    let confirming = use_memo(move || *reading.overlay.read() == Overlay::MarkAll)() && unread > 0;
     // Shared by the list's viewports, one for each selection, so each character is
     // shaped, and each headline cut, once.
     use_context_provider(|| Rc::new(RefCell::new(Lines::new(fonts::font_context()))));
@@ -2772,6 +2613,8 @@ fn ArticleList() -> Element {
     let list_width = use_memo(move || reading.layout.read().list_width)();
     let active = use_memo(move || reading.active_pane())() == Pane::List;
     let confirm_app = Arc::clone(&app);
+    let cancel_app = Arc::clone(&app);
+    let search_app = Arc::clone(&app);
     let toggle_app = Arc::clone(&app);
     let toggle_label = if sidebar_open {
         t("list.hideSidebar")
@@ -2801,7 +2644,7 @@ fn ArticleList() -> Element {
                     aria_label: toggle_label.clone(),
                     title: toggle_label,
                     "aria-pressed": "{sidebar_open}",
-                    onclick: move |_| reading.toggle_sidebar(&toggle_app),
+                    onclick: move |_| reading.run(&toggle_app, Command::ToggleSidebar),
                     Icon { size: 18, stroke: "2", paths: PANEL_LEFT }
                 }
                 div { class: "list-title",
@@ -2812,7 +2655,7 @@ fn ArticleList() -> Element {
                     class: "icon-button",
                     aria_label: t("list.search"),
                     title: t_with("list.searchWithKey", &[("key", search_key.as_str())]),
-                    onclick: move |_| reading.open_search(),
+                    onclick: move |_| reading.run(&search_app, Command::Search),
                     Icon { size: 18, stroke: "2", paths: SEARCH }
                 }
                 div { class: "mark-all",
@@ -2825,7 +2668,7 @@ fn ArticleList() -> Element {
                         "aria-haspopup": "dialog",
                         "aria-expanded": "{confirming}",
                         disabled: unread == 0,
-                        onclick: move |_| reading.request_mark_all(&app),
+                        onclick: move |_| reading.run(&app, Action::MarkAllRead.into()),
                         svg { width: "18", height: "18", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
                             circle { cx: "12", cy: "12", r: "10" }
                             path { d: "m9 12 2 2 4-4" }
@@ -2835,8 +2678,8 @@ fn ArticleList() -> Element {
                         div { class: "confirm popover", role: "dialog", "aria-labelledby": "mark-all-question",
                             p { id: "mark-all-question", {t_count("list.markAllQuestion", unread)} }
                             div { class: "actions",
-                                button { class: "button", onclick: move |_| reading.close_confirm(), {t("common.cancel")} }
-                                button { class: "button primary", onclick: move |_| reading.mark_all_read(&confirm_app), {t("list.markAsRead")} }
+                                button { class: "button", onclick: move |_| reading.run(&cancel_app, Command::CloseOverlay), {t("common.cancel")} }
+                                button { class: "button primary", onclick: move |_| reading.run(&confirm_app, Command::Accept), {t("list.markAsRead")} }
                             }
                         }
                     }
@@ -3769,6 +3612,7 @@ fn ReaderButtons(article: ArticleSummary) -> Element {
     };
     let star_app = Arc::clone(&app);
     let reader_app = Arc::clone(&app);
+    let browser_app = Arc::clone(&app);
     let (rv_on, rv_loading, rv_failed) = {
         let rv = reading.reader_view.read();
         (
@@ -3797,7 +3641,7 @@ fn ReaderButtons(article: ArticleSummary) -> Element {
             },
             aria_label: read_label.clone(),
             title: read_label,
-            onclick: move |_| reading.toggle_read(&app),
+            onclick: move |_| reading.run(&app, Action::ToggleRead.into()),
             // The unread mark: filled while unread, outlined once read.
             svg { width: "18", height: "18", view_box: "0 0 24 24", fill: if read { "none" } else { "currentColor" }, stroke: "currentColor", stroke_width: "1.6",
                 circle { cx: "12", cy: "12", r: "7.5" }
@@ -3811,7 +3655,7 @@ fn ReaderButtons(article: ArticleSummary) -> Element {
             },
             aria_label: star_label.clone(),
             title: star_label,
-            onclick: move |_| reading.toggle_starred(&star_app),
+            onclick: move |_| reading.run(&star_app, Action::ToggleStar.into()),
             svg { width: "18", height: "18", view_box: "0 0 24 24", fill: if starred { "currentColor" } else { "none" }, stroke: "currentColor", stroke_width: "2", stroke_linejoin: "round",
                 path { d: STAR_PATH }
             }
@@ -3823,7 +3667,7 @@ fn ReaderButtons(article: ArticleSummary) -> Element {
             "aria-pressed": "{rv_on}",
             "aria-busy": "{rv_loading}",
             disabled: article.url.is_empty(),
-            onclick: move |_| reading.toggle_reader_view(&reader_app),
+            onclick: move |_| reading.run(&reader_app, Action::ToggleReaderView.into()),
             // Lucide's square-text.
             svg { width: "18", height: "18", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
                 rect { x: "3", y: "3", width: "18", height: "18", rx: "2" }
@@ -3837,7 +3681,7 @@ fn ReaderButtons(article: ArticleSummary) -> Element {
             aria_label: t("reader.openInBrowser"),
             title: t("reader.openInBrowser"),
             disabled: article.url.is_empty(),
-            onclick: move |_| reading.open_in_browser(),
+            onclick: move |_| reading.run(&browser_app, Action::OpenInBrowser.into()),
             svg { width: "18", height: "18", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
                 circle { cx: "12", cy: "12", r: "10" }
                 path { d: "M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" }
@@ -4146,21 +3990,6 @@ mod tests {
             anchor.hold(&short, &list, clamped, deep),
             Some(short[60] + (short[61] - short[60]) / 2.0)
         );
-    }
-
-    #[test]
-    fn account_shortcuts_go_by_the_digit_key_with_the_platform_modifier() {
-        let (mods, other) = if cfg!(target_os = "macos") {
-            (Modifiers::META, Modifiers::ALT)
-        } else {
-            (Modifiers::ALT, Modifiers::META)
-        };
-        assert_eq!(account_index("Digit1", mods), Some(0));
-        assert_eq!(account_index("Digit9", mods), Some(8));
-        assert_eq!(account_index("Digit0", mods), None);
-        assert_eq!(account_index("KeyA", mods), None);
-        assert_eq!(account_index("Digit1", other), None);
-        assert_eq!(account_index("Digit1", mods | Modifiers::SHIFT), None);
     }
 
     fn feed(id: &str, folder: Option<&str>) -> skvaller_core::Feed {

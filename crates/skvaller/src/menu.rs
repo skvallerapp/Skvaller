@@ -17,42 +17,22 @@ use skvaller_app::{Account, App};
 use tokio::sync::mpsc;
 
 use crate::i18n::t;
+use crate::shortcuts::{ACCOUNT_KEYS, ACCOUNT_MODIFIER, COMMAND_MODIFIER};
+use crate::ui::Command;
 
 const SETTINGS_ITEM: &str = "settings";
 const ADD_ACCOUNT_ITEM: &str = "add-account";
 /// Prefixes an account's ID to make its item's ID.
 const ACCOUNT_ITEM_PREFIX: &str = "account:";
-/// The first nine accounts' keys, ⌘1 to ⌘9, as in the window's account shortcuts.
-const ACCOUNT_KEYS: [Code; 9] = [
-    Code::Digit1,
-    Code::Digit2,
-    Code::Digit3,
-    Code::Digit4,
-    Code::Digit5,
-    Code::Digit6,
-    Code::Digit7,
-    Code::Digit8,
-    Code::Digit9,
-];
 
-/// What a menu item asks the main window to do.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Command {
-    Settings,
-    AddAccount,
-    /// Show the account with this ID.
-    Account(String),
-}
-
-impl Command {
-    fn from_id(id: &str) -> Option<Self> {
-        match id {
-            SETTINGS_ITEM => Some(Self::Settings),
-            ADD_ACCOUNT_ITEM => Some(Self::AddAccount),
-            _ => id
-                .strip_prefix(ACCOUNT_ITEM_PREFIX)
-                .map(|account| Self::Account(account.to_owned())),
-        }
+/// The window's command of the menu item with this ID.
+fn command_of(id: &str) -> Option<Command> {
+    match id {
+        SETTINGS_ITEM => Some(Command::Settings),
+        ADD_ACCOUNT_ITEM => Some(Command::AddAccount),
+        _ => id
+            .strip_prefix(ACCOUNT_ITEM_PREFIX)
+            .map(|account| Command::Account(account.to_owned())),
     }
 }
 
@@ -76,7 +56,7 @@ impl MenuBar {
             SETTINGS_ITEM,
             t("menu.settings"),
             true,
-            Some(Accelerator::new(Modifiers::META, Code::Comma)),
+            Some(Accelerator::new(COMMAND_MODIFIER, Code::Comma)),
         );
         // The app menu's title shows as the app's name, whatever it says.
         let app_menu = Submenu::with_items(
@@ -130,7 +110,7 @@ impl MenuBar {
                 shown == Some(account.id.as_str()),
                 ACCOUNT_KEYS
                     .get(i)
-                    .map(|&key| Accelerator::new(Modifiers::META, key)),
+                    .map(|&key| Accelerator::new(ACCOUNT_MODIFIER, key)),
             );
             self.accounts.append(&item)?;
         }
@@ -156,7 +136,8 @@ impl MenuBar {
 /// Installs the menu bar for the main window, whose root calls it once.
 ///
 /// The Accounts menu follows the accounts and `shown`, the account the window shows.
-/// `revision` is bumped on every account change. Each item picked runs `on_command`.
+/// `revision` is bumped on every account change. Each item picked runs its command
+/// through `on_command`, the window's one entry point for commands.
 pub fn use_menu_bar(
     app: &Arc<App>,
     shown: Signal<Option<String>>,
@@ -181,7 +162,7 @@ pub fn use_menu_bar(
             }));
             spawn(async move {
                 while let Some(id) = commands.recv().await {
-                    let Some(command) = Command::from_id(&id) else {
+                    let Some(command) = command_of(&id) else {
                         continue;
                     };
                     let account = matches!(command, Command::Account(_));
@@ -212,15 +193,12 @@ mod tests {
 
     #[test]
     fn item_ids_name_their_commands() {
-        assert_eq!(Command::from_id(SETTINGS_ITEM), Some(Command::Settings));
+        assert_eq!(command_of(SETTINGS_ITEM), Some(Command::Settings));
+        assert_eq!(command_of(ADD_ACCOUNT_ITEM), Some(Command::AddAccount));
         assert_eq!(
-            Command::from_id(ADD_ACCOUNT_ITEM),
-            Some(Command::AddAccount)
-        );
-        assert_eq!(
-            Command::from_id("account:3"),
+            command_of("account:3"),
             Some(Command::Account("3".to_owned()))
         );
-        assert_eq!(Command::from_id("other"), None);
+        assert_eq!(command_of("other"), None);
     }
 }
