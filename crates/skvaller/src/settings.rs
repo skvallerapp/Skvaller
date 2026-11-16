@@ -14,8 +14,8 @@ use dioxus_native::prelude::*;
 use dioxus_native::winit::window::Window;
 use dioxus_native::{Config, LogicalSize, WindowAttributes, Windows, use_window};
 use skvaller_app::{
-    Account, AccountChange, AccountKind, App, Clock, DateFormat, Font, MarkReadOn, Settings,
-    SortSubscriptions, SyncSchedule, Theme, ThumbnailSize,
+    Account, AccountChange, AccountKind, App, Clock, DateFormat, Font, FontSize, LineWidth,
+    MarkReadOn, Settings, SortSubscriptions, SyncSchedule, Theme, ThumbnailSize,
 };
 use skvaller_core::ImportReport;
 use tokio::sync::Notify;
@@ -441,6 +441,10 @@ fn AppearancePane(settings: Settings, feedback: Feedback) -> Element {
         t("settings.thumbnailSizes.large"),
     ];
     let font_labels: Vec<String> = FONTS.iter().map(|&f| font_name(f)).collect();
+    let font_size_labels: Vec<String> = FontSize::ALL
+        .iter()
+        .map(|&s| font_size_name(s).to_owned())
+        .collect();
     let set = move |change: SettingsChange| feedback.report(app.change_settings(change));
 
     rsx! {
@@ -550,11 +554,37 @@ fn AppearancePane(settings: Settings, feedback: Feedback) -> Element {
                         label: t("settings.articleFont"),
                         choices: font_labels,
                         selected: index(&FONTS, &settings.article_font),
-                        onchange: move |i: usize| set(Box::new(move |s| s.article_font = FONTS[i])),
+                        onchange: {
+                            let set = set.clone();
+                            move |i: usize| set(Box::new(move |s| s.article_font = FONTS[i]))
+                        },
+                    }
+                }
+                Row { label: t("settings.fontSize"),
+                    Select {
+                        label: t("settings.fontSize"),
+                        choices: font_size_labels,
+                        selected: index(&FontSize::ALL, &settings.font_size),
+                        onchange: move |i: usize| set(Box::new(move |s| s.font_size = FontSize::ALL[i])),
                     }
                 }
             }
         }
+    }
+}
+
+/// A font size's name, the same in every language, as clothing sizes are.
+const fn font_size_name(size: FontSize) -> &'static str {
+    match size {
+        FontSize::Xxxs => "XXXS",
+        FontSize::Xxs => "XXS",
+        FontSize::Xs => "XS",
+        FontSize::S => "S",
+        FontSize::M => "M",
+        FontSize::L => "L",
+        FontSize::Xl => "XL",
+        FontSize::Xxl => "XXL",
+        FontSize::Xxxl => "XXXL",
     }
 }
 
@@ -581,6 +611,9 @@ fn font_name(font: Font) -> String {
     }
 }
 
+/// The line widths in the order the Settings window lists them.
+const LINE_WIDTHS: [LineWidth; 3] = [LineWidth::Narrow, LineWidth::Medium, LineWidth::Wide];
+
 #[component]
 fn ReadingPane(settings: Settings, feedback: Feedback) -> Element {
     let app = use_context::<Arc<App>>();
@@ -597,6 +630,11 @@ fn ReadingPane(settings: Settings, feedback: Feedback) -> Element {
     let order_labels = vec![
         t("settings.sortOrders.foldersFirst"),
         t("settings.sortOrders.alphabetical"),
+    ];
+    let width_labels = vec![
+        t("settings.lineWidths.narrow"),
+        t("settings.lineWidths.medium"),
+        t("settings.lineWidths.wide"),
     ];
     let set = move |change: SettingsChange| feedback.report(app.change_settings(change));
     rsx! {
@@ -634,7 +672,23 @@ fn ReadingPane(settings: Settings, feedback: Feedback) -> Element {
                     Switch {
                         label: t("settings.confirmMarkAll"),
                         on: settings.confirm_mark_all_read,
-                        onchange: move |on: bool| set(Box::new(move |s| s.confirm_mark_all_read = on)),
+                        onchange: {
+                            let set = set.clone();
+                            move |on: bool| set(Box::new(move |s| s.confirm_mark_all_read = on))
+                        },
+                    }
+                }
+            }
+        }
+        section {
+            h2 { {t("settings.article")} }
+            div { class: "group",
+                Row { label: t("settings.lineWidth"),
+                    Select {
+                        label: t("settings.lineWidth"),
+                        choices: width_labels,
+                        selected: index(&LINE_WIDTHS, &settings.line_width),
+                        onchange: move |i: usize| set(Box::new(move |s| s.line_width = LINE_WIDTHS[i])),
                     }
                 }
             }

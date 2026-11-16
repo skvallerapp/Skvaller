@@ -123,6 +123,12 @@ pub struct Settings {
     /// The article's body text.
     #[serde(deserialize_with = "article_font_or_default")]
     pub article_font: Font,
+    /// The size of the main window's text: the sidebar, the article list and the article.
+    #[serde(deserialize_with = "or_default")]
+    pub font_size: FontSize,
+    /// How wide the article's text column is.
+    #[serde(deserialize_with = "or_default")]
+    pub line_width: LineWidth,
     /// Shortcut keys that differ from the defaults, by action. `None` means no key.
     /// The UI knows the actions and the defaults.
     #[serde(deserialize_with = "or_default")]
@@ -240,6 +246,75 @@ pub enum Font {
     Serif,
 }
 
+/// The size of the main window's text, in nine steps. M is the size the app is drawn at
+/// without the setting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FontSize {
+    Xxxs,
+    Xxs,
+    Xs,
+    S,
+    #[default]
+    M,
+    L,
+    Xl,
+    Xxl,
+    Xxxl,
+}
+
+impl FontSize {
+    /// From the smallest to the largest.
+    pub const ALL: [Self; 9] = [
+        Self::Xxxs,
+        Self::Xxs,
+        Self::Xs,
+        Self::S,
+        Self::M,
+        Self::L,
+        Self::Xl,
+        Self::Xxl,
+        Self::Xxxl,
+    ];
+
+    /// Steps from M: -4 for XXXS to 4 for XXXL.
+    #[must_use]
+    pub fn step(self) -> i32 {
+        self.index() - 4
+    }
+
+    /// One step larger, or this one if it is the largest.
+    #[must_use]
+    pub fn larger(self) -> Self {
+        Self::at(self.index() + 1)
+    }
+
+    /// One step smaller, or this one if it is the smallest.
+    #[must_use]
+    pub fn smaller(self) -> Self {
+        Self::at(self.index() - 1)
+    }
+
+    fn index(self) -> i32 {
+        // Nine variants, in order.
+        self as i32
+    }
+
+    fn at(index: i32) -> Self {
+        Self::ALL[usize::try_from(index.clamp(0, 8)).unwrap_or(0)]
+    }
+}
+
+/// How wide the article's text column is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LineWidth {
+    Narrow,
+    #[default]
+    Medium,
+    Wide,
+}
+
 /// An unknown value gives the default, instead of failing the whole file and with it
 /// the saved account. The next save writes the default back.
 fn or_default<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(
@@ -284,6 +359,8 @@ impl Default for Settings {
             ui_font: Font::default(),
             headline_font: Font::default(),
             article_font: Font::Literata,
+            font_size: FontSize::default(),
+            line_width: LineWidth::default(),
             shortcuts: BTreeMap::new(),
             sort_subscriptions: SortSubscriptions::default(),
             mark_read_on: MarkReadOn::default(),
@@ -732,6 +809,8 @@ mod tests {
         );
         assert!(!config.settings.mark_read_on_scroll);
         assert!(config.settings.unread_badge);
+        assert_eq!(config.settings.font_size, FontSize::M);
+        assert_eq!(config.settings.line_width, LineWidth::Medium);
 
         let mut config = Config::default();
         config.settings.mark_read_on = MarkReadOn::Delay;
@@ -740,7 +819,11 @@ mod tests {
         config.settings.language = Some("sv".into());
         config.settings.clock = Clock::H24;
         config.settings.date_format = DateFormat::DayMonth;
+        config.settings.font_size = FontSize::Xxl;
+        config.settings.line_width = LineWidth::Narrow;
         let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["fontSize"], "xxl");
+        assert_eq!(json["lineWidth"], "narrow");
         assert_eq!(json["markReadOn"], "delay");
         assert_eq!(json["language"], "sv");
         assert_eq!(json["thumbnailSize"], "large");
@@ -749,6 +832,20 @@ mod tests {
         assert_eq!(json["sortSubscriptions"], "foldersFirst");
         let back = Config::parse(&serde_json::to_vec(&json).unwrap()).unwrap();
         assert_eq!(back.settings, config.settings);
+    }
+
+    #[test]
+    fn the_font_size_steps_within_its_range() {
+        assert_eq!(FontSize::M.step(), 0);
+        assert_eq!(FontSize::Xxxs.step(), -4);
+        assert_eq!(FontSize::Xxxl.step(), 4);
+        assert_eq!(FontSize::M.larger(), FontSize::L);
+        assert_eq!(FontSize::M.smaller(), FontSize::S);
+        assert_eq!(FontSize::Xxxl.larger(), FontSize::Xxxl);
+        assert_eq!(FontSize::Xxxs.smaller(), FontSize::Xxxs);
+        let config = Config::parse(br#"{ "fontSize": "huge", "lineWidth": 3 }"#).unwrap();
+        assert_eq!(config.settings.font_size, FontSize::M);
+        assert_eq!(config.settings.line_width, LineWidth::Medium);
     }
 
     #[test]

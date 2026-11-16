@@ -218,6 +218,7 @@
   "settings.uiFont": "Interfaz",
   "settings.headlineFont": "Titulares",
   "settings.articleFont": "Texto del artículo",
+  "settings.fontSize": "Tamaño",
   "settings.fontNames.system": "Sistema",
   "settings.fontNames.serif": "Serif del sistema",
 
@@ -225,6 +226,11 @@
   "settings.sort": "Ordenar suscripciones",
   "settings.sortOrders.foldersFirst": "Carpetas primero",
   "settings.sortOrders.alphabetical": "Alfabéticamente",
+  "settings.article": "Artículo",
+  "settings.lineWidth": "Ancho de línea",
+  "settings.lineWidths.narrow": "Estrecho",
+  "settings.lineWidths.medium": "Medio",
+  "settings.lineWidths.wide": "Amplio",
 
   "settings.markingRead": "Marcado como leído",
   "settings.markReadOn": "Marcar el artículo como leído",

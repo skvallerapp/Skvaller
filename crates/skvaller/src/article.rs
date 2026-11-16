@@ -3,10 +3,11 @@
 //! The document goes into an `<iframe srcdoc>`, a document of its own, so the article's
 //! styles can't reach the app and the app's can't reach the article.
 
-use skvaller_app::{Font, Settings, Theme};
+use skvaller_app::{Font, FontSize, LineWidth, Settings, Theme};
 use skvaller_core::{ArticleSummary, Feed, ready_article};
 
 use crate::fonts;
+use crate::scale::{self, Role};
 
 const FRAME_CSS: &str = include_str!("frame.css");
 
@@ -16,6 +17,8 @@ pub struct Look {
     pub theme: Theme,
     pub article_font: Font,
     pub headline_font: Font,
+    pub font_size: FontSize,
+    pub line_width: LineWidth,
     /// Settings → Animations: the article fades in as it opens.
     pub animations: bool,
 }
@@ -28,6 +31,8 @@ impl Look {
             theme,
             article_font: settings.article_font,
             headline_font: settings.headline_font,
+            font_size: settings.font_size,
+            line_width: settings.line_width,
             animations: settings.animations,
         }
     }
@@ -44,10 +49,17 @@ pub fn document(
 ) -> String {
     let theme = theme_name(look.theme);
     let motion = crate::ui::motion(look.animations);
+    // The column holds as many characters at any size: its width is in `em`s.
+    let line_width = match look.line_width {
+        LineWidth::Narrow => "32em",
+        LineWidth::Medium => "38em",
+        LineWidth::Wide => "46em",
+    };
     let fonts = format!(
-        "--article-font: {}; --headline-font: {}",
+        "--article-font: {}; --headline-font: {}; --line-width: {line_width}{}",
         fonts::stack(look.article_font),
-        fonts::stack(look.headline_font)
+        fonts::stack(look.headline_font),
+        scale::vars(look.font_size, &[Role::Article, Role::ArticleMeta]),
     );
     let date = escape(date);
     let title = linked(&article.title, Some(&article.url));
@@ -131,5 +143,6 @@ mod tests {
         assert!(doc.contains("src=\"https://example.com/i.png\""));
         assert!(doc.contains("data-theme=\"dark\""));
         assert!(doc.contains("--article-font: 'Literata'"));
+        assert!(doc.contains("--line-width: 38em; --article-scale: 1;"));
     }
 }

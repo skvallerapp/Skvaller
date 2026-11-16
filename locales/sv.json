@@ -215,6 +215,7 @@
   "settings.uiFont": "Gränssnitt",
   "settings.headlineFont": "Rubriker",
   "settings.articleFont": "Artikeltext",
+  "settings.fontSize": "Storlek",
   "settings.fontNames.system": "System",
   "settings.fontNames.serif": "System (serif)",
 
@@ -222,6 +223,11 @@
   "settings.sort": "Sortera prenumerationer",
   "settings.sortOrders.foldersFirst": "Mappar först",
   "settings.sortOrders.alphabetical": "Alfabetiskt",
+  "settings.article": "Artikel",
+  "settings.lineWidth": "Radbredd",
+  "settings.lineWidths.narrow": "Smal",
+  "settings.lineWidths.medium": "Medel",
+  "settings.lineWidths.wide": "Bred",
 
   "settings.markingRead": "Markera som läst",
   "settings.markReadOn": "Markera artikel som läst",

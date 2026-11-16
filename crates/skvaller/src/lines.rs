@@ -31,20 +31,19 @@ use icu_segmenter::options::LineBreakOptions;
 use parley::setting::Tag;
 use parley::{FontContext, FontFamily, FontVariation, FontWeight, LayoutContext, StyleProperty};
 
-/// The headline's font size in CSS px, as `.title` in app.css.
-pub const SIZE: f32 = 14.5;
-
 /// The headline's weight, as `.title` in app.css. Read headlines are lighter (500) but
 /// are counted at this one, so marking an article read never changes its row's height.
 const WEIGHT: f32 = 600.0;
 
-/// The optical size Blitz shapes the headline at: its size, as CSS
+/// The optical size Blitz shapes a headline `size` px large at: its size, as CSS
 /// `font-optical-sizing: auto` has it. Fonts with the axis, such as Source Serif 4, are
 /// wider at smaller optical sizes than at their default.
-const OPTICAL_SIZE: [FontVariation; 1] = [FontVariation {
-    tag: Tag::new(b"opsz"),
-    value: SIZE,
-}];
+fn optical_size(size: f32) -> [FontVariation; 1] {
+    [FontVariation {
+        tag: Tag::new(b"opsz"),
+        value: size,
+    }]
+}
 
 /// Symbols fonts swap wider glyphs in for, in context: arrows such as `->` and `<=`,
 /// runs such as `**`. A piece with one is shaped whole.
@@ -57,7 +56,8 @@ const CONTEXTUAL: [char; 14] = [
 /// others start over.
 const KEPT: usize = 20_000;
 
-/// A headline cut where it may wrap, in one font stack: what [`Headline::lines`] wraps.
+/// A headline cut where it may wrap, in one font stack and size: what
+/// [`Headline::lines`] wraps.
 #[derive(Debug, PartialEq)]
 pub struct Headline(Box<[Piece]>);
 
@@ -111,12 +111,14 @@ impl Headline {
     }
 }
 
-/// Cuts headlines into [`Headline`]s in one font stack, and keeps them.
+/// Cuts headlines into [`Headline`]s in one font stack and size, and keeps them.
 pub struct Lines {
     fonts: FontContext,
     layouts: LayoutContext<()>,
     /// The CSS font stack everything kept is for.
     stack: String,
+    /// The font size in CSS px everything kept is for (`.title` in app.css).
+    size: f32,
     /// The headlines cut, by their text.
     headlines: HashMap<String, Rc<Headline>>,
     /// Each character's advance in CSS px, shaped on its own.
@@ -142,6 +144,7 @@ impl Lines {
             fonts,
             layouts: LayoutContext::new(),
             stack: String::new(),
+            size: 0.0,
             headlines: HashMap::new(),
             advances: HashMap::new(),
             pairs: HashMap::new(),
@@ -152,16 +155,17 @@ impl Lines {
         }
     }
 
-    /// A list's `titles`, each cut where it may wrap, in `stack`.
+    /// A list's `titles`, each cut where it may wrap, in `stack` at `size` CSS px.
     ///
     /// Past [`KEPT`] headlines, only the list's are kept, so a list longer than that
     /// is cut once still.
     pub fn headlines<'a>(
         &mut self,
         stack: &str,
+        size: f64,
         titles: impl IntoIterator<Item = &'a str>,
     ) -> Rc<[Rc<Headline>]> {
-        self.use_stack(stack);
+        self.use_font(stack, size);
         let titles: Vec<&str> = titles.into_iter().collect();
         let list: Rc<[_]> = titles.iter().map(|t| self.kept(t)).collect();
         if self.headlines.len() > KEPT {
@@ -174,14 +178,14 @@ impl Lines {
         list
     }
 
-    /// `text` cut where it may wrap, in `stack`.
+    /// `text` cut where it may wrap, in `stack` at `size` CSS px.
     #[cfg(test)]
-    fn headline(&mut self, stack: &str, text: &str) -> Rc<Headline> {
-        self.use_stack(stack);
+    fn headline(&mut self, stack: &str, size: f64, text: &str) -> Rc<Headline> {
+        self.use_font(stack, size);
         self.kept(text)
     }
 
-    /// `text` cut where it may wrap, in the stack in use, as kept or cut now.
+    /// `text` cut where it may wrap, in the stack and size in use, as kept or cut now.
     fn kept(&mut self, text: &str) -> Rc<Headline> {
         if let Some(headline) = self.headlines.get(text) {
             return Rc::clone(headline);
@@ -191,10 +195,14 @@ impl Lines {
         headline
     }
 
-    /// Makes `stack` the one shaped in, forgetting what was kept for another.
-    fn use_stack(&mut self, stack: &str) {
-        if stack != self.stack {
+    /// Makes `stack` at `size` the font shaped in, forgetting what was kept for another.
+    fn use_font(&mut self, stack: &str, size: f64) {
+        // In CSS's precision.
+        #[expect(clippy::cast_possible_truncation, reason = "a font size")]
+        let size = size as f32;
+        if stack != self.stack || size.to_bits() != self.size.to_bits() {
             stack.clone_into(&mut self.stack);
+            self.size = size;
             self.headlines.clear();
             self.advances.clear();
             self.pairs.clear();
@@ -546,9 +554,10 @@ fn layout(lines: &mut Lines, text: &str, wrap: Option<f32>) -> parley::Layout<()
         .layouts
         .ranged_builder(&mut lines.fonts, text, 1.0, true);
     builder.push_default(StyleProperty::FontFamily(stack));
-    builder.push_default(StyleProperty::FontSize(SIZE));
+    let optical = optical_size(lines.size);
+    builder.push_default(StyleProperty::FontSize(lines.size));
     builder.push_default(StyleProperty::FontWeight(FontWeight::new(WEIGHT)));
-    builder.push_default(StyleProperty::FontVariations((&OPTICAL_SIZE).into()));
+    builder.push_default(StyleProperty::FontVariations((&optical).into()));
     builder.push_default(StyleProperty::WhiteSpaceCollapse(
         parley::WhiteSpaceCollapse::Collapse,
     ));
@@ -561,20 +570,22 @@ fn layout(lines: &mut Lines, text: &str, wrap: Option<f32>) -> parley::Layout<()
 mod tests {
     use super::*;
     use crate::fonts;
-    use skvaller_app::Font;
+    use skvaller_app::{Font, FontSize};
 
     const STACK: &str = "'Inter', system-ui, sans-serif";
+    /// The headline's size at M.
+    const SIZE: f64 = 14.5;
 
     fn count(lines: &mut Lines, stack: &str, text: &str, width: f64, max: u32) -> u32 {
-        lines.headline(stack, text).lines(width, max)
+        lines.headline(stack, SIZE, text).lines(width, max)
     }
 
     #[test]
     fn a_list_longer_than_the_cache_stays_cut() {
         let mut lines = Lines::new(fonts::font_context());
         let titles: Vec<String> = (0..KEPT + 10).map(|i| format!("Headline {i}")).collect();
-        let first = lines.headlines(STACK, titles.iter().map(String::as_str));
-        let again = lines.headlines(STACK, titles.iter().map(String::as_str));
+        let first = lines.headlines(STACK, SIZE, titles.iter().map(String::as_str));
+        let again = lines.headlines(STACK, SIZE, titles.iter().map(String::as_str));
         assert!(
             first
                 .iter()
@@ -604,19 +615,24 @@ mod tests {
         assert_eq!(count(&mut lines, STACK, "Short\u{2028}", 300.0, 9), 2);
         // Cut once, wrapped at any width.
         assert!(Rc::ptr_eq(
-            &lines.headline(STACK, text),
-            &lines.headline(STACK, text)
+            &lines.headline(STACK, SIZE, text),
+            &lines.headline(STACK, SIZE, text)
         ));
+        // Larger, it wraps to more lines, cut again.
+        let large = lines.headline(STACK, 19.5, text);
+        assert!(large.lines(300.0, 9) > lines.headline(STACK, SIZE, text).lines(300.0, 9));
     }
 
     /// The lines Parley lays `text` out in at `width`, built as Blitz builds an
-    /// element's text: with a tree builder, in the headline's style.
+    /// element's text: with a tree builder, in the headline's style at the size `lines`
+    /// shapes at.
     fn laid_out(lines: &mut Lines, stack: &str, text: &str, width: f32) -> u32 {
+        let optical = optical_size(lines.size);
         let style = parley::TextStyle {
             font_family: FontFamily::Source(stack.into()),
-            font_size: SIZE,
+            font_size: lines.size,
             font_weight: FontWeight::new(WEIGHT),
-            font_variations: (&OPTICAL_SIZE).into(),
+            font_variations: (&optical).into(),
             line_height: parley::LineHeight::FontSizeRelative(1.3),
             white_space_collapse: parley::WhiteSpaceCollapse::Collapse,
             ..Default::default()
@@ -631,9 +647,10 @@ mod tests {
     }
 
     /// Laid out by Parley in the headline's style, as Blitz sets it: optical size
-    /// included. A count is never short and seldom over. Over six lines a little width
-    /// counted on each can add up to more than a line, as for the `iiiiiiiiii WWWWWWWWWW`
-    /// headline at one width or two, but hardly ever.
+    /// included, at the smallest, middle and largest font sizes. A count is never short
+    /// and seldom over. Over six lines a little width counted on each can add up to more
+    /// than a line, as for the `iiiiiiiiii WWWWWWWWWW` headline at one width or two, but
+    /// hardly ever.
     #[test]
     fn counts_never_fall_short_of_the_layout() {
         let mut lines = Lines::new(fonts::font_context());
@@ -681,17 +698,18 @@ mod tests {
         // ways the count doesn't see.
         let stacks =
             [Font::Inter, Font::Geist, Font::SourceSerif, Font::Literata].map(fonts::stack);
+        let sizes = [FontSize::Xxxs, FontSize::M, FontSize::Xxxl].map(crate::scale::headline_px);
         let (mut checked, mut over, mut far) = (0_u32, 0_u32, 0_u32);
-        for stack in &stacks {
+        for (stack, size) in stacks.iter().flat_map(|s| sizes.map(|z| (s, z))) {
             for text in texts {
-                let headline = lines.headline(stack, text);
+                let headline = lines.headline(stack, size, text);
                 for px in (140_u16..=520).step_by(5) {
                     let laid = laid_out(&mut lines, stack, text, f32::from(px));
                     let laid = laid.min(crate::ui::TITLE_LINES);
                     let counted = headline.lines(f64::from(px), crate::ui::TITLE_LINES);
                     assert!(
                         counted >= laid,
-                        "{stack}: {text:?} at {px}: counted {counted}, laid out {laid}"
+                        "{stack} at {size}: {text:?} at {px}: counted {counted}, laid out {laid}"
                     );
                     checked += 1;
                     over += u32::from(counted > laid);
@@ -724,7 +742,10 @@ mod tests {
             })
             .collect();
         let start = std::time::Instant::now();
-        let headlines: Vec<_> = titles.iter().map(|t| lines.headline(STACK, t)).collect();
+        let headlines: Vec<_> = titles
+            .iter()
+            .map(|t| lines.headline(STACK, SIZE, t))
+            .collect();
         let cut = start.elapsed();
         eprintln!("5,000 headlines cut: {cut:?}");
         assert!(cut.as_millis() < 50, "{cut:?}");

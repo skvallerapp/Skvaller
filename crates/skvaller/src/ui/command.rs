@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use dioxus_native::Windows;
 use dioxus_native::prelude::*;
-use skvaller_app::App;
+use skvaller_app::{App, FontSize};
 use skvaller_core::Selection;
 
 use super::manage::Manage;
@@ -96,6 +96,8 @@ pub(crate) enum Command {
     /// Show the account at this place in the list: ⌘1 to ⌘9.
     AccountAt(usize),
     ToggleSidebar,
+    /// A step larger or smaller font size, or M again: ⌘+, ⌘− and ⌘0.
+    FontSize(FontStep),
     /// Open the search field, or focus it.
     Search,
     CloseSearch,
@@ -114,6 +116,42 @@ pub(crate) enum Command {
     /// Return on the open overlay: pick the menu's highlighted item, or answer yes.
     Accept,
     CloseOverlay,
+}
+
+/// How [`Command::FontSize`] changes the font size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FontStep {
+    Larger,
+    Smaller,
+    Reset,
+}
+
+impl FontStep {
+    /// The size after this change of `size`.
+    fn apply(self, size: FontSize) -> FontSize {
+        match self {
+            Self::Larger => size.larger(),
+            Self::Smaller => size.smaller(),
+            Self::Reset => FontSize::M,
+        }
+    }
+
+    /// The change `key` asks for with the command modifier, and Shift if `shift`, by
+    /// the character it types, so it follows the keyboard's layout: `+` is a key of its
+    /// own on some, and Shift and `=` on others, so `=` alone counts as `+`, as browsers
+    /// have it. Only `+` may come with Shift: Shift and `0` types `=` on a Swedish
+    /// keyboard.
+    fn of(key: &Key, shift: bool) -> Option<Self> {
+        let Key::Character(c) = key else {
+            return None;
+        };
+        match (c.as_str(), shift) {
+            ("+", _) | ("=", false) => Some(Self::Larger),
+            ("-", false) => Some(Self::Smaller),
+            ("0", false) => Some(Self::Reset),
+            _ => None,
+        }
+    }
 }
 
 impl From<Action> for Command {
@@ -135,6 +173,7 @@ impl Command {
                 | Self::AddAccount
                 | Self::Account(_)
                 | Self::AccountAt(_)
+                | Self::FontSize(_)
                 | Self::Highlight(_)
                 | Self::Accept
                 | Self::CloseOverlay
@@ -209,6 +248,11 @@ pub(super) fn route(press: &Press, cx: &Context<'_>) -> Route {
     }
     if mods == COMMAND_MODIFIER | Modifiers::SHIFT && *code == Code::KeyS {
         return Route::Run(Command::ToggleSidebar);
+    }
+    if mods - Modifiers::SHIFT == COMMAND_MODIFIER
+        && let Some(step) = FontStep::of(key, mods.contains(Modifiers::SHIFT))
+    {
+        return Route::Run(Command::FontSize(step));
     }
     if let Some(index) = account_index(*code, mods) {
         return if repeat {
@@ -363,6 +407,15 @@ impl Reading {
                 }
             }
             Command::ToggleSidebar => self.toggle_sidebar(app),
+            Command::FontSize(step) => {
+                let now = app.settings().font_size;
+                let size = step.apply(now);
+                if size != now
+                    && let Err(e) = app.change_settings(|s| s.font_size = size)
+                {
+                    tracing::error!("saving the font size failed: {e}");
+                }
+            }
             Command::Search => self.open_search(),
             Command::CloseSearch => self.close_search(),
             Command::Action { action, held } => self.act(app, action, held),
@@ -655,6 +708,42 @@ mod tests {
             ),
             run(Command::ToggleSidebar)
         );
+        assert_eq!(
+            routed(&menu, 1, &chord(command, Code::Equal, "=")),
+            run(Command::FontSize(FontStep::Larger))
+        );
+        // `+` typed with Shift, or on a key of its own, as on a Swedish keyboard.
+        assert_eq!(
+            routed(
+                &menu,
+                1,
+                &chord(command | Modifiers::SHIFT, Code::Equal, "+")
+            ),
+            run(Command::FontSize(FontStep::Larger))
+        );
+        assert_eq!(
+            routed(&menu, 1, &chord(command, Code::Minus, "+")),
+            run(Command::FontSize(FontStep::Larger))
+        );
+        assert_eq!(
+            routed(&menu, 1, &chord(command, Code::Slash, "-")),
+            run(Command::FontSize(FontStep::Smaller))
+        );
+        assert_eq!(
+            routed(&menu, 1, &chord(command, Code::Digit0, "0")),
+            run(Command::FontSize(FontStep::Reset))
+        );
+        // Shift and `0` on a Swedish keyboard: not a size.
+        assert_eq!(
+            routed(
+                &Overlay::None,
+                1,
+                &chord(command | Modifiers::SHIFT, Code::Digit0, "=")
+            ),
+            Route::Pass
+        );
+        assert_eq!(FontStep::Larger.apply(FontSize::Xxxl), FontSize::Xxxl);
+        assert_eq!(FontStep::Reset.apply(FontSize::Xs), FontSize::M);
         let second = chord(ACCOUNT_MODIFIER, Code::Digit2, "2");
         assert_eq!(
             routed(&feed_menu(None), 1, &second),

@@ -90,10 +90,18 @@ The windows, in Dioxus Native (Blitz).
   another list. `leave` says what selecting another list resets. These decisions are
   plain functions, tested without a window, as `overscroll`'s are.
 - `settings`, `add_account`: the Settings window and sign-in.
-- `article`: the reader's `<iframe srcdoc>` document.
+- `article`: the reader's `<iframe srcdoc>` document. A new look (theme, fonts, size,
+  line width) remakes it, and the frame loads it from the top: `ui`'s `Remake` reads
+  the place first, as a share of how far the frame scrolls, hides the new frame and
+  scrolls it back there once its layout holds still. Images that load after that move
+  it a little.
 - `thumbs`: serves cached thumbnails to `<img>` through `thumb:` URLs.
 - `lines`: counts the lines a headline wraps to, from each character's advance, so
   the list sizes its rows without measuring them.
+- `scale`: the font size setting. Each kind of text has its own range, a factor on its
+  size at M, which app.css reads as variables on the main window's root and the
+  article's document through `article::Look`. The sizes the sidebar and the list
+  are placed from come from here too, so the CSS and the arithmetic agree.
 - `place`: where a scrolled list is, as plain arithmetic on row offsets: the article
   list's visible rows, how it keeps its place from one render to the next (`Keeper`),
   and how far to scroll to show a row, for the article list, `dropdown`, and the
@@ -173,14 +181,14 @@ The windows, in Dioxus Native (Blitz).
 - **5,000+ items scroll smoothly.** The list renders only the visible rows plus some
   either side (`place::visible_rows`). Rows are placed from computed heights, never
   measured: each fits its headline's lines, as `lines` counts them at the width the
-  list shows, and its thumbnail. A headline is cut once, where it may wrap, so a
-  new width only wraps the pieces again. It is clamped to its count, so one counted
-  short loses its last line rather than showing half of it. When the heights change,
-  the list keeps its place (`place::Keeper`). Thumbnails are served cropped to their box,
-  since Blitz keeps every image decoded. The Large box is 16:9 at the list's width;
-  its image is served for the saved width in steps of 40 px, so resizing the list
-  loads new thumbnails only now and then. `--seed-test <count>` fills a local account
-  for testing this.
+  list shows and the font size (`scale`), and its thumbnail. A headline is cut once,
+  where it may wrap, so a new width only wraps the pieces again. It is clamped to its
+  count, so one counted short loses its last line rather than showing half of it.
+  When the heights change, the list keeps its place (`place::Keeper`). Thumbnails
+  are served cropped to their box, since Blitz keeps every image decoded. The Large
+  box is 16:9 at the list's width; its image is served for the saved width in steps
+  of 40 px, so resizing the list loads new thumbnails only now and then.
+  `--seed-test <count>` fills a local account for testing this.
 - **One font scan.** `fonts::font_context` scans the system's fonts once; each window
   and the line counter get a copy that shares it. The collection isn't shared, so an
   article's web fonts stay in its frame.

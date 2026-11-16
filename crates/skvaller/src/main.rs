@@ -22,6 +22,7 @@ mod live;
 mod menu;
 mod overscroll;
 mod place;
+mod scale;
 mod settings;
 #[cfg(target_os = "linux")]
 mod shadow;

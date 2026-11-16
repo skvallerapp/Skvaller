@@ -18,8 +18,8 @@ use dioxus_native::{
     BlitzScrollSource, BlitzWheelPhase, NativeWheelData, use_window, use_window_event, use_windows,
 };
 use skvaller_app::{
-    App, Error as AppError, LIST_WIDTH, Layout, Library, MarkReadOn, PaneWidth, SIDEBAR_WIDTH,
-    SortSubscriptions, SyncStatus, ThumbnailSize,
+    App, Error as AppError, FontSize, LIST_WIDTH, Layout, Library, MarkReadOn, PaneWidth,
+    SIDEBAR_WIDTH, SortSubscriptions, SyncStatus, ThumbnailSize,
 };
 use skvaller_core::{ArticleSummary, Counts, Scope, Selection, View};
 use tokio::sync::broadcast::error::RecvError;
@@ -32,10 +32,11 @@ use crate::i18n::{t, t_count, t_with};
 use crate::icons::{
     CHECK, CHEVRON_RIGHT, Icon, LAYERS, PANEL_LEFT, ROTATE_CW, SEARCH, SETTINGS, X,
 };
-use crate::lines::{self, Lines};
+use crate::lines::Lines;
 use crate::live::{Live, use_live};
 use crate::overscroll::{Edges, HOLD, Out, Overscroll, SPRING_EASE, Shown, WHEEL_IDLE};
 use crate::place::{Keeper, ListView, Place, differs, reveal, reveal_row};
+use crate::scale;
 use crate::settings::SettingsWindow;
 use crate::shortcuts::{ACCOUNT_MODIFIER, Action, COMMAND_MODIFIER};
 use crate::spin::Spin;
@@ -60,10 +61,15 @@ pub(crate) const APP_CSS: &str = include_str!("app.css");
 const PAD_Y: f64 = 11.0;
 /// A row's padding at either side (`.row`).
 const PAD_X: f64 = 20.0;
-/// The meta line, 12 px at a line height of 1.3, and the gap below it (`.title`).
-const META: f64 = 12.0 * 1.3 + 3.0;
-/// A headline line: its font size at a line height of 1.3 (`.title`).
-const TITLE_LINE: f64 = lines::SIZE as f64 * 1.3;
+/// The meta line, at a line height of 1.3, and the gap below it (`.title`), at
+/// `font_size`.
+fn meta(font_size: FontSize) -> f64 {
+    scale::meta_px(font_size) * 1.3 + 3.0
+}
+/// A headline line: its font size at a line height of 1.3 (`.title`), at `font_size`.
+fn title_line(font_size: FontSize) -> f64 {
+    scale::headline_px(font_size) * 1.3
+}
 /// The most lines a headline shows: rows count it to at most this many, and its `.title`
 /// is clamped to the count.
 pub(crate) const TITLE_LINES: u32 = 6;
@@ -129,11 +135,11 @@ pub(crate) const FRAME: Duration = Duration::from_millis(16);
 /// just mounted: its size and scroll range are 0 until then.
 pub(crate) const LAYOUT_WAITS: u32 = 10;
 
-/// A sidebar row's height: app.css's `.item`. The selection's highlight is placed from
-/// these sizes, never by measuring: Blitz may answer a measure before its layout.
-const SIDEBAR_ROW: f64 = 28.0;
-/// The Feeds heading's height and its top and bottom margins: app.css's `.heading`.
-const SIDEBAR_HEADING: f64 = 14.0 + 14.0 + 4.0;
+/// The Feeds heading's top and bottom margins: app.css's `.heading`. The selection's
+/// highlight is placed from them, the heading's height and the rows'
+/// (`scale::heading_height`, `scale::sidebar_row`), never by measuring: Blitz may
+/// answer a measure before its layout.
+const SIDEBAR_HEADING_MARGINS: f64 = 14.0 + 4.0;
 /// The feeds' top padding: app.css's `.feeds`.
 const SIDEBAR_TOP: f64 = 4.0;
 
@@ -1362,7 +1368,8 @@ pub fn Root() -> Element {
     let drag_app = Arc::clone(&app);
     let settings_now = live.settings.read();
     let theme = article::theme_name((live.theme)());
-    let root_style = chrome::root_style(&fonts::stack(settings_now.ui_font), (live.frame)());
+    let root_style = chrome::root_style(&fonts::stack(settings_now.ui_font), (live.frame)())
+        + &scale::root_style(settings_now.font_size);
     let framed = (window_state.framed)();
     let motion = motion(settings_now.animations);
     drop(settings_now);
@@ -1733,6 +1740,7 @@ fn Sidebar() -> Element {
         .map(|a| a.description)
         .unwrap_or_default();
     let sort = live.settings.read().sort_subscriptions;
+    let font_size = use_memo(move || live.settings.read().font_size);
     let entries = sidebar_tree(
         &lib,
         current.view,
@@ -1745,12 +1753,14 @@ fn Sidebar() -> Element {
     // Pulled past their ends, the feeds stretch, with no refresh.
     let pull = use_hook(|| Pull::new(&live, feeds_pane, None));
     // Unlike the article list, the feeds don't know their scroll range: measured again
-    // when rows come or go, a folder opens or closes, or the window resizes.
+    // when rows come or go, a folder opens or closes, the rows grow or shrink with the
+    // font size, or the window resizes.
     use_effect(move || {
         reading.library.read();
         reading.collapsed.read();
         reading.pinned.read();
         reading.window_size.read();
+        font_size.read();
         spawn(async move {
             tokio::time::sleep(FOLDER_SLIDE + FRAME).await;
             pull.measure().await;
@@ -1775,7 +1785,7 @@ fn Sidebar() -> Element {
     let folded = *last_collapsed.borrow() != collapsed;
     last_collapsed.replace(collapsed);
     let highlight = row.map(|i| {
-        let place = sidebar_place(i);
+        let place = sidebar_place(i, font_size());
         let settles = settle
             .borrow_mut()
             .settles(current.scope.clone(), place.top);
@@ -1799,7 +1809,7 @@ fn Sidebar() -> Element {
         let scrolls = Rc::clone(&scrolls);
         spawn(async move {
             // Every feed's row shows the top too.
-            let place = sidebar_place(index);
+            let place = sidebar_place(index, *font_size.peek());
             let top = if index == 0 { 0.0 } else { place.top };
             let row = Reveal::Span(top, place.top + place.height);
             scroll_into_view(&pane, row, || scrolls.get() == scroll).await;
@@ -1859,7 +1869,7 @@ fn Sidebar() -> Element {
                                 feeds.into_iter().map(|f| (f.clone(), count_of(&f.id))).collect();
                             rsx! {
                                 ScopeItem { key: "folder-{folder.id}", scope, title: folder.title.clone(), count, nested: false, expanded }
-                                FolderFeeds { feeds, expanded }
+                                FolderFeeds { feeds, expanded, row: scale::sidebar_row(font_size()) }
                             }
                         }
                         Entry::Feed(feed) => rsx! {
@@ -2245,10 +2255,10 @@ fn AccountSwitcher() -> Element {
 }
 
 /// A folder's feeds, with their unread counts, under its row. They slide open and
-/// closed: the box's height goes from 0 to its rows' or back,
-/// and closing, the rows stay in it until the slide ends.
+/// closed: the box's height goes from 0 to its rows', each `row` high, or back, and
+/// closing, the rows stay in it until the slide ends.
 #[component]
-fn FolderFeeds(feeds: Vec<(skvaller_core::Feed, i64)>, expanded: bool) -> Element {
+fn FolderFeeds(feeds: Vec<(skvaller_core::Feed, i64)>, expanded: bool, row: f64) -> Element {
     let shown = use_closing(expanded, FOLDER_SLIDE);
     // Whether the folder last opened or closed, and when: only that slides the box, not
     // a sync adding or removing a feed, which moves the rows and highlight at once.
@@ -2264,7 +2274,7 @@ fn FolderFeeds(feeds: Vec<(skvaller_core::Feed, i64)>, expanded: bool) -> Elemen
         "folder-feeds"
     };
     let rows = if expanded { feeds.len() } else { 0 };
-    let height = f64::from(u32::try_from(rows).unwrap_or(u32::MAX)) * SIDEBAR_ROW;
+    let height = f64::from(u32::try_from(rows).unwrap_or(u32::MAX)) * row;
     let feeds = if shown { feeds } else { Vec::new() };
     rsx! {
         div { class, style: "height: {height}px",
@@ -2396,13 +2406,18 @@ pub(crate) async fn scroll_into_view(
 }
 
 /// Where the sidebar's row `index` is, counted as [`sidebar_scopes`] lists them: all
-/// feeds, then after the Feeds heading each folder and feed shown.
-fn sidebar_place(index: usize) -> Place {
+/// feeds, then after the Feeds heading each folder and feed shown, at `font_size`.
+fn sidebar_place(index: usize, font_size: FontSize) -> Place {
     let rows = f64::from(u32::try_from(index).unwrap_or(u32::MAX));
-    let heading = if index > 0 { SIDEBAR_HEADING } else { 0.0 };
+    let row = scale::sidebar_row(font_size);
+    let heading = if index > 0 {
+        scale::heading_height(font_size) + SIDEBAR_HEADING_MARGINS
+    } else {
+        0.0
+    };
     Place {
-        top: SIDEBAR_TOP + heading + rows * SIDEBAR_ROW,
-        height: SIDEBAR_ROW,
+        top: SIDEBAR_TOP + heading + rows * row,
+        height: row,
     }
 }
 
@@ -2771,19 +2786,22 @@ fn Viewport() -> Element {
     // What sizes the rows, apart from the rows themselves.
     let size = use_memo(move || live.settings.read().thumbnail_size);
     let font = use_memo(move || live.settings.read().ui_font);
+    let font_size = use_memo(move || live.settings.read().font_size);
     let shown_width = use_memo(move || reading.list_shown_width());
-    // Each row's headline cut where it may wrap: again only for new rows or a new font.
+    // Each row's headline cut where it may wrap: again only for new rows or a new font
+    // or size.
     let headlines = use_memo(move || {
         let stack = fonts::stack(font());
+        let px = scale::headline_px(font_size());
         let rows = &reading.articles.read().rows;
         cutter
             .borrow_mut()
-            .headlines(&stack, rows.iter().map(|a| a.title.as_str()))
+            .headlines(&stack, px, rows.iter().map(|a| a.title.as_str()))
     });
     // How many lines each row's headline takes, and where each row starts, at the width
     // the list shows, as during a drag.
     let placed = use_memo(move || {
-        let (size, width) = (size(), shown_width());
+        let (size, width, font_size) = (size(), shown_width(), font_size());
         let headlines = headlines();
         let rows = &reading.articles.read().rows;
         debug_assert_eq!(rows.len(), headlines.len(), "headlines cut from other rows");
@@ -2792,7 +2810,7 @@ fn Viewport() -> Element {
             .zip(headlines.iter())
             .map(|(a, h)| h.lines(title_width(size, width, a.thumbnail), TITLE_LINES))
             .collect();
-        let offsets = row_offsets(rows, size, width, &counts);
+        let offsets = row_offsets(rows, size, font_size, width, &counts);
         (Rc::<[f64]>::from(offsets), counts)
     });
     let mut keeper = use_hook(|| CopyValue::new(Keeper::default()));
@@ -2841,6 +2859,7 @@ fn Viewport() -> Element {
     });
 
     let size = size();
+    let font_size = font_size();
     let width = shown_width();
     let listed = reading.articles.read();
     let list = &listed.rows;
@@ -2929,7 +2948,7 @@ fn Viewport() -> Element {
                 starred: reading.is_starred(a),
                 date: dates.list(a.published),
                 title: a.title.clone(),
-                title_height: f64::from(counts[i]) * TITLE_LINE,
+                title_height: f64::from(counts[i]) * title_line(font_size),
                 thumb: a.thumbnail.then(|| thumbs::url(&account, &a.id, fit)),
             }
         })
@@ -3281,8 +3300,31 @@ fn Reader() -> Element {
     let mut reading = use_context::<Reading>();
     let live = use_context::<Live>();
     // Only what the document shows remakes it: remade, the frame loads again, back at
-    // the top.
+    // the top, so a new look keeps the article's place (`Remake::keep_place`).
     let look = use_memo(move || article::Look::new(&live.settings.read(), (live.theme)()));
+    let remake = use_hook(|| Remake {
+        look: Signal::new(*look.peek()),
+        count: Signal::new(0),
+        article: Signal::new(None),
+        kept: CopyValue::new(None),
+        frame: Signal::new(None),
+        hidden: Signal::new(false),
+    });
+    use_effect(move || {
+        let next = look();
+        if next != *remake.look.peek() {
+            spawn(remake.keep_place(reading.frame, reading.article, look, next));
+        }
+    });
+    // Another article opening forgets the one remade: it fades in, and so does the remade
+    // one opened again.
+    use_effect(move || {
+        let id = reading.article.read().as_ref().map(|a| a.id.clone());
+        let mut remade = remake.article;
+        if *remade.peek() != id && remade.peek().is_some() {
+            remade.set(None);
+        }
+    });
     // The Reader View text to show, apart: its loading states don't remake the document.
     let full_text = use_memo(move || {
         let rv = reading.reader_view.read();
@@ -3301,7 +3343,11 @@ fn Reader() -> Element {
             let lib = reading.library.peek();
             let feed = lib.feeds.iter().find(|f| f.id == a.feed_id);
             let date = live.dates.read().full(a.published);
-            Some(article::document(&a, feed, &html, &date, look()))
+            let mut look = (remake.look)();
+            if (remake.article).read().as_ref() == Some(&a.id) {
+                look.animations = false;
+            }
+            Some(article::document(&a, feed, &html, &date, look))
         }
     });
     let open = reading.open_article();
@@ -3339,15 +3385,140 @@ fn Reader() -> Element {
                 Some(_) if holding => rsx! {},
                 Some(doc) => rsx! {
                     iframe {
-                        // Remade for new content, which then loads from the top.
-                        key: "{full_text.read().is_some()}-{doc.len()}",
+                        // Remade for new content, which then loads from the top, and for
+                        // a new look, which keeps its place.
+                        key: "{full_text.read().is_some()}-{doc.len()}-{remake.count}",
                         title: "",
+                        style: if (remake.hidden)() { "visibility: hidden" },
                         "srcdoc": doc,
-                        onmounted: move |e: MountedEvent| reading.frame.set(Some(e.data())),
+                        onmounted: {
+                            let (made, mut mounted) = (*remake.count.peek(), remake.frame);
+                            move |e: MountedEvent| {
+                                reading.frame.set(Some(e.data()));
+                                mounted.set(Some((made, e.data())));
+                            }
+                        },
                     }
                 },
                 None => rsx! { p { class: "empty", {t("reader.empty")} } },
             }
+        }
+    }
+}
+
+/// How long a new look waits at most for the remade article's layout to put it back in
+/// its place: a long article takes a while to lay out.
+const PLACE_WAITS: u32 = 60;
+
+/// The reader's document as a new look remakes it.
+#[derive(Clone, Copy)]
+struct Remake {
+    /// The look the document is made in.
+    look: Signal<article::Look>,
+    /// Bumped for each look: it keys the frame, so the remade one mounts anew.
+    count: Signal<u64>,
+    /// The article whose remade frame is to be put back at a place, and the place, while
+    /// it waits for its layout.
+    kept: CopyValue<Option<(String, f64)>>,
+    /// The frame last mounted, with the `count` it was made at: the one to put back is
+    /// the one made for its look, not one a newer look is already replacing.
+    frame: Signal<Option<(u64, Rc<MountedData>)>>,
+    /// The remade frame hides until it is in its place, so it doesn't show the top, nor
+    /// its fade in, first.
+    hidden: Signal<bool>,
+    /// The article the document was last remade for: remade, it doesn't fade in again
+    /// as an article opening does.
+    article: Signal<Option<String>>,
+}
+
+impl Remake {
+    /// Shows the article in the look `next`, the newest of `look`, at the place it is
+    /// scrolled to now in `frame`, while `article` stays open.
+    ///
+    /// A new look remakes the reader's document, and the frame loads it from the top. So
+    /// the place, as a share of how far the frame scrolls, is read first, and the remade
+    /// frame scrolls there as it lays out, until its height holds still. A look changed
+    /// again meanwhile, as by ⌘+ held down, keeps the place `kept` is waiting to
+    /// restore rather than reading it from a frame still loading.
+    async fn keep_place(
+        mut self,
+        frame: Signal<Option<Rc<MountedData>>>,
+        article: Signal<Option<ArticleSummary>>,
+        look: Memo<article::Look>,
+        next: article::Look,
+    ) {
+        let Some(id) = article.peek().as_ref().map(|a| a.id.clone()) else {
+            self.look.set(next);
+            return;
+        };
+        let kept = self.kept.peek().clone().filter(|(kept, _)| *kept == id);
+        let old = frame.peek().clone();
+        let place = match (kept, &old) {
+            (Some((_, place)), _) => Some(place),
+            (None, Some(frame)) => match (
+                frame.get_scroll_offset().await,
+                frame.get_scroll_size().await,
+            ) {
+                (Ok(offset), Ok(range)) if range.height > 0.0 => Some(offset.y / range.height),
+                _ => None,
+            },
+            (None, None) => None,
+        };
+        // A newer look came meanwhile: its own call shows it.
+        if *look.peek() != next {
+            return;
+        }
+        let place = place.filter(|&p| p > 0.0);
+        self.kept.set(place.map(|p| (id.clone(), p)));
+        self.hidden.set(place.is_some());
+        self.look.set(next);
+        self.count += 1;
+        if article.peek().as_ref().map(|a| &a.id) == Some(&id) {
+            self.article.set(Some(id.clone()));
+        }
+        let made = *self.count.peek();
+        if let Some(place) = place {
+            let mut last = None;
+            // Frames the new frame has had no scroll range: at a smaller size it may no
+            // longer scroll at all.
+            let mut unscrolled = 0;
+            for _ in 0..PLACE_WAITS {
+                tokio::time::sleep(FRAME).await;
+                // A newer look's call has the place and the frame now.
+                if *self.count.peek() != made {
+                    return;
+                }
+                if article.peek().as_ref().map(|a| &a.id) != Some(&id) {
+                    break;
+                }
+                let now = self.frame.peek().clone();
+                let Some((_, now)) = now.filter(|&(at, _)| at == made) else {
+                    continue;
+                };
+                let Ok(range) = now.get_scroll_size().await else {
+                    break;
+                };
+                if range.height <= 0.0 {
+                    unscrolled += 1;
+                    if unscrolled >= LAYOUT_WAITS {
+                        break;
+                    }
+                    continue;
+                }
+                let to = dioxus_html::geometry::PixelsVector2D::new(0.0, place * range.height);
+                if let Err(e) = now.scroll(to, ScrollBehavior::Instant).await {
+                    tracing::warn!("keeping the article's place failed: {e}");
+                    break;
+                }
+                if last == Some(range.height) {
+                    break;
+                }
+                last = Some(range.height);
+            }
+        }
+        if *self.count.peek() == made {
+            self.kept.set(None);
+            self.hidden.set(false);
         }
     }
 }
@@ -3561,21 +3732,24 @@ fn title_width(size: ThumbnailSize, list_width: f64, thumbnail: bool) -> f64 {
 
 /// Where each of `rows` starts, in CSS pixels, and then where the last one ends.
 ///
-/// A row fits its headline's lines, `counts` for each row at its width (`title_width`),
-/// and its thumbnail: one beside the text at least as tall as it, a Large one below.
-/// Each height is rounded up to a whole pixel, so rows never start between pixels.
+/// A row fits its headline's lines, `counts` for each row at its width (`title_width`)
+/// and `font_size`, and its thumbnail: one beside the text at least as tall as
+/// it, a Large one below. Each height is rounded up to a whole pixel, so rows never
+/// start between pixels.
 fn row_offsets(
     rows: &[ArticleSummary],
     size: ThumbnailSize,
+    font_size: FontSize,
     list_width: f64,
     counts: &[u32],
 ) -> Vec<f64> {
+    let (meta, title_line) = (meta(font_size), title_line(font_size));
     let large = (size == ThumbnailSize::Large).then(|| LARGE_GAP + large_height(list_width));
     let mut offsets = Vec::with_capacity(rows.len() + 1);
     let mut at = 0.0;
     offsets.push(at);
     for (a, &lines) in rows.iter().zip(counts) {
-        let mut content = META + f64::from(lines) * TITLE_LINE;
+        let mut content = meta + f64::from(lines) * title_line;
         if let Some(thumb) = thumb_beside(size).filter(|_| a.thumbnail) {
             content = content.max(THUMB_MARGIN + thumb);
         } else if let Some(large) = large.filter(|_| a.thumbnail) {
@@ -3649,7 +3823,7 @@ mod tests {
             .iter()
             .map(|a| count_lines(&a.title, title_width(size, width, a.thumbnail)))
             .collect();
-        row_offsets(rows, size, width, &counts)
+        row_offsets(rows, size, FontSize::M, width, &counts)
     }
 
     #[test]
@@ -3679,7 +3853,8 @@ mod tests {
             let offsets = place(&list, size, width);
             offsets.windows(2).map(|w| w[1] - w[0]).collect::<Vec<_>>()
         };
-        let line = |n: f64| (2.0 * PAD_Y + META + n * TITLE_LINE).ceil();
+        let (meta, title_line) = (meta(FontSize::M), title_line(FontSize::M));
+        let line = |n: f64| (2.0 * PAD_Y + meta + n * title_line).ceil();
         // At 340 px, the text is 300 px wide: the 450 px headline takes two lines, the
         // longest six, however long.
         assert_eq!(
@@ -3695,7 +3870,7 @@ mod tests {
             [medium, line(1.0), line(3.0), line(6.0)]
         );
         // A Large thumbnail is 16:9 at the text's width: 300 × 169, then 600 × 338.
-        let large = |n: f64, h: f64| (2.0 * PAD_Y + META + n * TITLE_LINE + LARGE_GAP + h).ceil();
+        let large = |n: f64, h: f64| (2.0 * PAD_Y + meta + n * title_line + LARGE_GAP + h).ceil();
         assert_eq!(
             heights(ThumbnailSize::Large, 340.0),
             [large(1.0, 169.0), line(1.0), large(2.0, 169.0), line(6.0)]
@@ -4081,7 +4256,7 @@ mod tests {
     #[test]
     fn sidebar_rows_are_placed_after_the_heading() {
         assert_eq!(
-            sidebar_place(0),
+            sidebar_place(0, FontSize::M),
             Place {
                 top: 4.0,
                 height: 28.0
@@ -4089,14 +4264,14 @@ mod tests {
         );
         // Feeds start after all feeds' row and the heading: 14 px high, 18 px of margins.
         assert_eq!(
-            sidebar_place(1),
+            sidebar_place(1, FontSize::M),
             Place {
                 top: 64.0,
                 height: 28.0
             }
         );
         assert_eq!(
-            sidebar_place(3),
+            sidebar_place(3, FontSize::M),
             Place {
                 top: 120.0,
                 height: 28.0
