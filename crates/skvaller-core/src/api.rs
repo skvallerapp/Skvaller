@@ -306,7 +306,6 @@ impl Client {
 
     fn get(&self, path: &str) -> RequestBuilder {
         self.authed(self.http.get(self.url(path)))
-            .query(&[("output", "json")])
     }
 
     fn post(&self, path: &str) -> RequestBuilder {
@@ -322,7 +321,8 @@ impl Client {
     }
 
     async fn json<T: DeserializeOwned>(&self, req: RequestBuilder) -> Result<T> {
-        let res = req.send().await?;
+        // In the query even for a POST: The Old Reader answers in XML without it.
+        let res = req.query(&[("output", "json")]).send().await?;
         check(res.status())?;
         // A body that isn't the expected JSON, such as a proxy's sign-in page, is the
         // server's fault, not the network's.
