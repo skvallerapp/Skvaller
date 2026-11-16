@@ -269,7 +269,9 @@ fn SignIn(
         error.set(None);
         let app = Arc::clone(&app);
         spawn(async move {
-            let signed_in = app.sign_in(&address, &user, &secret).await;
+            // Any other server is named after its address.
+            let name = (service != Service::Other).then(|| service.name());
+            let signed_in = app.sign_in(&address, &user, &secret, name.as_deref()).await;
             busy.set(false);
             match signed_in {
                 Ok(id) => {

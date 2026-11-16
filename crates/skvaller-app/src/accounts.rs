@@ -20,7 +20,8 @@ const MAX_OPML_BYTES: u64 = 10 * 1024 * 1024;
 
 impl App {
     /// Signs in to a Google Reader API server, saves the token in the keychain, and
-    /// makes the account the active one. Returns its ID.
+    /// makes the account the active one. Returns its ID. A new account is called `name`,
+    /// such as its service's, or else after its server.
     ///
     /// An account already added, such as one whose token the server rejected, gets the
     /// new token and syncs again; any other becomes a new account, which syncs at once.
@@ -40,18 +41,23 @@ impl App {
         server: &str,
         username: &str,
         password: &str,
+        name: Option<&str>,
     ) -> Result<String> {
         let app = Arc::clone(self);
-        let (server, username, password) = (
+        let (server, username, password, name) = (
             server.trim().to_owned(),
             username.trim().to_owned(),
             password.to_owned(),
+            name.map(str::to_owned),
         );
         // On the sync runtime, which the network client needs, away from the UI.
         self.sync_runtime
             .get()
             .expect("start_sync runs before signing in")
-            .spawn(async move { app.sign_in_now(&server, &username, &password).await })
+            .spawn(async move {
+                app.sign_in_now(&server, &username, &password, name.as_deref())
+                    .await
+            })
             .await
             .map_err(|e| Error::Core(skvaller_core::Error::Local(e.to_string())))?
     }
@@ -61,6 +67,7 @@ impl App {
         server: &str,
         username: &str,
         password: &str,
+        name: Option<&str>,
     ) -> Result<String> {
         let client = Client::login(server, username, password).await?;
         // The API address that answered, which may have FreshRSS's path added.
@@ -76,7 +83,7 @@ impl App {
             .await
             .map_err(|e| Error::Core(skvaller_core::Error::Local(e.to_string())))??;
 
-        let (rt, added) = self.add_account(&kind)?;
+        let (rt, added) = self.add_account(&kind, name)?;
         if added {
             // Its first sync, just started, may use this client or the saved token.
             *lock(&rt.client) = Some(client);
@@ -101,14 +108,19 @@ impl App {
     /// [`Error::Io`] when config.json can't be saved, and [`Error::Core`] when its cache
     /// can't be made.
     pub fn add_local_account(self: &Arc<Self>) -> Result<String> {
-        let (rt, _) = self.add_account(&AccountKind::Local)?;
+        let (rt, _) = self.add_account(&AccountKind::Local, None)?;
         self.announce();
         Ok(rt.id.clone())
     }
 
     /// Makes the account of `kind` active, adding it first if there is none: then it
-    /// gets a new ID and its background sync starts. Says whether it was added.
-    fn add_account(self: &Arc<Self>, kind: &AccountKind) -> Result<(Arc<Runtime>, bool)> {
+    /// gets a new ID, the name `name` or else its default one, and its background sync
+    /// starts. Says whether it was added.
+    fn add_account(
+        self: &Arc<Self>,
+        kind: &AccountKind,
+        name: Option<&str>,
+    ) -> Result<(Arc<Runtime>, bool)> {
         let existing = |config: &Config| {
             config
                 .accounts
@@ -130,7 +142,7 @@ impl App {
         };
         let account = {
             let config = lock(&self.config);
-            let mut description = default_description(kind);
+            let mut description = name.map_or_else(|| default_description(kind), str::to_owned);
             if config.accounts.iter().any(|a| a.description == description)
                 && let AccountKind::Greader { username, .. } = kind
             {

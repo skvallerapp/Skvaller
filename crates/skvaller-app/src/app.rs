@@ -785,8 +785,8 @@ fn move_old_cache(data_dir: &Path, accounts_dir: &Path, config: &Config) -> Resu
     Ok(())
 }
 
-/// The name an account gets until the user changes it: `FreshRSS`, the server's host
-/// name, or `Local`.
+/// The name an account gets until the user changes it: `FreshRSS`, `The Old Reader`, the
+/// server's host name, or `Local`.
 pub(crate) fn default_description(kind: &AccountKind) -> String {
     match kind {
         AccountKind::Greader { server, .. } => {
@@ -794,11 +794,14 @@ pub(crate) fn default_description(kind: &AccountKind) -> String {
                 .split_once("://")
                 .map_or(server.as_str(), |(_, rest)| rest);
             let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+            let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
+            let host = host.split(':').next().unwrap_or(host);
             if path.trim_end_matches('/').ends_with("api/greader.php") {
                 "FreshRSS".to_owned()
+            } else if host == "theoldreader.com" {
+                "The Old Reader".to_owned()
             } else {
-                let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
-                host.split(':').next().unwrap_or(host).to_owned()
+                host.to_owned()
             }
         }
         AccountKind::Local => "Local".to_owned(),
@@ -940,6 +943,22 @@ pub(crate) mod tests {
         assert_eq!(
             std::fs::read(dirs.config_file().with_extension("json.bak")).unwrap(),
             raw
+        );
+    }
+
+    #[test]
+    fn a_sync_account_is_named_after_its_service_or_host() {
+        let name = |server: &str| {
+            default_description(&AccountKind::Greader {
+                server: server.into(),
+                username: "me".into(),
+            })
+        };
+        assert_eq!(name("https://rss.example.org/api/greader.php"), "FreshRSS");
+        assert_eq!(name("https://theoldreader.com"), "The Old Reader");
+        assert_eq!(
+            name("https://news.example.org:8080/reader"),
+            "news.example.org"
         );
     }
 
