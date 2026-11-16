@@ -127,6 +127,7 @@ The windows, in Dioxus Native (Blitz).
   `Reading::run`, as it does its keys. Its account items' keys, ⌘1 to ⌘9, are
   `shortcuts::ACCOUNT_KEYS`, as the window's are. `build.rs` embeds `Info.plist` so the menu bar names the app Skvaller.
   Windows and Linux have no menu bar.
+- `spin`: when the sync icon turns and stops, as plain state.
 - `i18n`, `dates`, `fonts`, `icons`, `shortcuts`: text, date formats, font stacks,
   icons and keys: the bindings, the account chords and how the arrow keys move a
   menu's highlight, shared by the window's menus and `dropdown`.
@@ -144,7 +145,8 @@ The windows, in Dioxus Native (Blitz).
 - **One `VirtualDom` per window.** Windows share only the `Arc<App>` they're given.
   Each follows the app through `live::use_live` and its own `subscribe()`.
 - **One sync per account at a time.** A second one asked for meanwhile reports `Busy`
-  instead of queueing (`gate`).
+  instead of queueing (`gate`). `sync_now` hands back a wait that ends with the
+  account's sync, its own or the one it found running: pull to refresh awaits it.
 
 ## Invariants
 

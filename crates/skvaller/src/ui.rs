@@ -38,6 +38,7 @@ use crate::overscroll::{Edges, HOLD, Out, Overscroll, SPRING_EASE, Shown, WHEEL_
 use crate::place::{Keeper, ListView, Place, differs, reveal, reveal_row};
 use crate::settings::SettingsWindow;
 use crate::shortcuts::{ACCOUNT_MODIFIER, Action, COMMAND_MODIFIER};
+use crate::spin::Spin;
 use crate::thumbs;
 
 mod command;
@@ -121,9 +122,6 @@ const LIST_SLIDE: Duration = Duration::from_millis(320);
 /// which on a slow machine may be a few frames after the mark. Ending the slide early
 /// would snap the next list the last pixels into place.
 const GHOST_STAYS: Duration = LIST_SLIDE.saturating_add(Duration::from_millis(3 * 16));
-
-/// One turn of the sync icon: app.css's `spin` on `.sync.spinning`.
-const SPIN_TURN: Duration = Duration::from_millis(900);
 
 /// A frame, at 60 Hz.
 pub(crate) const FRAME: Duration = Duration::from_millis(16);
@@ -952,14 +950,14 @@ impl Reading {
         }
     }
 
-    fn sync(mut self, app: &Arc<App>) {
-        let (Some(account), app) = (self.account.peek().clone(), Arc::clone(app)) else {
-            return;
-        };
+    /// Syncs the shown account. Returns a wait that ends with its sync, as
+    /// [`App::sync_now`] says.
+    fn sync(mut self, app: &Arc<App>) -> Option<impl Future<Output = ()> + use<>> {
+        let account = self.account.peek().clone()?;
         self.syncs_asked += 1;
-        if let Err(e) = app.sync_now(&account) {
-            tracing::error!("syncing failed: {e}");
-        }
+        app.sync_now(&account)
+            .inspect_err(|e| tracing::error!("syncing failed: {e}"))
+            .ok()
     }
 
     /// The shown account's collapsed folders, without subscribing to changes.
@@ -1913,63 +1911,32 @@ fn Feeds(pull: Pull, children: Element) -> Element {
     }
 }
 
-/// Whether the sync icon turns: while a sync runs, and after it until a whole turn ends,
-/// one at least from when it began or was asked for, so a quick sync still shows and the
-/// icon never stops askew. With
-/// Settings → Animations off it shows the sync only while it runs, dimmed.
+/// Whether the sync icon turns, as [`Spin`] says.
 fn use_spin(status: Signal<Option<SyncStatus>>, asked: Signal<u64>) -> bool {
     let live = use_context::<Live>();
     let syncing = use_memo(move || status.read().as_ref().is_some_and(|s| s.syncing));
-    let mut spinning = use_signal(|| false);
-    // When the icon began turning; counts the stops asked for, so a sync starting again
-    // keeps the icon turning past an earlier stop; the syncs asked for when this last ran.
-    let started = use_hook(|| Rc::new(std::cell::Cell::new(None::<Instant>)));
-    let stops = use_hook(|| Rc::new(std::cell::Cell::new(0_u64)));
-    let seen = use_hook(|| Rc::new(std::cell::Cell::new(*asked.peek())));
+    let mut spin = use_hook(|| CopyValue::new(Spin::new(*asked.peek())));
+    let mut turning = use_signal(|| false);
     use_effect(move || {
-        let syncing = syncing();
-        let asked = asked();
-        let stop = stops.get() + 1;
-        stops.set(stop);
-        // A sync asked for may already have ended, its running status unseen.
-        if syncing || asked != seen.replace(asked) {
-            if started.get().is_none() {
-                started.set(Some(Instant::now()));
-            }
-            if !*spinning.peek() {
-                spinning.set(true);
-            }
+        let (syncing, asked) = (syncing(), asked());
+        let animate = live.settings.peek().animations;
+        let stop = spin.write().follow(syncing, asked, Instant::now(), animate);
+        let turns = spin.peek().turning();
+        let shown = *turning.peek();
+        if turns != shown {
+            turning.set(turns);
         }
-        if syncing {
-            return;
+        if let Some(stop) = stop {
+            spawn(async move {
+                tokio::time::sleep(stop.wait).await;
+                let stopped = spin.write().stop(stop);
+                if stopped {
+                    turning.set(false);
+                }
+            });
         }
-        let Some(start) = started.get() else {
-            return;
-        };
-        let (started, stops) = (Rc::clone(&started), Rc::clone(&stops));
-        let wait = if live.settings.peek().animations {
-            rest_of_turn(start.elapsed())
-        } else {
-            Duration::ZERO
-        };
-        spawn(async move {
-            tokio::time::sleep(wait).await;
-            if stops.get() == stop {
-                started.set(None);
-                spinning.set(false);
-            }
-        });
     });
-    spinning()
-}
-
-/// How much longer a spin that began `elapsed` ago turns to end a whole [`SPIN_TURN`],
-/// one at least.
-fn rest_of_turn(elapsed: Duration) -> Duration {
-    let turn = SPIN_TURN.as_nanos();
-    let turns = elapsed.as_nanos().div_ceil(turn).max(1);
-    let rest = (turns * turn).saturating_sub(elapsed.as_nanos());
-    Duration::from_nanos(u64::try_from(rest).unwrap_or(u64::MAX))
+    turning()
 }
 
 /// The sidebar and its border while it shows, sliding open and closed.
@@ -3075,9 +3042,6 @@ fn Viewport() -> Element {
     }
 }
 
-/// With no word from a sync this long, the refresh checks whether one still runs.
-const SYNC_CHECK: Duration = Duration::from_secs(1);
-
 /// While a list springs, CSS moves it, and the refresh icon along.
 fn spring_style(pulled: Shown) -> String {
     pulled.spring.map_or(String::new(), |s| {
@@ -3294,29 +3258,8 @@ impl ListPull {
     /// running ends the wait when it does.
     async fn refresh(self) {
         let app = self.app.peek().clone();
-        let Some(account) = self.reading.account.peek().clone() else {
-            return;
-        };
-        let syncing = || app.status(&account).is_ok_and(|s| s.syncing);
-        // Listening before the sync starts, so its end can't be missed.
-        let mut events = app.subscribe();
-        let mut ran = syncing();
-        self.reading.sync(&app);
-        loop {
-            match tokio::time::timeout(SYNC_CHECK, events.recv()).await {
-                Ok(Ok(report)) if report.account_id == account => {
-                    if report.syncing {
-                        ran = true;
-                    } else if ran {
-                        break;
-                    }
-                }
-                Ok(Ok(_) | Err(RecvError::Lagged(_))) => {}
-                Ok(Err(RecvError::Closed)) => break,
-                // No sync started, as for an account signed out, or its end went by.
-                Err(_) if !syncing() => break,
-                Err(_) => ran = true,
-            }
+        if let Some(synced) = self.reading.sync(&app) {
+            synced.await;
         }
     }
 }
@@ -4159,14 +4102,5 @@ mod tests {
                 height: 28.0
             }
         );
-    }
-
-    #[test]
-    fn the_sync_icon_stops_at_a_whole_turn_after_one_at_least() {
-        let ms = Duration::from_millis;
-        assert_eq!(rest_of_turn(ms(0)), ms(900));
-        assert_eq!(rest_of_turn(ms(200)), ms(700));
-        assert_eq!(rest_of_turn(ms(900)), ms(0));
-        assert_eq!(rest_of_turn(ms(1000)), ms(800));
     }
 }

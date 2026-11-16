@@ -26,6 +26,7 @@ mod settings;
 #[cfg(target_os = "linux")]
 mod shadow;
 mod shortcuts;
+mod spin;
 mod thumbs;
 mod ui;
 

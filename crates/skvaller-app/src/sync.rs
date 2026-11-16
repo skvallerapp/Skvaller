@@ -115,6 +115,9 @@ impl App {
     /// Starts a sync of the account now, unless it is syncing already, on the sync
     /// runtime: parsing and storing a sync's feeds would hold up the UI's thread.
     ///
+    /// Returns a wait that ends with the account's sync: this one, or the one already
+    /// running. Dropping it doesn't stop the sync.
+    ///
     /// # Errors
     ///
     /// [`crate::Error::NoAccount`] or [`crate::Error::Broken`] for an account without a
@@ -123,14 +126,24 @@ impl App {
     /// # Panics
     ///
     /// When [`App::start_sync`] hasn't run.
-    pub fn sync_now(self: &Arc<Self>, account_id: &str) -> crate::Result<()> {
+    pub fn sync_now(
+        self: &Arc<Self>,
+        account_id: &str,
+    ) -> crate::Result<impl Future<Output = ()> + use<>> {
         let rt = self.runtime(account_id)?;
         let app = Arc::clone(self);
-        self.sync_runtime
+        let running = Arc::clone(&rt);
+        let sync = self
+            .sync_runtime
             .get()
             .expect("start_sync runs before any sync")
-            .spawn(async move { app.run_sync(&rt).await });
-        Ok(())
+            .spawn(async move { app.run_sync(&running).await });
+        Ok(async move {
+            // A shutdown cancels the sync, and nothing is left to wait for.
+            if matches!(sync.await, Ok(Ran::Busy)) {
+                drop(rt.gate.stop().await);
+            }
+        })
     }
 
     /// On start, then every so many minutes after the last automatic sync, by the
@@ -523,5 +536,54 @@ mod tests {
             Some(5 * MINUTE)
         );
         assert_eq!(due(SyncSchedule::OnStart, &ten_ago, now), None);
+    }
+
+    /// A started app with a local account, its first sync done, and that account's ID.
+    /// Its seeded feed is at a `.invalid` host: a sync fails at once, offline.
+    async fn local_app() -> (tempfile::TempDir, Arc<App>, String) {
+        let (tmp, dirs) = crate::app::tests::dirs();
+        crate::seed_local(&dirs, 1).unwrap();
+        let app = Arc::new(App::load(&dirs).unwrap());
+        app.start_sync();
+        let id = app.active().unwrap();
+        app.sync_now(&id).unwrap().await;
+        (tmp, app, id)
+    }
+
+    #[tokio::test]
+    async fn the_wait_for_a_sync_ends_when_the_sync_does() {
+        let (_tmp, app, id) = local_app().await;
+        let mut events = app.subscribe();
+
+        app.sync_now(&id).unwrap().await;
+
+        let started = events.try_recv().unwrap();
+        assert!(started.syncing, "{started:?}");
+        let ended = events.try_recv().unwrap();
+        assert!(!ended.syncing && ended.error.is_some(), "{ended:?}");
+        assert!(!app.status(&id).unwrap().syncing);
+    }
+
+    #[tokio::test]
+    async fn a_sync_asked_for_while_one_runs_waits_for_that_one() {
+        let (_tmp, app, id) = local_app().await;
+        let rt = app.runtime(&id).unwrap();
+        let running = rt.gate.stop().await;
+
+        let mut wait = Box::pin(app.sync_now(&id).unwrap());
+        let early = tokio::time::timeout(Duration::from_millis(50), &mut wait).await;
+        assert!(early.is_err(), "ended while the other sync ran");
+
+        drop(running);
+        tokio::time::timeout(Duration::from_secs(5), wait)
+            .await
+            .expect("ends with the other sync");
+    }
+
+    #[test]
+    fn an_unknown_account_has_no_sync_to_wait_for() {
+        let (_tmp, dirs) = crate::app::tests::dirs();
+        let app = Arc::new(App::load(&dirs).unwrap());
+        assert!(matches!(app.sync_now("9"), Err(crate::Error::NoAccount)));
     }
 }

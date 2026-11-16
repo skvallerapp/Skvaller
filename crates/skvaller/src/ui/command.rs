@@ -432,7 +432,7 @@ impl Reading {
             Action::ToggleRead => self.toggle_read(app),
             Action::ToggleStar => self.toggle_starred(app),
             Action::OpenInBrowser => self.open_in_browser(),
-            Action::Sync => self.sync(app),
+            Action::Sync => drop(self.sync(app)),
             Action::MarkAllRead => self.request_mark_all(app),
         }
     }
