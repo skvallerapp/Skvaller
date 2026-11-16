@@ -76,7 +76,9 @@ The windows, in Dioxus Native (Blitz).
 - `main`: starts the sync runtime, sets up the HTTP client, request filter and `thumb:`
   scheme, and launches the main window.
 - `ui`: the main window, with the sidebar, the virtualized article list and the reader.
-  `ui/manage`: feed and folder menus.
+  `ui/manage`: feed and folder menus. `ui/listed`: the rows each load of the article
+  list shows, keeping those read or unstarred here and the open article, so a sync
+  doesn't pull them away while you read.
 - `settings`, `add_account`: the Settings window and sign-in.
 - `article`: the reader's `<iframe srcdoc>` document.
 - `thumbs`: serves cached thumbnails to `<img>` through `thumb:` URLs.

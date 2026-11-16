@@ -39,7 +39,10 @@ use crate::settings::{Pane as SettingsPane, SettingsWindow};
 use crate::shortcuts::{ARROWS, Action, key_name};
 use crate::thumbs;
 
+mod listed;
 mod manage;
+
+use listed::{Listed, Load, Marks, Relist};
 
 use manage::{AddFeed, ConfirmRemove, Manage, ManageMenu, RenameField, Target, is_local};
 
@@ -167,16 +170,6 @@ enum Pane {
     List,
 }
 
-/// The article list as loaded, numbered so changes made on top of it know which load
-/// they belong to.
-#[derive(Clone, Debug, Default, PartialEq)]
-struct Listed {
-    load: u64,
-    rows: Vec<ArticleSummary>,
-    /// The open article as the cache has it, when search results leave it out.
-    open: Option<ArticleSummary>,
-}
-
 /// The search over the article list, while its field is open.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Search {
@@ -237,29 +230,6 @@ impl Restore {
                 Some(offsets.get(i)? - below)
             })
             .map_or(self.top, |top| top.max(0.0))
-    }
-}
-
-/// Read and starred changes made here since the list loaded, kept on top of it, so an
-/// article marked read stays in the Unread list until the list loads again. A new load
-/// has them in its rows, from the cache, and starts these over.
-#[derive(Clone, Debug, Default, PartialEq)]
-struct Marks {
-    /// The [`Listed::load`] these are on top of.
-    load: u64,
-    read: HashMap<String, bool>,
-    starred: HashMap<String, bool>,
-}
-
-impl Marks {
-    /// `a` with these changes, if they are on top of `load`.
-    fn apply(&self, load: u64, a: &ArticleSummary) -> ArticleSummary {
-        let mut a = a.clone();
-        if self.load == load {
-            a.read = self.read.get(&a.id).copied().unwrap_or(a.read);
-            a.starred = self.starred.get(&a.id).copied().unwrap_or(a.starred);
-        }
-        a
     }
 }
 
@@ -590,21 +560,11 @@ impl Drag {
 impl Reading {
     /// Whether `a`, a row of the list, is read, with the changes made here.
     fn is_read(&self, a: &ArticleSummary) -> bool {
-        let marks = self.marks.read();
-        let current = marks.load == self.articles.read().load;
-        current
-            .then(|| marks.read.get(&a.id).copied())
-            .flatten()
-            .unwrap_or(a.read)
+        self.marks.read().is_read(self.articles.read().load, a)
     }
 
     fn is_starred(&self, a: &ArticleSummary) -> bool {
-        let marks = self.marks.read();
-        let current = marks.load == self.articles.read().load;
-        current
-            .then(|| marks.starred.get(&a.id).copied())
-            .flatten()
-            .unwrap_or(a.starred)
+        self.marks.read().is_starred(self.articles.read().load, a)
     }
 
     fn unread_count(&self) -> usize {
@@ -634,21 +594,7 @@ impl Reading {
     /// Records changes made here on top of the list as loaded now.
     fn mark(mut self, ids: &[String], read: Option<bool>, starred: Option<bool>) {
         let load = self.articles.peek().load;
-        let mut marks = self.marks.write();
-        if marks.load != load {
-            *marks = Marks {
-                load,
-                ..Marks::default()
-            };
-        }
-        for id in ids {
-            if let Some(read) = read {
-                marks.read.insert(id.clone(), read);
-            }
-            if let Some(starred) = starred {
-                marks.starred.insert(id.clone(), starred);
-            }
-        }
+        self.marks.write().record(load, ids, read, starred);
     }
 
     fn select(mut self, selection: Selection) {
@@ -1498,7 +1444,7 @@ pub fn Root() -> Element {
             .update((account(), selection, last_sync), counts)
     });
     // The last load, what it listed and what it was for: a sync's reload keeps rows.
-    let last = use_hook(|| Rc::new(RefCell::new((Listed::default(), None, 0_u64))));
+    let relist = use_hook(|| Rc::new(RefCell::new(Relist::default())));
     // What the list searches for: only a change here loads it again, not opening the
     // field or typing a space.
     let searched = use_memo(move || {
@@ -1513,7 +1459,7 @@ pub fn Root() -> Element {
             revision();
             let (selection, account, cleared) = (selection(), account(), cleared());
             let searched = searched();
-            let mut rows = account
+            let rows = account
                 .as_ref()
                 .and_then(|id| match &searched {
                     Some((query, everywhere)) => {
@@ -1531,71 +1477,23 @@ pub fn Root() -> Element {
                     None => app.articles(id, &selection).ok(),
                 })
                 .unwrap_or_default();
-            let mut last = last.borrow_mut();
-            let (before, last_for, last_cleared) = &*last;
-            let marks = marks.peek();
-            let open = article.peek().as_ref().map(|a| a.id.clone());
-            let listed: HashSet<String> = rows.iter().map(|a| a.id.clone()).collect();
-            // The changes made here are in the cache, and so in the rows; those of rows
-            // the cache no longer lists here are only in the marks.
-            let same =
-                last_for.as_ref() == Some(&(account.clone(), selection.clone(), searched.clone()));
-            let keep = |a: &ArticleSummary| {
-                // The open article stays, read or not, until another opens; in search
-                // results, only if it was one.
-                if open.as_deref() == Some(a.id.as_str()) {
-                    return same || searched.is_none();
-                }
-                // After a sync, the Unread view keeps what was read here since it opened,
-                // and the Starred view what was unstarred, so the list doesn't jump.
-                let a = marks.apply(before.load, a);
-                same && *last_cleared == cleared
-                    && match selection.view {
-                        View::Unread => a.read,
-                        View::Starred => !a.starred,
-                        View::All => false,
-                    }
+            let fetch = |id: &str| {
+                let account = account.as_deref()?;
+                app.article(account, id).ok().flatten()
             };
-            let kept: Vec<ArticleSummary> = before
-                .rows
-                .iter()
-                .filter(|a| !listed.contains(&a.id) && keep(a))
-                .map(|a| marks.apply(before.load, a))
-                .collect();
-            // The open article from another list, as after a new selection or a search,
-            // as the cache has it now: changes made to it since are in no list's marks.
-            let unlisted = article
-                .peek()
-                .clone()
-                .filter(|a| !listed.contains(&a.id) && !kept.iter().any(|k| k.id == a.id))
-                .map(|a| {
-                    account
-                        .as_ref()
-                        .and_then(|id| app.article(id, &a.id).ok().flatten())
-                        .unwrap_or(a)
-                });
-            // Search results show it only if it matched; else it is kept apart.
-            let (from_elsewhere, open_apart) = if searched.is_none() {
-                (unlisted, None)
-            } else {
-                (None, unlisted)
+            let load = Load {
+                account: account.clone(),
+                selection,
+                searched,
             };
-            if !kept.is_empty() || from_elsewhere.is_some() {
-                rows.extend(kept);
-                rows.extend(from_elsewhere);
-                rows.sort_by_key(|a| std::cmp::Reverse(a.published));
-            }
-            let listed = Listed {
-                load: before.load + 1,
+            relist.borrow_mut().next(
+                load,
                 rows,
-                open: open_apart,
-            };
-            *last = (
-                listed.clone(),
-                Some((account, selection, searched)),
                 cleared,
-            );
-            listed
+                &marks.peek(),
+                article.peek().as_ref(),
+                fetch,
+            )
         }
     });
     let window = use_window();
