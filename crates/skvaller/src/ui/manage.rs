@@ -181,6 +181,9 @@ impl Reading {
         };
         self.overlay.set(Overlay::None);
         let saved = match (item, &target) {
+            // Nothing to reload from here: `App` announces the change, and the library
+            // follows `live.revision`, as for a change made in Settings. The list shows
+            // no feed's Reader View.
             (Item::ReaderView { on }, Target::Feed(id)) => {
                 app.set_feed_reader_view(&account, id, !on)
             }
@@ -190,8 +193,7 @@ impl Reading {
                 if let Some(folder) = folder {
                     self.set_collapsed(folder, false);
                 }
-                // A folder's list gains or loses the feed's articles.
-                self.revision += 1;
+                self.feeds_changed();
                 moved
             }
             (Item::Rename, _) => {
@@ -217,7 +219,7 @@ impl Reading {
     /// Saves the new name of the feed or folder being renamed, unless it is empty or
     /// unchanged, and closes the field. Does nothing once it is closed, as on the blur
     /// that follows Enter.
-    fn finish_rename(mut self, app: &App, target: &Target, title: Option<&str>) {
+    fn finish_rename(self, app: &App, target: &Target, title: Option<&str>) {
         if *self.overlay.peek() != Overlay::Manage(Manage::Rename(target.clone())) {
             return;
         }
@@ -234,15 +236,14 @@ impl Reading {
             Target::Folder(id) => app.rename_folder(&account, id, title),
         };
         match renamed {
-            // The list shows feeds' names.
-            Ok(()) => self.revision += 1,
+            Ok(()) => self.feeds_changed(),
             Err(e) => tracing::error!("renaming failed: {e}"),
         }
     }
 
     /// Unsubscribes from the feed or deletes the folder, as just confirmed. A selected
     /// one gives way to All; any other list loads again, as it may have its articles.
-    pub(super) fn remove(mut self, app: &App, target: &Target) {
+    pub(super) fn remove(self, app: &App, target: &Target) {
         self.close_overlay();
         let Some(account) = self.account.peek().clone() else {
             return;
@@ -258,7 +259,7 @@ impl Reading {
         if self.selection.peek().scope == target.scope() {
             self.select_scope(Scope::All);
         } else {
-            self.revision += 1;
+            self.feeds_changed();
         }
     }
 }
@@ -482,7 +483,7 @@ pub(super) fn AddFeed() -> Element {
                     // Another account showing now: the feed is in the one it went to.
                     if reading.account.peek().as_deref() == Some(account.as_str()) {
                         reading.select_scope(Scope::Feed { id });
-                        reading.revision += 1;
+                        reading.feeds_changed();
                     }
                 }
                 Err(e) => error.set(Some(add_error(&e))),

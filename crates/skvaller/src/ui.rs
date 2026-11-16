@@ -392,11 +392,11 @@ struct Reading {
     /// now.
     article: Signal<Option<ArticleSummary>>,
     /// Bumped when the cache changed under the lists: they load again, keeping what was
-    /// read or unstarred here meanwhile.
+    /// read or unstarred here meanwhile. By a sync's report, and [`Self::feeds_changed`].
     revision: Signal<u64>,
-    /// Bumped to load the list again without keeping those, as after marking all read.
+    /// Bumped to load the list again without keeping those: [`Self::all_marked_read`].
     cleared: Signal<u64>,
-    /// Bumped when a change made here changed the counts.
+    /// Bumped when a change made here changed the counts: [`Self::flags_changed`].
     counts: Signal<u64>,
     marks: Signal<Marks>,
     library: Memo<Library>,
@@ -574,6 +574,26 @@ impl Reading {
                 .cloned()
                 .unwrap_or(open),
         )
+    }
+
+    /// The shown account's feeds or folders changed here: added, moved, renamed or
+    /// removed. The list loads again, as its rows show feeds' names and a folder's list
+    /// gains or loses a feed's articles. The sidebar needs nothing from here: every feed
+    /// change in [`App`] announces itself, which `live.revision` and the library follow.
+    fn feeds_changed(mut self) {
+        self.revision += 1;
+    }
+
+    /// A read or star change made here: the library loads again for its counts. The
+    /// list keeps its rows, which show the change through `marks`.
+    fn flags_changed(mut self) {
+        self.counts += 1;
+    }
+
+    /// Every article of the list was marked read: in Unread it loads again without
+    /// keeping the rows read here, so it empties.
+    fn all_marked_read(mut self) {
+        self.cleared += 1;
     }
 
     /// Records changes made here on top of the list as loaded now.
@@ -854,7 +874,7 @@ impl Reading {
         if let Err(e) = app.set_read(&account, ids, read) {
             tracing::error!("saving a read change failed: {e}");
         }
-        self.counts += 1;
+        self.flags_changed();
     }
 
     fn toggle_read(self, app: &App) {
@@ -863,7 +883,7 @@ impl Reading {
         }
     }
 
-    fn toggle_starred(mut self, app: &App) {
+    fn toggle_starred(self, app: &App) {
         let (Some(a), Some(account)) = (self.open_article(), self.account.peek().clone()) else {
             return;
         };
@@ -872,7 +892,7 @@ impl Reading {
         if let Err(e) = app.set_starred(&account, &[a.id], starred) {
             tracing::error!("saving a star failed: {e}");
         }
-        self.counts += 1;
+        self.flags_changed();
     }
 
     /// Marks all as read, asking first when the settings say so. Not while Add Feed is
@@ -914,7 +934,7 @@ impl Reading {
         if view != View::Unread {
             return;
         }
-        self.cleared += 1;
+        self.all_marked_read();
         // Search results don't move on to another feed.
         if self.search.peek().active().is_some() {
             return;
@@ -1288,8 +1308,12 @@ pub fn Root() -> Element {
     let library = use_memo({
         let app = Arc::clone(&app);
         move || {
+            // A sync changed the cache.
             revision();
+            // Read or star changes made here changed the counts.
             counts();
+            // The config changed: a feed added, moved, renamed or removed, its Reader
+            // View turned on or off, here or in Settings.
             (live.revision)();
             account()
                 .and_then(|id| app.library(&id).ok())
