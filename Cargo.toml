@@ -24,7 +24,9 @@ skvaller-core = { path = "crates/skvaller-core", version = "0.1.0" }
 # <input type=password> masked; the HTTP client, a request filter and URL schemes set by
 # the app; the decoded image cache capped at 32 MB; a wheel event's phase and source; and
 # mouse and touch buttons let go of when their release goes elsewhere (a window move).
-dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "59f4975a", default-features = false }
+# The fork pins AnyRender to 814e100d: its main has since renamed anyrender_vello_hybrid
+# to anyrender_vello_gpu and changed its API.
+dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "34579707", default-features = false }
 
 dirs = "7.0.0"
 icu_calendar = { version = "2.4.0", default-features = false }
