@@ -60,11 +60,10 @@ pub enum FontStep {
 }
 
 impl FontStep {
-    /// The change `key` asks for with the command modifier, and Shift if `shift`, by
-    /// the character it types, so it follows the keyboard's layout: `+` is a key of its
-    /// own on some, and Shift and `=` on others, so `=` alone counts as `+`, as browsers
-    /// have it. Only `+` may come with Shift: Shift and `0` types `=` on a Swedish
-    /// keyboard.
+    /// The change `key` asks for with the command modifier, and Shift if `shift`.
+    /// Goes by the typed character, so it follows the layout. `+` needs Shift and `=`
+    /// on some layouts, so `=` alone counts as `+`, as in browsers. Only `+` may come
+    /// with Shift: Shift and `0` types `=` on a Swedish keyboard.
     fn of(key: &Key, shift: bool) -> Option<Self> {
         let Key::Character(c) = key else {
             return None;
@@ -146,7 +145,8 @@ const MODIFIERS: [(Modifiers, &str, char, &str); 4] = [
     (Modifiers::CONTROL, "Ctrl", '⌃', "keys.ctrl"),
     (Modifiers::ALT, "Alt", '⌥', "keys.alt"),
     (Modifiers::SHIFT, "Shift", '⇧', "keys.shift"),
-    // The Windows or Super key off macOS, of a config.json from a Mac.
+    // The Windows or Super key off macOS, where it only appears in a config.json
+    // saved on a Mac.
     (Modifiers::META, "Meta", '⌘', "keys.super"),
 ];
 
@@ -244,7 +244,7 @@ impl Action {
         }
     }
 
-    /// Runs again while its key is held down. The others run once.
+    /// Whether the action runs again while its key is held down, rather than once.
     pub const fn repeats(self) -> bool {
         matches!(
             self,
@@ -262,8 +262,8 @@ pub type Overrides = BTreeMap<String, Option<String>>;
 /// The key of `action`, with the user's `overrides` applied; `None` for no key.
 pub fn key_of(overrides: &Overrides, action: Action) -> Option<&str> {
     match overrides.get(action.name()) {
-        // An arrow key saved before the arrows were reserved, or a system chord saved on
-        // another platform, such as Ctrl+C from a Mac, does nothing: the default.
+        // A saved arrow key, or a system chord saved on another platform, such as
+        // Ctrl+C from a Mac, can't be a shortcut: the default applies.
         Some(Some(key)) if ARROWS.contains(&key.as_str()) || system_chord(key) => {
             Some(action.default_key())
         }

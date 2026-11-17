@@ -51,9 +51,9 @@ const CONTEXTUAL: [char; 14] = [
     '-', '<', '>', '=', '*', '+', '|', '~', '/', '\\', '#', '&', '^', '_',
 ];
 
-/// The most headlines, pieces shaped whole, and runs and operators probed kept: about
-/// the rows of a few long lists. Past it, the headlines kept are the list's, and the
-/// others start over.
+/// The most entries each cache keeps (headlines, pieces shaped whole, runs and
+/// operators probed): about the rows of a few long lists. Past it, only the current
+/// list's headlines are kept, and the other caches start over.
 const KEPT: usize = 20_000;
 
 /// A headline cut where it may wrap, in one font stack and size: what
@@ -197,7 +197,7 @@ impl Lines {
 
     /// Makes `stack` at `size` the font shaped in, forgetting what was kept for another.
     fn use_font(&mut self, stack: &str, size: f64) {
-        // In CSS's precision.
+        // f32, the precision of CSS lengths.
         #[expect(clippy::cast_possible_truncation, reason = "a font size")]
         let size = size as f32;
         if stack != self.stack || size.to_bits() != self.size.to_bits() {

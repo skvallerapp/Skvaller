@@ -1,9 +1,10 @@
 //! Pulling a list past its top or bottom, by trackpad or touch, stretches it away from
 //! the edge, and it springs back when let go. Given a refresh, a pull at the top that
 //! goes far enough runs it, if it began with the list at the top; the list waits there
-//! until the refresh ends, or until it is scrolled down. A trackpad's momentum that reaches an edge bounces the list off it,
-//! as macOS does. A mouse wheel doesn't stretch it. With animations off the list stays
-//! put, and a long pull at the top refreshes at once.
+//! until the refresh ends, or until it is scrolled down. A trackpad's momentum that
+//! reaches an edge bounces the list off it, as macOS does. A mouse wheel doesn't stretch
+//! it. With animations off the list stays put, and a long pull at the top refreshes at
+//! once.
 //!
 //! A trackpad on macOS or Wayland says when the fingers lift, and which events are
 //! momentum: the list springs back as they lift. Elsewhere the fingers are guessed to have

@@ -19,7 +19,7 @@ pub(crate) const DAY: i64 = 24 * 60 * 60;
 /// so an article the server stored while the last sync ran is not missed.
 const CRAWL_OVERLAP: i64 = 60 * 60;
 /// How long read, unstarred articles stay cached unless the user changes the setting.
-/// The first sync fetches read articles from the same period (FR-5b, FR-5c).
+/// The first sync fetches read articles from the same period.
 pub const DEFAULT_KEEP_READ_DAYS: u32 = 30;
 /// Item IDs per `edit-tag` or `stream/items/contents` request.
 const BATCH: usize = 250;

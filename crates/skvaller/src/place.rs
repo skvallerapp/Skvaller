@@ -51,8 +51,8 @@ pub fn visible_rows(offsets: &[f64], top: f64, height: f64) -> (usize, usize) {
 }
 
 /// Where the article list scrolls to bring the opened article `id` into view, if it
-/// must. `top` is where the list is scrolled, and `waiting` where a scroll waiting
-/// takes it, which this one replaces: the row is shown from there.
+/// must. `top` is where the list is scrolled, and `waiting` where a waiting scroll
+/// takes it. This scroll replaces that one, so the row is shown from there.
 pub fn reveal_row(
     offsets: &[f64],
     rows: &[ArticleSummary],
@@ -111,12 +111,12 @@ impl Keeper {
         let height = view.height;
         let total = view.offsets.last().copied().unwrap_or(0.0);
         // A list grown shorter, as by a smaller thumbnail size, shows its end, but Blitz
-        // keeps the scroll position past it: the list scrolls back itself, below.
+        // keeps the scroll position past it, so the list is scrolled back below.
         let end = (total - height).max(0.0);
         let mut top = view.top.min(end);
-        // Where the list is scrolled, or where a hold waiting to scroll takes it. Also
-        // a waiting scroll's target: that of the open article or a search's end was set
-        // apart from the anchor, which moves with it.
+        // Where the list is scrolled, or where a waiting scroll takes it. That scroll
+        // may be a hold's, or one set apart from the anchor, as to the open article or
+        // a search's end; the anchor moves with it.
         let scroll = view.waiting.unwrap_or(view.top);
         let held = self
             .anchor

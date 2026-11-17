@@ -6,13 +6,14 @@ pub enum Error {
     /// Not an `http` or `https` URL, or one with a username or password in it.
     #[error("the server address is not a valid http or https URL")]
     BadUrl,
-    /// Without the request's URL, which can hold a feed's token and is shown and logged.
+    /// Holds no request URL: one can contain a feed's token, and this error is shown and
+    /// logged.
     #[error("network error: {0}")]
     Http(reqwest::Error),
     /// The address has no feed, and no link to one.
     #[error("no feed found at this address")]
     NoFeed,
-    /// A feed, page or file that can't be used, said for the user.
+    /// A feed, page or file that can't be used, with a message for the user.
     #[error("{0}")]
     Local(String),
     #[error("unexpected response from the server: {0}")]

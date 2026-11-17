@@ -325,7 +325,7 @@ fn or_default<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(
 }
 
 /// Like `or_default`, for a field whose type's default is not the setting's default:
-/// a bad sync interval must not turn into 0, which means manually.
+/// a bad `animations` must give `true`, not `bool`'s `false`.
 fn or_else<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
     fallback: impl FnOnce(Settings) -> T,
@@ -385,10 +385,9 @@ pub struct Account {
     pub description: String,
     #[serde(flatten)]
     pub kind: AccountKind,
-    /// FR-5a.
     #[serde(default, deserialize_with = "or_default")]
     pub sync: SyncSchedule,
-    /// FR-5c.
+    /// How long read, unstarred articles stay cached, in days.
     #[serde(
         default = "default_keep_read_days",
         deserialize_with = "keep_read_days_or_default"
@@ -531,7 +530,7 @@ fn migrate(value: &mut serde_json::Value) {
     ) else {
         return;
     };
-    // 0 meant manually, which did not sync on start either.
+    // In this format 0 means manual sync, which also skips the sync on start.
     let sync = match interval.as_ref().and_then(serde_json::Value::as_u64) {
         Some(0) => serde_json::json!("manual"),
         Some(m) => serde_json::json!(m),
@@ -728,7 +727,7 @@ mod tests {
         assert!(!config.settings.confirm_mark_all_read);
         assert_eq!(config.clone().take_id(), "2");
 
-        // Manually did not sync on start either.
+        // 0 is manual, not on start.
         let config = Config::parse(
             br#"{ "account": { "server": "https://a.example", "username": "u" },
                  "syncIntervalMinutes": 0 }"#,

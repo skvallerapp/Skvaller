@@ -80,7 +80,7 @@ impl Marks {
     }
 }
 
-/// What a load of the list is for: a sync's reload of the same keeps rows.
+/// What a load of the list is for. Reloading the same, as after a sync, keeps rows.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Load {
     pub(super) account: Option<String>,
@@ -94,7 +94,7 @@ pub(super) struct Load {
 pub(super) struct Relist {
     before: Listed,
     load: Option<Load>,
-    /// The mark-all-read count it was loaded at: a new one keeps nothing.
+    /// The mark-all-read count at that load: once it changes, Unread keeps nothing.
     cleared: u64,
 }
 

@@ -103,14 +103,14 @@ pub async fn refresh(
     }
     // Pruning needs no network, so the retention period holds offline too.
     let before = |days: u32| (now - i64::from(days) * DAY) * 1000;
-    // `seen` keeps their IDs, so the feed doesn't bring them back as new.
+    // Pruned articles' IDs stay in `seen`, so the feed doesn't bring them back as new.
     let pruned = db.prune(
         before(keep_read_days),
         keep_unread_days.map_or(i64::MIN, before),
     )?;
     db.optimize()?;
-    // Every feed out of reach is more likely the network than every site down: a
-    // failure, so it is tried again, as a sync account's would be.
+    // No feed reached is more likely the network than every site down: fail, so the
+    // refresh is retried, as a sync account's would be.
     if tried > 0 && reached == 0 {
         return Err(Error::Local("could not reach any feed".into()));
     }

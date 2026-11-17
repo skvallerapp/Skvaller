@@ -543,7 +543,7 @@ mod tests {
             Some("tag:google.com,2005:reader/item/ffffffffffffffff")
         );
         assert_eq!(parsed("nope"), None);
-        // A bare hex ID, as caches from before the `x` have them, names no item.
+        // A bare hex ID without the `x`, as an older cache may hold, names no item.
         assert_eq!(long_item_id("5d0cfa30d1892a8d3f00002e"), None);
         assert_eq!(long_item_id("0012"), None);
         assert_eq!(parsed(""), None);

@@ -1,9 +1,9 @@
 //! Managing feeds and folders from the sidebar: the feed and folder menus, renaming in
 //! place, the questions before removing, and Add Feed.
 //!
-//! Only the local account manages its own feeds; a sync
-//! account's feed menu has only Reader View. Blitz has no native menus, so these are
-//! drawn in the page, as the account menu is.
+//! Only the local account manages its own feeds; a sync account's feed menu has only
+//! Reader View. Blitz has no native menus, so these are drawn in the page, as the
+//! account menu is.
 
 use std::sync::Arc;
 
@@ -104,8 +104,8 @@ pub(super) enum Item {
     DeleteFolder,
 }
 
-/// The menu's items for `target`. Empty when it has none,
-/// as a sync account's folder.
+/// The menu's items for `target`. Empty when it has none, as for a sync account's
+/// folder.
 fn items(target: &Target, lib: &Library, local: bool) -> Vec<Item> {
     match target {
         Target::Feed(id) => {
@@ -182,8 +182,8 @@ impl Reading {
         };
         self.overlay.set(Overlay::None);
         let saved = match (item, &target) {
-            // Nothing to reload from here: `App` tells the window of each change to the
-            // feeds, as of one made in Settings.
+            // No reload here: `App` notifies the window of every feed change, including
+            // those made in Settings.
             (Item::ReaderView { on }, Target::Feed(id)) => {
                 app.set_feed_reader_view(&account, id, !on)
             }
@@ -393,7 +393,7 @@ pub(super) fn RenameField(target: Target, title: String) -> Element {
                 }
             },
             oninput: move |e| draft.set(e.value()),
-            // The row would select itself.
+            // Keeps the click from selecting the row.
             onclick: move |e| e.stop_propagation(),
             onkeydown: move |e: Event<KeyboardData>| {
                 if app_chord(&e.key(), e.code(), e.modifiers()).is_some() {
@@ -467,7 +467,7 @@ pub(super) fn AddFeed() -> Element {
         reading.overlay.set(busy.clone());
         spawn(async move {
             let added = app.add_feed(&account, &address, folder_id.as_deref()).await;
-            // Unless another account's showing closed it meanwhile.
+            // Back to the idle form, unless showing another account closed it meanwhile.
             if *reading.overlay.peek() == busy {
                 reading.overlay.set(adding);
             }
@@ -476,7 +476,7 @@ pub(super) fn AddFeed() -> Element {
                     url.set(String::new());
                     new_folder.set(String::new());
                     reading.close_overlay();
-                    // Another account showing now: the feed is in the one it went to.
+                    // Select the new feed only if its account is still the one shown.
                     if reading.account.peek().as_deref() == Some(account.as_str()) {
                         reading.select_scope(Scope::Feed { id });
                     }

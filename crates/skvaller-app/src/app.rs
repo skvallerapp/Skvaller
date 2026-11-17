@@ -113,7 +113,7 @@ pub enum Changed {
 pub struct AccountChange {
     /// Ignored when blank.
     pub description: Option<String>,
-    /// Ignored when every 0 minutes.
+    /// Ignored when it is every 0 minutes.
     pub sync: Option<SyncSchedule>,
     /// At least 1.
     pub keep_read_days: Option<u32>,
@@ -138,9 +138,8 @@ pub(crate) struct Runtime {
     /// A sync found the cache damaged.
     pub(crate) corrupt: AtomicBool,
     pub(crate) gate: Gate,
-    /// Wakes the background sync, to look again at whether a sync is due. Only a wake
-    /// from sleep sends it today; a change of the account's schedule will need to as
-    /// well, or a Manual schedule's loop never looks again.
+    /// Wakes the background sync to look again at whether a sync is due: after a wake
+    /// from sleep, a schedule change, or the account's removal.
     pub(crate) wake: Notify,
     /// The computer woke from sleep since the background sync last looked.
     pub(crate) woke: AtomicBool,
@@ -166,8 +165,8 @@ impl Runtime {
             prefetch: Mutex::new(None),
             thumbnails: Mutex::new(None),
         };
-        // A local cache without feeds, as after a new version's cache started over,
-        // gets them back from their backup before a sync backs up the empty list.
+        // A local cache without feeds, as after an old schema made it start over, gets
+        // them back from their backup before a sync backs up the empty list.
         if account.kind == AccountKind::Local && rt.db.feeds().is_ok_and(|f| f.is_empty()) {
             restore_feeds(dir, &account.id, &rt.db);
         }
@@ -830,7 +829,7 @@ fn back_up(config_path: &Path) -> Result<PathBuf> {
     Ok(backup)
 }
 
-/// Moves the one cache from before several accounts to the first account's place.
+/// Moves a single-account `cache.db` from the data folder to the first account's place.
 fn move_old_cache(data_dir: &Path, accounts_dir: &Path, config: &Config) -> Result<()> {
     let old = data_dir.join("cache.db");
     let first = db_path(accounts_dir, FIRST_ACCOUNT_ID);

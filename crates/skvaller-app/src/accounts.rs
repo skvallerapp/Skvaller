@@ -1,7 +1,7 @@
 //! Adding, signing in to and removing accounts, and their subscriptions as OPML.
 //!
-//! Each change saves config.json first and only then takes, and tells every window
-//! through [`App::watch_config`].
+//! Each change saves config.json first, and only then takes effect and is told to every
+//! window through [`App::watch_config`].
 
 use std::io::Read;
 use std::path::Path;

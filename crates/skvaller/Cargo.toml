@@ -13,8 +13,8 @@ publish = false
 
 [features]
 default = ["skia"]
-# Renderers: Skia by default; the Vello ones for comparison. Vello hybrid scrolled with
-# about 30% more CPU a second and panics on color emoji in an article.
+# Renderers: Skia by default; the Vello ones for comparison. Vello hybrid takes about 30%
+# more CPU to scroll and panics on color emoji in an article.
 skia = ["dioxus-native/skia"]
 hybrid = ["dioxus-native/vello-hybrid"]
 cpu = ["dioxus-native/vello-cpu-pixels"]

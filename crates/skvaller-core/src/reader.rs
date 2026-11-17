@@ -15,7 +15,7 @@ use crate::html::parse;
 ///   reader's frame for the browser; one that can't be made absolute loses its `href`,
 ///   so it can't resolve against the app. Links within the article (`#…`) stay in it.
 /// - `src`, `poster` and `srcset` URLs become absolute, and `http:` becomes `https:`:
-///   most hosts that once served http now serve https too.
+///   most hosts serve https too.
 /// - Audio and video don't autoplay or preload, and show their controls: without
 ///   scripts, controls are the only way to play.
 ///

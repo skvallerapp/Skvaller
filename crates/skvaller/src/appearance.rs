@@ -7,11 +7,11 @@
 //! `org.freedesktop.appearance` `color-scheme` setting, as GTK and Qt apps do, and
 //! follows its changes. KDE Plasma (the Steam Deck's desktop) and GNOME both set it.
 //!
-//! [`resolve`] then makes System Light or Dark in the windows' `data-theme`. Two
-//! things stay as they were, as with the Dark and Espresso themes: Blitz's own scheme
-//! stays light, so scrollbar thumbs keep their light colors; and a change of mode
-//! remakes the open article's document, which loads again at the top. Telling Blitz
-//! the scheme would take a change to the fork.
+//! [`resolve`] then makes System Light or Dark in the windows' `data-theme`. Two limits
+//! apply, as with the Dark and Espresso themes: Blitz's own scheme stays light, so
+//! scrollbar thumbs keep their light colors; and a change of mode remakes the open
+//! article's document, which loads again at the top. Telling Blitz the scheme would
+//! take a change to the Blitz fork.
 //!
 //! On Linux the app also draws the window's frame itself (`chrome`), and the portal
 //! says how the system draws its own: [`SystemFrame`]. KDE Plasma passes its

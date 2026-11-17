@@ -21,8 +21,8 @@ use crate::appearance::{self, SystemFrame};
 use crate::dates::Dates;
 use crate::shortcuts::{Action, bindings};
 
-/// The settings and what is made from them and the system's mode, each changing when
-/// they do.
+/// The settings, and values derived from them and the system's mode, each updating
+/// when its inputs change.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Live {
     /// Bumped on every change to the settings or the accounts, not their caches.
@@ -38,8 +38,8 @@ pub struct Live {
     pub frame: Signal<SystemFrame>,
 }
 
-/// [`Dates`], shared. Two are the same only when they are one, as building them is what
-/// a change of settings costs.
+/// [`Dates`], shared. Compared by pointer: a new one is built only when the clock or
+/// date order changes.
 #[derive(Clone)]
 pub struct SharedDates(Rc<Dates>);
 
@@ -103,7 +103,8 @@ fn use_followed<T: Copy + PartialEq + 'static>(
     use_hook(move || {
         spawn(async move {
             let mut changes = watch();
-            // A change made before this task started counts as seen to `changes`.
+            // A new receiver marks the current value as seen, so read it before waiting:
+            // it may have changed since the signal was made.
             loop {
                 let now = *changes.borrow_and_update();
                 if now != *signal.peek() {
@@ -119,8 +120,8 @@ fn use_followed<T: Copy + PartialEq + 'static>(
 }
 
 /// Calls `heard` with each change to an account's cache, for as long as the component
-/// lives: once with `None` when it starts listening, and again after missing some, as
-/// either may come after changes it didn't hear.
+/// lives. Calls it with `None` when it starts listening and after missing changes: the
+/// caller should then assume anything may have changed.
 pub fn use_cache_changes(app: &Arc<App>, mut heard: impl FnMut(Option<&Change>) + 'static) {
     let app = Arc::clone(app);
     use_hook(move || {

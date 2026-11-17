@@ -132,8 +132,8 @@ mod tests {
         assert_eq!(sidebar_row(FontSize::M), 28.0);
         assert_eq!(heading_height(FontSize::M), 14.0);
         assert!((headline_px(FontSize::M) - 14.5).abs() < 1e-12);
-        // The table the sizes were approved from, which has them to about a quarter
-        // pixel: XXXS and XXXL of one size of each kind.
+        // The reference table, to about a quarter pixel: XXXS and XXXL of one size of
+        // each kind.
         let near = |m: f64, role, (least, most): (f64, f64)| {
             for (size, want) in [(FontSize::Xxxs, least), (FontSize::Xxxl, most)] {
                 let px = m * factor(size, role);

@@ -1,5 +1,5 @@
-/* The article's own document: app.css doesn't reach it, nor its CSS the app. The colors
-   are app.css's (--bg is --reader-bg), and must stay the same. --article-font and
+/* The article's own document: app.css doesn't reach it, and its CSS doesn't reach the
+   app. The colors are app.css's (--bg is --reader-bg) and must stay in step. --article-font and
    --headline-font are the settings' stacks, --line-width the text column's width, and
    --article-scale and --article-meta-scale the font size's factors (scale.rs), set on
    the root element. */

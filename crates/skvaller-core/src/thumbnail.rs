@@ -24,10 +24,10 @@ use crate::{Db, Result, html};
 
 /// The longest side of a stored thumbnail, in pixels.
 ///
-/// The Large size spans the list: 319 CSS pixels at its default width, up to about 520
-/// once the list can be widened, and twice that on a HiDPI screen. 800 is a compromise
-/// with the space the cache takes: a thumbnail is about 40–60 KB, so 5,000 cached
-/// articles take about 250 MB. What is shown is cropped from it to the box, by [`fill`].
+/// The Large size spans the list: 319 CSS pixels at its default width, twice that on a
+/// HiDPI screen. 800 leaves room for a wider list (about 520) while bounding the cache:
+/// a thumbnail is about 40–60 KB, so 5,000 cached articles take about 250 MB. What is
+/// shown is cropped from it to the box, by [`fill`].
 const MAX_SIDE: u32 = 800;
 /// JPEG quality of a stored thumbnail. Artifacts don't show at thumbnail size.
 const JPEG_QUALITY: u8 = 75;

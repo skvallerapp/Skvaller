@@ -125,7 +125,8 @@ impl MenuBar {
         ))
     }
 
-    /// [`Self::show_accounts`], logging a failure: the menu then lists what it did.
+    /// [`Self::show_accounts`], logging a failure: the menu then keeps the items added
+    /// before it.
     fn refresh(&self, app: &App, shown: Option<&str>) {
         if let Err(e) = self.show_accounts(&app.accounts(), shown) {
             tracing::warn!("updating the Accounts menu failed: {e}");
@@ -157,7 +158,7 @@ pub fn use_menu_bar(
             // Menu events come on the main thread, outside the window's tasks.
             let (sender, mut commands) = mpsc::unbounded_channel();
             MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
-                // Closed only once the window is gone.
+                // Fails only once the window, and its receiver, are gone.
                 let _ = sender.send(event.id.0);
             }));
             spawn(async move {
@@ -167,9 +168,9 @@ pub fn use_menu_bar(
                     };
                     let account = matches!(command, Command::Account(_));
                     on_command(command);
-                    // A check item checks or unchecks itself when picked. The effect
-                    // below puts the checks back when the shown account changes; picking
-                    // the shown one changes nothing, so put them back here.
+                    // A check item toggles itself when picked. The effect below resets
+                    // the checks when the shown account changes; picking the shown one
+                    // changes nothing, so reset them here.
                     if let (true, Some(bar)) = (account, &bar) {
                         bar.refresh(&app, shown.peek().as_deref());
                     }

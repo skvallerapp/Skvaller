@@ -126,8 +126,8 @@ fn tag_end(s: &str) -> usize {
 }
 
 /// The rest of `s` after the closing tag `</name>`, or nothing if it never closes.
-/// Compares in place: lowercasing a copy per skipped tag made pages of many `<svg>`s
-/// quadratic.
+/// Compares in place: lowercasing a copy per skipped tag would make pages of many
+/// `<svg>`s quadratic.
 fn skip_past_close<'a>(s: &'a str, name: &str) -> &'a str {
     let mut from = 0;
     while let Some(i) = s[from..].find("</") {
@@ -237,7 +237,7 @@ mod tests {
             plain_text("&CounterClockwiseContourIntegralX;", 100),
             "&CounterClockwiseContourIntegralX;"
         );
-        // Without `;` it is text, as before.
+        // Without `;`, a named entity stays text.
         assert_eq!(plain_text("&amp B", 100), "&amp B");
         // Each `&` looks only a name's length ahead: well under a second for these,
         // where reading on to the end at each would take tens.

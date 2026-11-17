@@ -2,7 +2,7 @@
 //!
 //! Keys are flat, such as `list.label`. A message that depends on a number has one key
 //! per plural form, `<key>_one` and `<key>_other` in English. Placeholders are `{name}`.
-//! Only English for now: the other languages come with the language setting.
+//! Only English is loaded until there is a language setting.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;

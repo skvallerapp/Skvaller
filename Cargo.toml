@@ -13,18 +13,14 @@ repository = "https://github.com/skvallerapp/Skvaller"
 skvaller-app = { path = "crates/skvaller-app", version = "0.1.0" }
 skvaller-core = { path = "crates/skvaller-core", version = "0.1.0" }
 
-# Blitz and Dioxus Native move fast and aren't on crates.io in this form: pinned to one
-# commit. The Mac and Steam Deck tests ran against e4c2c9be; since then: upstream PR #1213,
-# glyph caching so emoji don't panic Vello GPU, scrolling an iframe through MountedData,
-# the bullet font kept with an embedder's fonts, a redraw on a system theme change, and
-# opening more windows, and upstream PR #1321 (single-select <select>), with the upstream
-# main it merged, with the open list in the options' colors, keeping its keys from the
-# page (an iframe's list too), closing on outside clicks, scrolling and window blur, and
-# its label centered in its box;
-# <input type=password> masked; the HTTP client, a request filter and URL schemes set by
-# the app; the decoded image cache capped at 32 MB; a wheel event's phase and source; and
-# mouse and touch buttons let go of when their release goes elsewhere (a window move).
-# The fork pins AnyRender to 814e100d: its main has since renamed anyrender_vello_hybrid
+# Blitz and Dioxus Native move fast and aren't on crates.io in this form, so they come
+# from a fork pinned to one commit. The fork adds what upstream lacks: single-select
+# <select> (upstream PR #1321), a masked <input type=password>, iframe scrolling through
+# MountedData, an app-set HTTP client, request filter and URL schemes, a 32 MB cap on
+# decoded images, a wheel event's phase and source, button releases outside the window,
+# redraws on a system theme change, more than one window, glyph caching so emoji don't
+# panic Vello GPU, the bullet font kept with an embedder's fonts, and smaller fixes.
+# The fork pins AnyRender to 814e100d: AnyRender's main renamed anyrender_vello_hybrid
 # to anyrender_vello_gpu and changed its API.
 dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "34579707", default-features = false }
 
@@ -58,7 +54,7 @@ rustix = { version = "1.1.6", default-features = false, features = ["fs", "std"]
 wayland-backend = { version = "0.3.17", default-features = false, features = ["client_system"] }
 wayland-client = "0.31.15"
 wayland-protocols-plasma = { version = "0.3.12", features = ["client"] }
-# And on X11, through a property of the window: already in the tree through winit.
+# KDE's window shadows on X11, through a window property: already in the tree through winit.
 x11rb = "0.14.0"
 
 # The guideline set (M-STATIC-VERIFICATION).

@@ -327,8 +327,7 @@ pub(crate) struct NewFeed<'a> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArticleSummary {
-    /// The item ID: decimal, or hex for IDs longer than 64 bits. Not a number, as it can
-    /// exceed what a JavaScript number holds.
+    /// The item ID: decimal, or hex for IDs longer than 64 bits.
     pub id: String,
     pub feed_id: String,
     pub title: String,
@@ -342,8 +341,7 @@ pub struct ArticleSummary {
     pub thumbnail: bool,
 }
 
-/// Which articles to list: those in `view` from `scope`. Serialized like the UI's
-/// `Selection` type.
+/// Which articles to list: those in `view` from `scope`.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct Selection {
     pub view: View,
@@ -411,7 +409,8 @@ impl Db {
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
-        // 16 MB, up from 2: the article list's index pages stay in memory between loads.
+        // 16 MB, not SQLite's default 2: the article list's index pages stay in memory
+        // between loads.
         // No mmap_size: an I/O error in a mapped file is a signal that ends the app,
         // not an error a damaged cache can be reported with.
         reader.pragma_update(None, "cache_size", -16_000)?;
@@ -459,9 +458,9 @@ impl Db {
                 // only before the first table exists, or at a VACUUM.
                 conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
                 if v > 0 {
-                    // A cache from before release, when the schema changed without
-                    // migrations: start over. Sync accounts fill it again from the server,
-                    // the local account from its feeds' backup.
+                    // Older than version 8, which has no migration: start over. Sync
+                    // accounts fill it again from the server, the local account from its
+                    // feeds' backup.
                     conn.set_db_config(DbConfig::SQLITE_DBCONFIG_RESET_DATABASE, true)?;
                     conn.execute_batch("VACUUM")?;
                     conn.set_db_config(DbConfig::SQLITE_DBCONFIG_RESET_DATABASE, false)?;

@@ -3,8 +3,7 @@
 //! It runs its own `VirtualDom`, so it shares nothing with the main window but what it
 //! is given: the [`App`], and the [`SettingsWindow`] slot that says whether it is open.
 //! A change is saved at once, and every window follows it through the app's config
-//! revision, or for a feed's Reader View, through [`App::changes`]. Settings for what the native app doesn't have yet are left out until it
-//! does.
+//! revision, or for a feed's Reader View, through [`App::changes`].
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -105,11 +104,11 @@ pub enum Pane {
     AddAccount,
 }
 
-/// The Settings window's root component.
 /// The room below the last group in a pane: settings.css's `.settings .content` bottom
 /// padding, which a group scrolled into view keeps.
 const CONTENT_PAD: f64 = 28.0;
 
+/// The Settings window's root component.
 #[component]
 fn SettingsRoot() -> Element {
     let app = use_context::<Arc<App>>();

@@ -1,5 +1,5 @@
-//! On macOS, embeds Info.plist in the executable, so the menu bar names the app
-//! Skvaller rather than after its file, `skvaller`.
+//! On macOS, embeds Info.plist in the executable, so the menu bar shows the app as
+//! Skvaller rather than by its file name, `skvaller`.
 
 fn main() {
     println!("cargo::rerun-if-changed=Info.plist");

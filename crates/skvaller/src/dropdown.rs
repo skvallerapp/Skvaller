@@ -90,7 +90,8 @@ pub fn Dropdown(
     };
     let mut pick = move |i: usize| {
         close();
-        // A highlight left from choices that changed while the list was open.
+        // The highlight may be past the end if the choices changed while the list was
+        // open.
         if i != selected && i < count {
             onchange.call(i);
         }
@@ -127,8 +128,8 @@ pub fn Dropdown(
         {
             return;
         }
-        // Closes the list and moves the focus on: the window's handlers would cancel
-        // that, as they do for keys in the Add Feed form.
+        // Closes the list and lets the focus move on. Stopped here, as the window's
+        // handlers would cancel the move, as they do for keys in the Add Feed form.
         if e.key() == Key::Named(NamedKey::Tab) {
             open.set(None);
             list.set(None);
@@ -228,10 +229,10 @@ pub fn Dropdown(
                         // Kept from the backdrop, whose cancel would stop a drag of the
                         // list's scrollbar.
                         onmousedown: move |e| e.stop_propagation(),
-                        // Scrolled here, as Blitz passes what the list can't take of a
-                        // turn on to the page under it, away from the button. A stopgap,
-                        // without Blitz's eased glide, until the fork honors
-                        // `overscroll-behavior: contain`.
+                        // Scrolled here, as Blitz passes the part of a wheel turn the
+                        // list can't take on to the page under it, away from the button.
+                        // A stopgap, without Blitz's eased glide, until the Blitz fork
+                        // honors `overscroll-behavior: contain`.
                         onwheel: move |e| {
                             e.stop_propagation();
                             e.prevent_default();

@@ -97,7 +97,7 @@ pub(crate) enum Command {
     /// Show the account at this place in the list: ⌘1 to ⌘9.
     AccountAt(usize),
     ToggleSidebar,
-    /// A step larger or smaller font size, or M again: ⌘+, ⌘− and ⌘0.
+    /// One font size step larger or smaller, or back to the default M: ⌘+, ⌘− and ⌘0.
     FontSize(FontStep),
     /// Open the search field, or focus it.
     Search,
@@ -107,7 +107,7 @@ pub(crate) enum Command {
         action: Action,
         held: bool,
     },
-    /// The arrow keys: give the sidebar or the list the arrow keys, or step in them.
+    /// The arrow keys: move focus to the sidebar or the list, or step through it.
     FocusSidebar,
     FocusList,
     StepSidebar(isize),
@@ -140,8 +140,8 @@ impl From<Action> for Command {
 }
 
 impl Command {
-    /// Needs the panes, which a screen to add an account or sign in may replace. The
-    /// others work there too: that screen has the account menu.
+    /// Whether this needs the panes, which the add-account or sign-in screen may
+    /// replace. The rest also work on that screen, as it has the account menu.
     const fn needs_panes(&self) -> bool {
         !matches!(
             self,
@@ -198,9 +198,9 @@ pub(super) struct Context<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Route {
     Run(Command),
-    /// Taken, doing nothing, as a key a menu doesn't use.
+    /// Consumed without effect, such as a key an open menu doesn't use.
     Eat,
-    /// Not the window's: it goes on, as to the article.
+    /// Not handled by the window: it propagates, for example to the article.
     Pass,
 }
 
@@ -214,7 +214,8 @@ pub(super) fn route(press: &Press, cx: &Context<'_>) -> Route {
         repeat,
     } = press;
     let (key, mods, repeat) = (key, *mods, *repeat);
-    // On macOS the menu bar takes ⌘, and the account chords first.
+    // Before any overlay, as on macOS, where the menu bar takes `⌘,` and the account
+    // chords first.
     if let Some(chord) = app_chord(key, *code, mods) {
         return match chord {
             Chord::Settings => Route::Run(Command::Settings),
@@ -286,8 +287,8 @@ fn overlay_key(key: &Key, mods: Modifiers, cx: &Context<'_>) -> Option<Route> {
                     named(NamedKey::Escape).then_some(Route::Run(Command::CloseOverlay))
                 }
             };
-            // The app's and the accounts' chords not taken above go on, as to a
-            // field.
+            // App and account chords not matched above pass through, for example to
+            // a focused field.
             let chord = mods.intersects(COMMAND_MODIFIER | ACCOUNT_MODIFIER);
             (handled, if chord { Route::Pass } else { Route::Eat })
         }
@@ -320,13 +321,14 @@ fn arrow(key: &Key, repeat: bool, cx: &Context<'_>) -> Route {
 
 /// What selecting another list changes besides the selection.
 ///
-/// Always, too: the open article closes, its Reader View starts over and a load
-/// under way is dropped, a delayed mark of it is off, the list a search replaced is
-/// no longer the one to go back to, and a list sliding away goes at once.
+/// It also always closes the open article, resets its Reader View and drops a load
+/// under way, cancels its delayed mark as read, forgets the list a search replaced,
+/// and removes a list sliding away at once.
 #[derive(Debug, PartialEq)]
 pub(super) struct Leave {
     pub overlay: Overlay,
-    /// Search every feed, which is for the selection it was asked from.
+    /// Whether the search stays over every feed: only within the scope it was asked
+    /// from.
     pub everywhere: bool,
 }
 
@@ -673,7 +675,7 @@ mod tests {
         assert_eq!(route(&held(named(NamedKey::ArrowUp)), &cx), Route::Eat);
         // Nothing to the left of a hidden sidebar.
         assert_eq!(route(&named(NamedKey::ArrowLeft), &cx), Route::Eat);
-        // Escape with the search closed is nobody's.
+        // Escape with the search closed is not handled.
         assert_eq!(route(&named(NamedKey::Escape), &cx), Route::Pass);
     }
 
@@ -779,7 +781,7 @@ mod tests {
             run(Command::Highlight(2))
         );
         assert_eq!(routed(&feeds, 1, &letter('j')), Route::Eat);
-        // A chord no one took goes on.
+        // An unhandled chord passes through.
         assert_eq!(
             routed(&feeds, 1, &chord(COMMAND_MODIFIER, Code::KeyC, "c")),
             Route::Pass

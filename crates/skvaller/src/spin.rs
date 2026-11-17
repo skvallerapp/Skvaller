@@ -1,6 +1,7 @@
-//! When the sync icon turns: while a sync runs, and after it until a whole turn ends,
-//! one at least from when it began or was asked for, so a quick sync still shows and the
-//! icon never stops askew. With Settings → Animations off it stops as the sync ends.
+//! When the sync icon turns: while a sync runs, then on until a whole turn ends, and for
+//! at least one turn from when it began or was asked for. So a quick sync still shows
+//! and the icon never stops askew. With Settings → Animations off it stops as the sync
+//! ends.
 //!
 //! Plain state, without a document: the sidebar feeds it the sync status and the syncs
 //! asked for, and stops the icon when it says.
@@ -81,8 +82,8 @@ impl Spin {
     }
 }
 
-/// How much longer a spin that began `elapsed` ago turns to end a whole [`SPIN_TURN`],
-/// one at least.
+/// How much longer a spin that began `elapsed` ago turns, to end on a whole
+/// [`SPIN_TURN`] after at least one.
 fn rest_of_turn(elapsed: Duration) -> Duration {
     let turn = SPIN_TURN.as_nanos();
     let turns = elapsed.as_nanos().div_ceil(turn).max(1);

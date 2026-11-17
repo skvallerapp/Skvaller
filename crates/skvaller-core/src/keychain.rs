@@ -1,8 +1,8 @@
 //! The access token lives in the OS keychain. The password is never stored.
 //!
 //! These calls block, and can wait for the user to unlock the keychain. Call them from a
-//! blocking thread (`spawn_blocking`), never on the async
-//! runtime. On Linux without a running Secret Service they return [`Error::Keychain`].
+//! blocking thread (`spawn_blocking`), never on the async runtime. On Linux without a
+//! running Secret Service they return [`Error::Keychain`].
 //!
 //! [`Error::Keychain`]: crate::Error::Keychain
 
@@ -10,8 +10,7 @@ use keyring::{Entry, Error as KeyringError};
 
 use crate::Result;
 
-/// The app's bundle identifier. Keep it unchanged: tokens saved by earlier versions are
-/// stored under it.
+/// The app's bundle identifier. Keep it unchanged: saved tokens are stored under it.
 pub const KEYCHAIN_SERVICE: &str = "io.github.skvallerapp.Skvaller";
 
 /// Saves the access token in the OS keychain.

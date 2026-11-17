@@ -125,7 +125,7 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  /* The bottom also in settings.rs (CONTENT_PAD). */
+  /* Keep the bottom in step with CONTENT_PAD in settings.rs. */
   padding: 8px 28px 28px;
 }
 

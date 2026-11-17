@@ -1,9 +1,9 @@
 //! Skvaller, the desktop RSS reader: the native window.
 //!
-//! Usage: `skvaller [--import-opml <file> | --seed-test <count>]`. The flag adds the file's feeds to the local
-//! account, adding that account if there is none, then starts as usual: a way to get
-//! articles onto a machine without accounts. `--seed-test` adds that many synthetic
-//! articles instead, to test the list at 5,000+ items.
+//! Usage: `skvaller [--import-opml <file> | --seed-test <count>]`. `--import-opml` adds
+//! the file's feeds to the local account, creating it if there is none, then starts as
+//! usual: a way to get articles onto a machine without accounts. `--seed-test` adds
+//! that many synthetic articles instead, to test the list at 5,000+ items.
 
 #![cfg_attr(all(not(test), target_os = "windows"), windows_subsystem = "windows")]
 
@@ -49,7 +49,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            // Until the app shows a native dialog.
+            // Stderr only: there is no native error dialog yet.
             eprintln!("Skvaller couldn't start: {message}");
             ExitCode::FAILURE
         }
@@ -57,7 +57,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
-    // Read while the app loads; the window waits for it below.
+    // Reads the system appearance while the app loads; the window waits for it below.
     appearance::start();
     let dirs = Dirs::system().map_err(|e| e.to_string())?;
     let mut args = std::env::args().skip(1);
@@ -93,9 +93,9 @@ fn run() -> Result<(), String> {
     app.start_sync();
     drop(entered);
 
-    // Every document's requests, the article frame's among them, may reach only public
-    // web addresses: article HTML is untrusted. The app's own UI loads only cached
-    // thumbnails, from the cache.
+    // Article HTML is untrusted, so every document's requests, the article frame's
+    // included, may reach only public web addresses. The app's own UI loads only
+    // cached thumbnails.
     let net = ArticleNet::new().map_err(|e| format!("building the HTTP client failed: {e}"))?;
     let (config, window) = chrome::window(
         Config::default(),

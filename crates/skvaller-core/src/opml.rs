@@ -12,7 +12,8 @@ use serde::Serialize;
 use crate::db::NewFeed;
 use crate::{Db, Error, Result};
 
-/// Folders in real files nest a few levels at most.
+/// Deepest element nesting an import accepts. Folders in real files nest a few levels
+/// at most.
 const MAX_DEPTH: usize = 100;
 
 /// Feeds one import adds at most. Readers export a few hundred.

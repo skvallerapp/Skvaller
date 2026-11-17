@@ -52,8 +52,8 @@ impl Untrusted {
         Self::build(timeout, trusted, ips)
     }
 
-    /// As [`Untrusted::new`], with `ips` reachable besides public addresses: none, to
-    /// test the guard against a local server.
+    /// As [`Untrusted::new`], but `ips` are reachable besides public addresses. Tests
+    /// pass none to check the guard against a local server.
     pub(crate) fn build(
         timeout: Duration,
         trusted: &[Url],
@@ -107,11 +107,11 @@ impl ArticleNet {
     /// Requests time out after this long, as an image that slow is not coming.
     const TIMEOUT: Duration = Duration::from_secs(30);
 
-    /// The article's client and its check.
+    /// Builds the article's client and its URL check.
     ///
     /// # Errors
     ///
-    /// When the HTTP client can't be built, as without TLS support.
+    /// Returns an error if the HTTP client can't be built, such as without TLS support.
     pub fn new() -> reqwest::Result<Self> {
         Untrusted::build(Self::TIMEOUT, &[], Vec::new()).map(Self)
     }

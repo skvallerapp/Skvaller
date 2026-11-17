@@ -5,7 +5,7 @@
 # password after each rebuild. With a stable certificate, "Always Allow" sticks.
 #
 # Uses the first Apple Development certificate in your keychain, or the identity in
-# SKVALLER_SIGN_IDENTITY. Without one, the app runs unsigned, as before.
+# SKVALLER_SIGN_IDENTITY. Without one, the app runs unsigned.
 
 bin="$1"
 if [ "$(basename "$bin")" = skvaller ]; then

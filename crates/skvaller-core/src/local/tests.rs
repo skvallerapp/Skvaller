@@ -265,7 +265,7 @@ async fn a_failing_feed_says_why_and_the_others_go_on() {
     assert_eq!(error(&good), None);
     assert_eq!(all(&db).len(), 2);
 
-    // Fixed: the error goes.
+    // Once the feed works again, its error is cleared.
     server.reset().await;
     serve(&server, "/bad.xml", xml(rss(""))).await;
     serve(&server, "/good.xml", xml(rss(TWO_ITEMS))).await;

@@ -593,7 +593,7 @@ button {
   text-transform: uppercase;
 }
 
-/* The sidebar's grows with the font size, to a fixed height: scale.rs's heading_height
+/* The sidebar's heading grows with the font size, to a fixed height: scale.rs's heading_height
    and ui.rs's SIDEBAR_HEADING_MARGINS count it and its margins to place the selection's
    highlight. */
 .feeds .heading {
@@ -794,7 +794,7 @@ input.search-field {
   position: relative;
 }
 
-/* The next list slides in from below as the old one's ghost slides up out of sight,
+/* The next list slides in from below as the old one's ghost slides up out of sight.
    ui.rs's LIST_SLIDE is how long the ghost stays. */
 .list-body.sliding > .viewport {
   animation: list-in 320ms cubic-bezier(0.3, 0, 0, 1);

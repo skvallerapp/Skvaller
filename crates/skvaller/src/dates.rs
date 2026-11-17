@@ -55,8 +55,8 @@ impl Dates {
             Clock::H24 => Some(HourCycle::H23),
             Clock::H12 => Some(HourCycle::H12),
         };
-        // A chosen order puts the parts together here, with the year and day of the
-        // Gregorian calendar, the only one the order makes sense in.
+        // A chosen order assembles the parts here, so use the Gregorian calendar: the
+        // only one these orders make sense in.
         if order != DateFormat::System {
             prefs.calendar_algorithm = Some(CalendarAlgorithm::Gregory);
         }
@@ -251,8 +251,9 @@ impl PartsWrite for Parts {
     }
 }
 
-/// The system's locale tags, the first that parses winning. On Unix the time format's
-/// own variables come first: the UI language, which sys-locale reads, may differ.
+/// The system's locale tags; the first that parses wins. On Unix other than macOS,
+/// `LC_ALL` and `LC_TIME` come first, as the UI language, which sys-locale reads, may
+/// differ.
 fn system_locale_tags() -> impl Iterator<Item = String> {
     let time = if cfg!(all(unix, not(target_os = "macos"))) {
         ["LC_ALL", "LC_TIME"]

@@ -106,8 +106,8 @@ const TOOLBAR: f64 = if MAC { 52.0 } else { 44.0 };
 /// How long an article is open before it is marked read, with [`MarkReadOn::Delay`].
 const MARK_READ_DELAY: Duration = Duration::from_secs(2);
 /// How long an article of a Reader View feed waits for its text before showing the
-/// feed's content. Long enough for the cache, which most
-/// pages come from after a sync's prefetch; short enough not to feel stuck.
+/// feed's content. Long enough for the cache, which most pages come from after a
+/// sync's prefetch; short enough not to feel stuck.
 const READER_VIEW_HOLD: Duration = Duration::from_millis(400);
 
 /// How much of the article's height reading on scrolls: a page, less some lines to keep
@@ -292,8 +292,8 @@ enum Fetch {
 struct Reading {
     account: Signal<Option<String>>,
     selection: Signal<Selection>,
-    /// The open article, as it was when opened: [`Reading::open_article`] has its flags
-    /// now.
+    /// The open article, as it was when opened: [`Reading::open_article`] has its
+    /// current flags.
     article: Signal<Option<ArticleSummary>>,
     /// The shown account's cache changes, as [`App::changes`] told them.
     cache: Signal<Cached>,
@@ -784,8 +784,8 @@ impl Reading {
     /// Marks every article in the list read.
     ///
     /// In Unread, the next row with unread articles is then selected, or All Unread,
-    /// and the open article closes. With All Unread already
-    /// selected, the list empties at once, except for the article being read.
+    /// and the open article closes. With All Unread already selected, the list empties
+    /// at once, except for the article being read.
     fn mark_all_read(mut self, app: &App) {
         if *self.overlay.peek() == Overlay::MarkAll {
             self.overlay.set(Overlay::None);
@@ -860,8 +860,8 @@ impl Reading {
 
     /// Opens the search field, or focuses it if it is open.
     fn open_search(mut self) {
-        // Their keys would keep the field's, such as a paste, from it. The field takes
-        // the focus.
+        // An open overlay would take keys meant for the field, such as a paste. The
+        // field takes the focus.
         self.open_overlay(Overlay::None);
         if !self.search.peek().open {
             // The field focuses itself as it mounts.
@@ -1145,7 +1145,8 @@ pub fn Root() -> Element {
         move || {
             spawn(async move {
                 let mut events = app.subscribe();
-                // A report sent before this listened, as by the first sync at start.
+                // Catches a report sent before this subscribed, as by the first sync at
+                // start.
                 let shown = account.peek().clone();
                 if let Some(id) = shown {
                     status.set(app.status(&id).ok());
@@ -1305,7 +1306,7 @@ pub fn Root() -> Element {
         let app = Arc::clone(&app);
         move |command| reading.run(&app, command)
     });
-    // Settings goes with the main window, as the app does, and the list follows the
+    // Settings closes with the main window, as the app does. The list follows the
     // window's size: its width may squeeze the list, its height the list's viewport.
     use_window_event({
         let (settings, windows) = (settings.clone(), windows.clone());
@@ -3050,7 +3051,8 @@ fn Viewport() -> Element {
     }
 }
 
-/// While a list springs, CSS moves it, and the refresh icon along.
+/// The CSS transition that moves a springing list and its refresh icon; empty while it
+/// doesn't spring.
 fn spring_style(pulled: Shown) -> String {
     pulled.spring.map_or(String::new(), |s| {
         let ms = s.duration.as_millis();
@@ -3125,7 +3127,7 @@ impl Pull {
         }
     }
 
-    /// Where the list is scrolled now.
+    /// Which ends the list is at, as last seen, and how tall it shows.
     fn edges(self) -> Edges {
         let at = *self.at.peek();
         Edges {
@@ -3395,8 +3397,8 @@ fn Reader() -> Element {
     }
 }
 
-/// How long a new look waits at most for the remade article's layout to put it back in
-/// its place: a long article takes a while to lay out.
+/// How many frames a new look waits at most for the remade article's layout to put it
+/// back in its place: a long article takes a while to lay out.
 const PLACE_WAITS: u32 = 60;
 
 /// The reader's document as a new look remakes it.
@@ -3468,8 +3470,8 @@ impl Remake {
         let made = *self.count.peek();
         if let Some(place) = place {
             let mut last = None;
-            // Frames the new frame has had no scroll range: at a smaller size it may no
-            // longer scroll at all.
+            // How many waits the remade frame has had no scroll range: at a smaller size
+            // it may not scroll at all.
             let mut unscrolled = 0;
             for _ in 0..PLACE_WAITS {
                 tokio::time::sleep(FRAME).await;
