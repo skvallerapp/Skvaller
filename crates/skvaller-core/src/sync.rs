@@ -291,19 +291,14 @@ fn store(db: &Db, items: Vec<Item>, prune_before: i64) -> Result<(usize, Option<
                 .into_iter()
                 .chain(item.alternate)
                 .next()
-                .map(|l| l.href)
-                .unwrap_or_default();
+                .map_or_default(|l| l.href);
             let thumbnail = thumbnail::from_enclosures(
                 item.enclosure
                     .iter()
                     .map(|e| (e.href.as_str(), e.mime.as_deref())),
                 &url,
             );
-            let html = item
-                .content
-                .or(item.summary)
-                .map(|c| c.content)
-                .unwrap_or_default();
+            let html = item.content.or(item.summary).map_or_default(|c| c.content);
             Some(ArticleRow {
                 id,
                 read,

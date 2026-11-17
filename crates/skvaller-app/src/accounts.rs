@@ -290,10 +290,7 @@ impl App {
     /// [`Error::Core`] when its feeds can't be read.
     pub fn export_opml(&self, account_id: &str) -> Result<(String, String)> {
         let rt = self.runtime(account_id)?;
-        let description = self
-            .account(account_id)
-            .map(|a| a.description)
-            .unwrap_or_default();
+        let description = self.account(account_id).map_or_default(|a| a.description);
         let xml = export_opml(&rt.db, &description)?;
         // No characters a file system refuses in the suggested name.
         let name: String = description

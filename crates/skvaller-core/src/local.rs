@@ -378,7 +378,7 @@ fn store(db: &Db, feed_id: &str, feed: &model::Feed, page: &Page, now: i64) -> R
                 id: article_id(feed_id, &entry.id).to_string(),
                 feed_id: feed_id.to_owned(),
                 feed_title: String::new(),
-                title: entry.title.as_ref().map(text).unwrap_or_default(),
+                title: entry.title.as_ref().map_or_default(text),
                 author: entry
                     .authors
                     .iter()
@@ -410,8 +410,7 @@ fn entry_url(entry: &model::Entry, base: &Url) -> String {
         .find(|l| l.rel.as_deref().is_none_or(|rel| rel == "alternate"))
         .or(entry.links.first());
     link.and_then(|l| web_url(base.join(&l.href).ok()?))
-        .map(String::from)
-        .unwrap_or_default()
+        .map_or_default(String::from)
 }
 
 /// A title as plain text. Atom titles can be HTML.

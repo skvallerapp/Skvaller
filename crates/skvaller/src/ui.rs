@@ -1730,8 +1730,7 @@ fn Sidebar() -> Element {
         .read()
         .as_deref()
         .and_then(|id| app.accounts().into_iter().find(|a| a.id == id))
-        .map(|a| a.description)
-        .unwrap_or_default();
+        .map_or_default(|a| a.description);
     let sort = live.settings.read().sort_subscriptions;
     let font_size = use_memo(move || live.settings.read().font_size);
     let entries = sidebar_tree(
@@ -2492,14 +2491,12 @@ fn list_title(lib: &Library, selection: &Selection) -> String {
             .feeds
             .iter()
             .find(|f| &f.id == id)
-            .map(|f| f.title.clone())
-            .unwrap_or_default(),
+            .map_or_default(|f| f.title.clone()),
         Scope::Folder { id } => lib
             .folders
             .iter()
             .find(|f| &f.id == id)
-            .map(|f| f.title.clone())
-            .unwrap_or_default(),
+            .map_or_default(|f| f.title.clone()),
     }
 }
 
@@ -2916,8 +2913,7 @@ fn Viewport() -> Element {
         lib.feeds
             .iter()
             .find(|f| f.id == id)
-            .map(|f| f.title.clone())
-            .unwrap_or_default()
+            .map_or_default(|f| f.title.clone())
     };
     let rows: Vec<Row> = shown
         .iter()

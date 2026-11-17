@@ -333,7 +333,7 @@ const WAKE_CHECK: Duration = Duration::from_secs(30);
 /// More time than this past a check's wait means the computer slept. Large, so a
 /// stalled process, as under App Nap, or a clock set forward isn't taken for a sleep;
 /// a sleep shorter than this needs no sync anyway.
-const WAKE_SLACK: Duration = Duration::from_secs(5 * 60);
+const WAKE_SLACK: Duration = Duration::from_mins(5);
 /// The network takes a moment to come back after a wake.
 const WAKE_DELAY: Duration = Duration::from_secs(15);
 /// Retries of a sync after waking that failed, likely before the network was back.
