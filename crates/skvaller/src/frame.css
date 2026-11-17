@@ -3,13 +3,14 @@
    --headline-font are the settings' stacks, --line-width the text column's width, and
    --article-scale and --article-meta-scale the font size's factors (scale.rs), set on
    the root element. */
-:root { color-scheme: light; --bg: #fafaf9; --text: #2e2e2d; --text-2: #61605f; --text-3: #676665; --rule: rgb(0 0 0 / .1); --link: #9a5136; }
+:root { color-scheme: light; --bg: #fafaf9; --text: #2e2e2d; --text-2: #61605f; --text-3: #676665; --rule: rgb(0 0 0 / .1); --link: #9a5136; --selection: rgb(154 81 54 / .2); }
 @media (prefers-color-scheme: dark) {
-  :root[data-theme='system'] { color-scheme: dark; --bg: #202022; --text: #ececee; --text-2: #a0a0a6; --text-3: #97979d; --rule: rgb(255 255 255 / .1); --link: #8aa4c8; }
+  :root[data-theme='system'] { color-scheme: dark; --bg: #202022; --text: #ececee; --text-2: #a0a0a6; --text-3: #97979d; --rule: rgb(255 255 255 / .1); --link: #8aa4c8; --selection: rgb(82 112 156 / .55); }
 }
-:root[data-theme='dark'] { color-scheme: dark; --bg: #202022; --text: #ececee; --text-2: #a0a0a6; --text-3: #97979d; --rule: rgb(255 255 255 / .1); --link: #8aa4c8; }
-:root[data-theme='espresso'] { color-scheme: dark; --bg: #2d211e; --text: #e0dedd; --text-2: #c1bdbc; --text-3: #9e928d; --rule: rgb(255 236 224 / .12); --link: #cfa080; }
+:root[data-theme='dark'] { color-scheme: dark; --bg: #202022; --text: #ececee; --text-2: #a0a0a6; --text-3: #97979d; --rule: rgb(255 255 255 / .1); --link: #8aa4c8; --selection: rgb(82 112 156 / .55); }
+:root[data-theme='espresso'] { color-scheme: dark; --bg: #2d211e; --text: #e0dedd; --text-2: #c1bdbc; --text-3: #9e928d; --rule: rgb(255 236 224 / .12); --link: #cfa080; --selection: rgb(154 99 66 / .55); }
 html { background: var(--bg); }
+::selection { background-color: var(--selection); }
 body { margin: 0; padding: 36px 40px 64px; color: var(--text);
   font: calc(16px * var(--article-scale)) / 1.65 var(--article-font); }
 article { max-width: var(--line-width); margin: 0 auto; animation: enter 160ms ease-out; }

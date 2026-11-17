@@ -22,7 +22,7 @@ skvaller-core = { path = "crates/skvaller-core", version = "0.1.0" }
 # panic Vello GPU, the bullet font kept with an embedder's fonts, and smaller fixes.
 # The fork pins AnyRender to 814e100d: AnyRender's main renamed anyrender_vello_hybrid
 # to anyrender_vello_gpu and changed its API.
-dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "34579707", default-features = false }
+dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "53007fef", default-features = false }
 
 dirs = "7.0.0"
 icu_calendar = { version = "2.4.0", default-features = false }

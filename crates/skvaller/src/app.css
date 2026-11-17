@@ -27,6 +27,9 @@
   --popover-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
   --accent: #9a5136;
   --accent-text: #ffffff;
+  /* Selected text's background (`::selection`), dark enough in the dark themes to keep
+     their light text readable. frame.css has the same. */
+  --selection: rgb(154 81 54 / 0.2);
   --destructive: #c4352b;
   --unread: #9a5136;
   --star: #e0a21b;
@@ -50,6 +53,7 @@
     --popover-bg: #2a2a2d;
     --popover-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
     --accent: #52709c;
+    --selection: rgb(82 112 156 / 0.55);
     --unread: #8aa4c8;
     --star: #f0b63a;
     --error: #f0776c;
@@ -72,6 +76,7 @@
   --popover-bg: #2a2a2d;
   --popover-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
   --accent: #52709c;
+  --selection: rgb(82 112 156 / 0.55);
   --unread: #8aa4c8;
   --star: #f0b63a;
   --error: #f0776c;
@@ -93,6 +98,7 @@
   --popover-bg: #382a26;
   --popover-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
   --accent: #9a6342;
+  --selection: rgb(154 99 66 / 0.55);
   --unread: #cfa080;
   --star: #f0b63a;
   --error: #f4847a;
@@ -100,6 +106,10 @@
 
 * {
   box-sizing: border-box;
+}
+
+::selection {
+  background-color: var(--selection);
 }
 
 html,
