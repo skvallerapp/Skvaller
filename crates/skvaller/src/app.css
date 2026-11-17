@@ -130,8 +130,8 @@ body {
 }
 
 /* The app's own text isn't selectable, as in native apps: a click that moves over a
-   label would otherwise leave a stray highlight. Blitz checks only the pressed element
-   and its parent, so every element needs it. Text fields select on their own, and the
+   label would otherwise leave a stray highlight. Blitz picks the text cursor from the
+   hovered element's own value, so every element needs it. Text fields select on their own, and the
    article is a document of its own. */
 .root,
 .root * {
