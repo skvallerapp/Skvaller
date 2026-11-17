@@ -21,7 +21,8 @@ use super::manage::Manage;
 use super::{Pane, Reading, Search};
 use crate::settings::{Pane as SettingsPane, SettingsWindow};
 use crate::shortcuts::{
-    ACCOUNT_MODIFIER, ARROWS, Action, COMMAND_MODIFIER, account_index, highlight, key_name,
+    ACCOUNT_MODIFIER, ARROWS, Action, COMMAND_MODIFIER, Chord, FontStep, app_chord, highlight,
+    key_name,
 };
 
 /// The popover, question or form open over the window: one at a time.
@@ -118,14 +119,6 @@ pub(crate) enum Command {
     CloseOverlay,
 }
 
-/// How [`Command::FontSize`] changes the font size.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FontStep {
-    Larger,
-    Smaller,
-    Reset,
-}
-
 impl FontStep {
     /// The size after this change of `size`.
     fn apply(self, size: FontSize) -> FontSize {
@@ -133,23 +126,6 @@ impl FontStep {
             Self::Larger => size.larger(),
             Self::Smaller => size.smaller(),
             Self::Reset => FontSize::M,
-        }
-    }
-
-    /// The change `key` asks for with the command modifier, and Shift if `shift`, by
-    /// the character it types, so it follows the keyboard's layout: `+` is a key of its
-    /// own on some, and Shift and `=` on others, so `=` alone counts as `+`, as browsers
-    /// have it. Only `+` may come with Shift: Shift and `0` types `=` on a Swedish
-    /// keyboard.
-    fn of(key: &Key, shift: bool) -> Option<Self> {
-        let Key::Character(c) = key else {
-            return None;
-        };
-        match (c.as_str(), shift) {
-            ("+", _) | ("=", false) => Some(Self::Larger),
-            ("-", false) => Some(Self::Smaller),
-            ("0", false) => Some(Self::Reset),
-            _ => None,
         }
     }
 }
@@ -214,7 +190,7 @@ pub(super) struct Context<'a> {
     pub sidebar_open: bool,
     /// The pane the arrow keys move in.
     pub pane: Pane,
-    /// The single-key shortcuts, by key name.
+    /// The shortcuts, by key name.
     pub bindings: &'a HashMap<String, Action>,
 }
 
@@ -228,8 +204,8 @@ pub(super) enum Route {
     Pass,
 }
 
-/// What `press` does, in this order: the app's chords; the account chords; the open
-/// overlay's keys; Escape closing the search; the arrow keys; the shortcuts.
+/// What `press` does, in this order: the app's chords, the accounts' among them; the
+/// open overlay's keys; Escape closing the search; the arrow keys; the shortcuts.
 pub(super) fn route(press: &Press, cx: &Context<'_>) -> Route {
     let Press {
         key,
@@ -239,26 +215,14 @@ pub(super) fn route(press: &Press, cx: &Context<'_>) -> Route {
     } = press;
     let (key, mods, repeat) = (key, *mods, *repeat);
     // On macOS the menu bar takes ⌘, and the account chords first.
-    if mods == COMMAND_MODIFIER {
-        match code {
-            Code::Comma => return Route::Run(Command::Settings),
-            Code::KeyF => return Route::Run(Command::Search),
-            _ => {}
-        }
-    }
-    if mods == COMMAND_MODIFIER | Modifiers::SHIFT && *code == Code::KeyS {
-        return Route::Run(Command::ToggleSidebar);
-    }
-    if mods - Modifiers::SHIFT == COMMAND_MODIFIER
-        && let Some(step) = FontStep::of(key, mods.contains(Modifiers::SHIFT))
-    {
-        return Route::Run(Command::FontSize(step));
-    }
-    if let Some(index) = account_index(*code, mods) {
-        return if repeat {
-            Route::Eat
-        } else {
-            Route::Run(Command::AccountAt(index))
+    if let Some(chord) = app_chord(key, *code, mods) {
+        return match chord {
+            Chord::Settings => Route::Run(Command::Settings),
+            Chord::Search => Route::Run(Command::Search),
+            Chord::ToggleSidebar => Route::Run(Command::ToggleSidebar),
+            Chord::FontSize(step) => Route::Run(Command::FontSize(step)),
+            Chord::Account(_) if repeat => Route::Eat,
+            Chord::Account(index) => Route::Run(Command::AccountAt(index)),
         };
     }
     if let Some(route) = overlay_key(key, mods, cx) {
@@ -267,7 +231,7 @@ pub(super) fn route(press: &Press, cx: &Context<'_>) -> Route {
     if *key == Key::Named(NamedKey::Escape) && cx.search_open {
         return Route::Run(Command::CloseSearch);
     }
-    let Some(name) = key_name(key, &code.to_string(), mods) else {
+    let Some(name) = key_name(key, *code, mods) else {
         return Route::Pass;
     };
     if ARROWS.contains(&name.as_str()) {
@@ -652,6 +616,31 @@ mod tests {
         );
         assert_eq!(routed(&none, 1, &letter('x')), Route::Pass);
         assert_eq!(routed(&none, 1, &named(NamedKey::Enter)), Route::Pass);
+    }
+
+    #[test]
+    fn a_shortcut_can_be_a_chord() {
+        let overrides = Overrides::from([("sync".to_owned(), Some("Ctrl+Alt+r".to_owned()))]);
+        let keys = bindings(&overrides);
+        let cx = Context {
+            overlay: &Overlay::None,
+            menu_items: 0,
+            unread: 1,
+            search_open: false,
+            sidebar_open: false,
+            pane: Pane::List,
+            bindings: &keys,
+        };
+        let ctrl_alt = Modifiers::CONTROL | Modifiers::ALT;
+        assert_eq!(
+            route(&chord(ctrl_alt, Code::KeyR, "r"), &cx),
+            run(Action::Sync.into())
+        );
+        assert_eq!(route(&letter('r'), &cx), Route::Pass);
+        assert_eq!(
+            route(&chord(Modifiers::CONTROL, Code::KeyR, "r"), &cx),
+            Route::Pass
+        );
     }
 
     #[test]

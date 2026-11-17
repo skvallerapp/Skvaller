@@ -38,7 +38,7 @@ use crate::overscroll::{Edges, HOLD, Out, Overscroll, SPRING_EASE, Shown, WHEEL_
 use crate::place::{Keeper, ListView, Place, differs, reveal, reveal_row};
 use crate::scale;
 use crate::settings::SettingsWindow;
-use crate::shortcuts::{ACCOUNT_MODIFIER, Action, COMMAND_MODIFIER};
+use crate::shortcuts::{ACCOUNT_MODIFIER, Action, COMMAND_MODIFIER, app_chord};
 use crate::spin::Spin;
 use crate::thumbs;
 
@@ -2683,7 +2683,7 @@ fn SearchBar() -> Element {
                 },
                 oninput: move |e| reading.set_query(e.value()),
                 onkeydown: move |e: Event<KeyboardData>| {
-                    if e.modifiers().intersects(COMMAND_MODIFIER | ACCOUNT_MODIFIER) {
+                    if app_chord(&e.key(), e.code(), e.modifiers()).is_some() {
                         return;
                     }
                     // Other keys typed here are the field's, not the window's.

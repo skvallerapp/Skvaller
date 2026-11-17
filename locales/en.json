@@ -15,6 +15,7 @@
   "keys.shift": "Shift",
   "keys.ctrl": "Ctrl",
   "keys.alt": "Alt",
+  "keys.super": "Super",
 
   "app.signInAgain": "{account} no longer accepts the sign-in. Sign in again.",
   "app.resizeSidebar": "Resize sidebar",
@@ -163,11 +164,12 @@
   "shortcuts.pressKey": "Press a key…",
   "shortcuts.none": "None",
   "shortcuts.displaced": "{key} was the key for “{action}”, which now has none.",
-  "shortcuts.singleKey": "A shortcut is a single key, with or without Shift.",
+  "shortcuts.taken": "{key} is already used by the app or the system.",
+  "shortcuts.unnamed": "That key can’t be a shortcut.",
   "shortcuts.arrows": "The arrow keys move in and between the sidebar and the article list.",
   "shortcuts.notAllowed": "{key} can’t be a shortcut.",
   "shortcuts.recording": "Press Esc to cancel, or {key} for no key.",
-  "shortcuts.help": "Click a key to change it. ↑ and ↓ move in the sidebar or the list, and ← and → move between them.",
+  "shortcuts.help": "Click a key to change it, then press a key on its own or with modifier keys. ↑ and ↓ move in the sidebar or the list, and ← and → move between them.",
   "shortcuts.restore": "Restore Defaults",
 
   "settings.label": "Settings",

@@ -82,8 +82,8 @@ The windows, in Dioxus Native (Blitz).
 - `ui/command`: what the main window does. Every key, macOS menu bar item and button
   that asks it for something becomes a `Command`, run by `Reading::run`, which holds
   each command's guards, such as needing the panes rather than the sign-in screen.
-  `route` decides what a key does, in a fixed order: the app's chords, the account
-  chords, the open overlay's keys, Escape for the search, the arrow keys, then the
+  `route` decides what a key does, in a fixed order: the app's chords (the accounts'
+  among them), the open overlay's keys, Escape for the search, the arrow keys, then the
   shortcuts. The window's one `Overlay` slot holds the account menu, the
   mark-all-read question or a `ui/manage` menu, question or form, so two can't be
   open at once; its methods say which stays open after a click, a hidden sidebar or
@@ -137,8 +137,10 @@ The windows, in Dioxus Native (Blitz).
   Windows and Linux have no menu bar.
 - `spin`: when the sync icon turns and stops, as plain state.
 - `i18n`, `dates`, `fonts`, `icons`, `shortcuts`: text, date formats, font stacks,
-  icons and keys: the bindings, the account chords and how the arrow keys move a
-  menu's highlight, shared by the window's menus and `dropdown`.
+  icons and keys: the bindings, the app's chords, the system's chords a shortcut
+  can't take, and how the arrow keys move a menu's highlight, shared by the window's
+  menus and `dropdown`. Text fields hand the window only the app's chords, so a
+  shortcut never fires while typing.
 
 ## Runtime
 

@@ -11,10 +11,11 @@ use dioxus_native::prelude::*;
 use skvaller_app::{AccountKind, App, Library};
 use skvaller_core::Scope;
 
-use super::{ACCOUNT_MODIFIER, COMMAND_MODIFIER, Command, Overlay, Reading};
+use super::{Command, Overlay, Reading};
 use crate::dropdown::Dropdown;
 use crate::i18n::{sentence, t, t_with};
 use crate::icons::{CHECK, Icon, PLUS};
+use crate::shortcuts::app_chord;
 
 /// Heights in a menu, in CSS pixels, as app.css draws it: an item, a line between
 /// groups with its margins, the Move To heading, and the menu's padding and borders.
@@ -400,7 +401,7 @@ pub(super) fn RenameField(target: Target, title: String) -> Element {
             // The row would select itself.
             onclick: move |e| e.stop_propagation(),
             onkeydown: move |e: Event<KeyboardData>| {
-                if e.modifiers().intersects(COMMAND_MODIFIER | ACCOUNT_MODIFIER) {
+                if app_chord(&e.key(), e.code(), e.modifiers()).is_some() {
                     return;
                 }
                 // Other keys typed here are the field's, not the window's.
@@ -493,9 +494,7 @@ pub(super) fn AddFeed() -> Element {
     let on_key = {
         let app = Arc::clone(&app);
         move |e: Event<KeyboardData>| {
-            if e.modifiers()
-                .intersects(COMMAND_MODIFIER | ACCOUNT_MODIFIER)
-            {
+            if app_chord(&e.key(), e.code(), e.modifiers()).is_some() {
                 return;
             }
             e.stop_propagation();

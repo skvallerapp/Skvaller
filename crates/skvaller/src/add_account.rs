@@ -11,6 +11,7 @@ use skvaller_app::{Account, AccountKind, App};
 use crate::chrome::{DragArea, FRAMELESS};
 use crate::i18n::{sentence, t, t_with};
 use crate::icons::{CHEVRON_LEFT, CHEVRON_RIGHT, Icon, LAPTOP, RSS};
+use crate::shortcuts::app_chord;
 
 const ADD_ACCOUNT_CSS: &str = include_str!("add_account.css");
 
@@ -282,13 +283,11 @@ fn SignIn(
             }
         });
     });
-    // Keys typed in a field are the form's: Enter signs in, Escape goes back. With a
-    // modifier, as the app's own shortcuts, they are the window's too.
+    // Keys typed in a field are the form's: Enter signs in, Escape goes back. The app's
+    // own chords are the window's too.
     let on_key = move |e: Event<KeyboardData>| {
         let key = e.key();
-        let shortcut = e
-            .modifiers()
-            .intersects(Modifiers::CONTROL | Modifiers::META | Modifiers::ALT);
+        let shortcut = app_chord(&key, e.code(), e.modifiers()).is_some();
         if shortcut || (key == Key::Named(NamedKey::Escape) && back.is_none()) {
             return;
         }

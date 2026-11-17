@@ -15,6 +15,7 @@
   "keys.shift": "Skift",
   "keys.ctrl": "Ctrl",
   "keys.alt": "Alt",
+  "keys.super": "Super",
 
   "app.signInAgain": "{account} godkänner inte längre inloggningen. Logga in igen.",
   "app.resizeSidebar": "Ändra sidofältets storlek",
@@ -163,11 +164,12 @@
   "shortcuts.pressKey": "Tryck på en tangent…",
   "shortcuts.none": "Ingen",
   "shortcuts.displaced": "{key} var tangenten för ”{action}”, som nu saknar tangent.",
-  "shortcuts.singleKey": "Ett kortkommando är en enda tangent, med eller utan Skift.",
+  "shortcuts.taken": "{key} används redan av appen eller systemet.",
+  "shortcuts.unnamed": "Den tangenten kan inte vara ett kortkommando.",
   "shortcuts.arrows": "Med piltangenterna navigerar du i och mellan sidofältet och artikellistan.",
   "shortcuts.notAllowed": "{key} kan inte vara ett kortkommando.",
   "shortcuts.recording": "Tryck på Esc för att avbryta eller på {key} för att ta bort tangenten.",
-  "shortcuts.help": "Klicka på en tangent för att ändra den. Med ↑ och ↓ navigerar du i sidofältet eller listan, och med ← och → mellan dem.",
+  "shortcuts.help": "Klicka på en tangent för att ändra den och tryck sedan på en tangent, ensam eller med kombinationstangenter. Med ↑ och ↓ navigerar du i sidofältet eller listan, och med ← och → mellan dem.",
   "shortcuts.restore": "Återställ standardvärden",
 
   "settings.label": "Inställningar",

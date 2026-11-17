@@ -15,6 +15,7 @@
   "keys.shift": "Mayús",
   "keys.ctrl": "Ctrl",
   "keys.alt": "Alt",
+  "keys.super": "Super",
 
   "app.signInAgain": "{account} ya no acepta el inicio de sesión. Inicia sesión de nuevo.",
   "app.resizeSidebar": "Cambiar el tamaño de la barra lateral",
@@ -166,11 +167,12 @@
   "shortcuts.pressKey": "Pulsa una tecla…",
   "shortcuts.none": "Ninguna",
   "shortcuts.displaced": "{key} era la tecla de “{action}”, que ahora no tiene ninguna.",
-  "shortcuts.singleKey": "Un atajo es una sola tecla, con o sin Mayús.",
+  "shortcuts.taken": "{key} ya lo usa la app o el sistema.",
+  "shortcuts.unnamed": "Esa tecla no puede ser un atajo.",
   "shortcuts.arrows": "Con las teclas de flecha te mueves por la barra lateral y la lista de artículos, y entre ellas.",
   "shortcuts.notAllowed": "{key} no puede ser un atajo.",
   "shortcuts.recording": "Pulsa Esc para cancelar o {key} para no asignar ninguna tecla.",
-  "shortcuts.help": "Haz clic en una tecla para cambiarla. Con ↑ y ↓ te mueves por la barra lateral o la lista, y con ← y →, entre ellas.",
+  "shortcuts.help": "Haz clic en una tecla para cambiarla y pulsa una tecla, sola o con teclas modificadoras. Con ↑ y ↓ te mueves por la barra lateral o la lista, y con ← y →, entre ellas.",
   "shortcuts.restore": "Restaurar valores predeterminados",
 
   "settings.label": "Ajustes",

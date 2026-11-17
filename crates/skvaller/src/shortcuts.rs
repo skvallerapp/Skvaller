@@ -1,14 +1,16 @@
-//! The app's keys: single-key shortcuts, the account chords and moving a menu's
-//! highlight.
+//! The app's keys: the shortcuts, the app's chords, the system's chords a shortcut
+//! can't take, and moving a menu's highlight.
 //!
-//! Single keys are named as [`key_name`] returns them: `j`, ` ` (Space), `Shift+ `,
-//! `Enter`. The user can rebind every action; config.json keeps only the keys that
-//! differ from the defaults, by action name.
+//! Keys are named as [`key_name`] returns them: `j`, ` ` (Space), `Shift+ `, `Enter`,
+//! `Ctrl+Alt+k`. The user can rebind every action, to any key the app or the system
+//! doesn't use already; config.json keeps only the keys that differ from the defaults,
+//! by action name.
 
 use std::collections::{BTreeMap, HashMap};
 
 use dioxus_native::prelude::{Code, Key, Modifiers, NamedKey};
 
+use crate::chrome::MAC;
 use crate::i18n::t;
 
 /// The modifier of the app's own shortcuts, such as Settings: ⌘ on macOS, Ctrl elsewhere.
@@ -42,11 +44,123 @@ pub const ACCOUNT_KEYS: [Code; 9] = [
 /// The account a key switches to, by index: ⌘1 to ⌘9 on macOS, Alt+1 to Alt+9
 /// elsewhere. On macOS the menu bar takes the key first, except where the layout's
 /// digits need Shift.
-pub fn account_index(code: Code, mods: Modifiers) -> Option<usize> {
+fn account_index(code: Code, mods: Modifiers) -> Option<usize> {
     if mods != ACCOUNT_MODIFIER {
         return None;
     }
     ACCOUNT_KEYS.iter().position(|&key| key == code)
+}
+
+/// How the font size changes with ⌘+, ⌘− and ⌘0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FontStep {
+    Larger,
+    Smaller,
+    Reset,
+}
+
+impl FontStep {
+    /// The change `key` asks for with the command modifier, and Shift if `shift`, by
+    /// the character it types, so it follows the keyboard's layout: `+` is a key of its
+    /// own on some, and Shift and `=` on others, so `=` alone counts as `+`, as browsers
+    /// have it. Only `+` may come with Shift: Shift and `0` types `=` on a Swedish
+    /// keyboard.
+    fn of(key: &Key, shift: bool) -> Option<Self> {
+        let Key::Character(c) = key else {
+            return None;
+        };
+        match (c.as_str(), shift) {
+            ("+", _) | ("=", false) => Some(Self::Larger),
+            ("-", false) => Some(Self::Smaller),
+            ("0", false) => Some(Self::Reset),
+            _ => None,
+        }
+    }
+}
+
+/// One of the app's own chords, which no shortcut can take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chord {
+    Settings,
+    Search,
+    ToggleSidebar,
+    FontSize(FontStep),
+    /// The account at this place in the list.
+    Account(usize),
+}
+
+/// The app's chord `key` makes with `mods`, if any.
+pub fn app_chord(key: &Key, code: Code, mods: Modifiers) -> Option<Chord> {
+    if mods == COMMAND_MODIFIER {
+        match code {
+            Code::Comma => return Some(Chord::Settings),
+            Code::KeyF => return Some(Chord::Search),
+            _ => {}
+        }
+    }
+    if mods == COMMAND_MODIFIER | Modifiers::SHIFT && code == Code::KeyS {
+        return Some(Chord::ToggleSidebar);
+    }
+    if mods - Modifiers::SHIFT == COMMAND_MODIFIER
+        && let Some(step) = FontStep::of(key, mods.contains(Modifiers::SHIFT))
+    {
+        return Some(Chord::FontSize(step));
+    }
+    account_index(code, mods).map(Chord::Account)
+}
+
+/// Whether a key named `name` is one of the system's chords that come to the window:
+/// editing text, and closing the window on Windows and Linux. The others, such as ⌘Q
+/// and Alt+Tab, the system or the menu bar takes first. On Windows and Linux every
+/// chord with the Windows or Super key is the system's.
+fn system_chord(name: &str) -> bool {
+    let (mods, key) = split(name);
+    if !MAC && mods.contains(Modifiers::META) {
+        return true;
+    }
+    let command = mods - Modifiers::SHIFT == COMMAND_MODIFIER;
+    let shift = mods.contains(Modifiers::SHIFT);
+    match key {
+        "c" | "v" | "x" => command && !shift,
+        // Select all, and with Shift, as in Blitz's fields, select none; undo, and redo
+        // with Shift.
+        "a" | "z" => command,
+        "y" => command && !shift && !MAC,
+        "Home" | "End" => command && !MAC,
+        // Closing the window, and its window menu.
+        "F4" | " " => !MAC && mods == Modifiers::ALT,
+        // Moving by word or line in text, and between spaces on macOS.
+        _ if ARROWS.contains(&key) => mods.intersects(CHORD),
+        _ => false,
+    }
+}
+
+/// The modifiers that make a key a chord.
+const CHORD: Modifiers = Modifiers::CONTROL
+    .union(Modifiers::ALT)
+    .union(Modifiers::META);
+
+/// The modifiers in key names, in the order they come there and in labels: each one's
+/// name there, its symbol on macOS and its text key elsewhere.
+const MODIFIERS: [(Modifiers, &str, char, &str); 4] = [
+    (Modifiers::CONTROL, "Ctrl", '⌃', "keys.ctrl"),
+    (Modifiers::ALT, "Alt", '⌥', "keys.alt"),
+    (Modifiers::SHIFT, "Shift", '⇧', "keys.shift"),
+    // The Windows or Super key off macOS, of a config.json from a Mac.
+    (Modifiers::META, "Meta", '⌘', "keys.super"),
+];
+
+/// A key name's modifiers, and the key without them.
+fn split(name: &str) -> (Modifiers, &str) {
+    let mut mods = Modifiers::empty();
+    let mut key = name;
+    for (modifier, prefix, ..) in MODIFIERS {
+        if let Some(rest) = key.strip_prefix(prefix).and_then(|k| k.strip_prefix('+')) {
+            mods |= modifier;
+            key = rest;
+        }
+    }
+    (mods, key)
 }
 
 /// Where `key` moves the highlight of a menu of `count` items, highlighted at `at`:
@@ -207,29 +321,46 @@ pub enum Capture {
 /// Why a key can't be a shortcut.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// A combination with Cmd, Ctrl or Alt.
-    NotSingle,
+    /// One of the app's or the system's chords, by its name.
+    Taken(String),
     /// An arrow key.
     Arrow,
     /// Enter, which presses the focused button.
     Enter,
+    /// A key without a name, such as a dead key, or Option and a key other than a
+    /// letter, a digit or Space on macOS.
+    Unnamed,
 }
 
 /// What a key pressed while waiting for a new key comes to.
-pub fn capture(key: &Key, code: &str, mods: Modifiers) -> Capture {
+pub fn capture(key: &Key, code: Code, mods: Modifiers) -> Capture {
     match key {
         Key::Named(NamedKey::Escape) => return Capture::Cancel,
         Key::Named(NamedKey::Backspace | NamedKey::Delete) => return Capture::Clear,
         _ => {}
     }
     let Some(name) = key_name(key, code, mods) else {
-        return if mods.intersects(Modifiers::META | Modifiers::CONTROL | Modifiers::ALT) {
-            Capture::Refuse(Refusal::NotSingle)
-        } else {
+        let modifier = matches!(
+            key,
+            Key::Named(
+                NamedKey::Shift
+                    | NamedKey::Control
+                    | NamedKey::Alt
+                    | NamedKey::Meta
+                    | NamedKey::AltGraph
+                    | NamedKey::CapsLock
+                    | NamedKey::Fn
+            )
+        );
+        return if modifier {
             Capture::Wait
+        } else {
+            Capture::Refuse(Refusal::Unnamed)
         };
     };
-    if ARROWS.contains(&name.as_str()) {
+    if app_chord(key, code, mods).is_some() || system_chord(&name) {
+        Capture::Refuse(Refusal::Taken(name))
+    } else if ARROWS.contains(&name.as_str()) {
         Capture::Refuse(Refusal::Arrow)
     } else if name == "Enter" || name == "Shift+Enter" {
         Capture::Refuse(Refusal::Enter)
@@ -238,12 +369,9 @@ pub fn capture(key: &Key, code: &str, mods: Modifiers) -> Capture {
     }
 }
 
-/// How a key name shows in Settings: `⇧Space` on macOS, `Shift+Space` elsewhere.
+/// How a key name shows in Settings: `⌃⇧Space` on macOS, `Ctrl+Shift+Space` elsewhere.
 pub fn key_label(name: &str, mac: bool) -> String {
-    let (shift, key) = match name.strip_prefix("Shift+") {
-        Some(key) => (true, key),
-        None => (false, name),
-    };
+    let (mods, key) = split(name);
     let label = match key {
         " " => t("keys.space"),
         "Enter" => t(if mac { "keys.return" } else { "keys.enter" }),
@@ -254,21 +382,38 @@ pub fn key_label(name: &str, mac: bool) -> String {
         _ if key.chars().count() == 1 => key.to_uppercase(),
         _ => key.to_owned(),
     };
-    match (shift, mac) {
-        (false, _) => label,
-        (true, true) => format!("⇧{label}"),
-        (true, false) => format!("{}+{label}", t("keys.shift")),
+    let mut shown = String::new();
+    for (modifier, _, symbol, text) in MODIFIERS {
+        if !mods.contains(modifier) {
+            continue;
+        }
+        if mac {
+            shown.push(symbol);
+        } else {
+            shown.push_str(&t(text));
+            shown.push('+');
+        }
     }
+    shown + &label
 }
 
-/// The key's name as a shortcut, or `None` when it can't be one: a modifier on its own,
-/// a dead or unnamed key, and combinations with Cmd, Ctrl or Alt, which belong to the
-/// system and the menus.
-pub fn key_name(key: &Key, code: &str, mods: Modifiers) -> Option<String> {
-    if mods.intersects(Modifiers::META | Modifiers::CONTROL | Modifiers::ALT) {
-        return None;
-    }
+/// The key's name as a shortcut, with its modifiers in front in the order of
+/// [`MODIFIERS`], or `None` when it can't be one: a modifier on its own, or a dead or
+/// unnamed key.
+pub fn key_name(key: &Key, code: Code, mods: Modifiers) -> Option<String> {
+    let code = code.to_string();
+    let code = code.as_str();
+    let mut mods = mods & (CHORD | Modifiers::SHIFT);
     let name = match key {
+        // Option on its own changes the character on macOS: with it, a letter, a digit
+        // or Space goes by its place. With Ctrl or Cmd the character stays the key's.
+        Key::Character(_) if MAC && mods & CHORD == Modifiers::ALT => match code {
+            "Space" => " ".to_owned(),
+            _ => code
+                .strip_prefix("Key")
+                .or_else(|| code.strip_prefix("Digit"))?
+                .to_lowercase(),
+        },
         Key::Character(text) => {
             let mut chars = text.chars();
             let (Some(c), None) = (chars.next(), chars.next()) else {
@@ -286,7 +431,7 @@ pub fn key_name(key: &Key, code: &str, mods: Modifiers) -> Option<String> {
             let lower: String = c.to_lowercase().collect();
             // A shifted symbol is its own character already: `!` rather than `Shift+1`.
             if c != ' ' && lower.to_uppercase() == lower {
-                return Some(lower);
+                mods.remove(Modifiers::SHIFT);
             }
             lower
         }
@@ -310,11 +455,14 @@ pub fn key_name(key: &Key, code: &str, mods: Modifiers) -> Option<String> {
             name
         }
     };
-    Some(if mods.contains(Modifiers::SHIFT) {
-        format!("Shift+{name}")
-    } else {
-        name
-    })
+    let mut full = String::new();
+    for (modifier, prefix, ..) in MODIFIERS {
+        if mods.contains(modifier) {
+            full.push_str(prefix);
+            full.push('+');
+        }
+    }
+    Some(full + &name)
 }
 
 /// A letter of the Latin script: ASCII and the Latin-1, Extended-A/B and Extended
@@ -329,7 +477,7 @@ mod tests {
 
     #[expect(clippy::needless_pass_by_value, reason = "keeps the cases short")]
     fn name(key: Key, code: &str, mods: Modifiers) -> Option<String> {
-        key_name(&key, code, mods)
+        key_name(&key, code.parse().unwrap(), mods)
     }
 
     fn ch(c: &str) -> Key {
@@ -390,8 +538,6 @@ mod tests {
             name(Key::Named(NamedKey::Shift), "ShiftLeft", Modifiers::SHIFT),
             None
         );
-        assert_eq!(name(ch("j"), "KeyJ", Modifiers::CONTROL), None);
-        assert_eq!(name(ch("j"), "KeyJ", Modifiers::META), None);
     }
 
     #[test]
@@ -435,52 +581,148 @@ mod tests {
     }
 
     #[test]
-    fn capture_takes_single_keys_only() {
+    fn capture_takes_chords_the_app_and_the_system_leave_free() {
         let none = Modifiers::empty();
+        let key = |name: &str| Capture::Key(name.to_owned());
+        let taken = |name: &str| Capture::Refuse(Refusal::Taken(name.to_owned()));
+        assert_eq!(capture(&ch("n"), Code::KeyN, none), key("n"));
         assert_eq!(
-            capture(&ch("n"), "KeyN", none),
-            Capture::Key("n".to_owned())
+            capture(&ch(" "), Code::Space, Modifiers::SHIFT),
+            key("Shift+ ")
         );
         assert_eq!(
-            capture(&ch(" "), "Space", Modifiers::SHIFT),
-            Capture::Key("Shift+ ".to_owned())
-        );
-        assert_eq!(
-            capture(&Key::Named(NamedKey::Escape), "Escape", none),
+            capture(&Key::Named(NamedKey::Escape), Code::Escape, none),
             Capture::Cancel
         );
         assert_eq!(
-            capture(&Key::Named(NamedKey::Delete), "Delete", none),
+            capture(&Key::Named(NamedKey::Delete), Code::Delete, none),
             Capture::Clear
         );
         assert_eq!(
-            capture(&Key::Named(NamedKey::Backspace), "Backspace", none),
+            capture(&Key::Named(NamedKey::Backspace), Code::Backspace, none),
             Capture::Clear
         );
+        // A modifier on its own waits for the rest.
         assert_eq!(
-            capture(&Key::Named(NamedKey::Shift), "ShiftLeft", Modifiers::SHIFT),
+            capture(
+                &Key::Named(NamedKey::Shift),
+                Code::ShiftLeft,
+                Modifiers::SHIFT
+            ),
             Capture::Wait
         );
         assert_eq!(
             capture(
                 &Key::Named(NamedKey::Control),
-                "ControlLeft",
+                Code::ControlLeft,
                 Modifiers::CONTROL
             ),
-            Capture::Refuse(Refusal::NotSingle)
+            Capture::Wait
         );
         assert_eq!(
-            capture(&ch("j"), "KeyJ", Modifiers::ALT),
-            Capture::Refuse(Refusal::NotSingle)
+            capture(&ch("k"), Code::KeyK, Modifiers::CONTROL | Modifiers::SHIFT),
+            key("Ctrl+Shift+k")
+        );
+        // The app's chords, and the system's for editing text.
+        let command = if MAC { "Meta" } else { "Ctrl" };
+        assert_eq!(
+            capture(&ch("f"), Code::KeyF, COMMAND_MODIFIER),
+            taken(&format!("{command}+f"))
         );
         assert_eq!(
-            capture(&Key::Named(NamedKey::ArrowLeft), "ArrowLeft", none),
+            capture(&ch("0"), Code::Digit0, COMMAND_MODIFIER),
+            taken(&format!("{command}+0"))
+        );
+        let account = if MAC { "Meta" } else { "Alt" };
+        assert_eq!(
+            capture(&ch("3"), Code::Digit3, ACCOUNT_MODIFIER),
+            taken(&format!("{account}+3"))
+        );
+        assert_eq!(
+            capture(&ch("c"), Code::KeyC, COMMAND_MODIFIER),
+            taken(&format!("{command}+c"))
+        );
+        assert_eq!(
+            capture(&ch("Z"), Code::KeyZ, COMMAND_MODIFIER | Modifiers::SHIFT),
+            taken(if MAC { "Shift+Meta+z" } else { "Ctrl+Shift+z" })
+        );
+        assert_eq!(
+            capture(
+                &Key::Named(NamedKey::ArrowLeft),
+                Code::ArrowLeft,
+                Modifiers::ALT
+            ),
+            taken("Alt+ArrowLeft")
+        );
+        assert_eq!(
+            capture(&Key::Named(NamedKey::ArrowLeft), Code::ArrowLeft, none),
             Capture::Refuse(Refusal::Arrow)
         );
         assert_eq!(
-            capture(&Key::Named(NamedKey::Enter), "Enter", Modifiers::SHIFT),
+            capture(&Key::Named(NamedKey::Enter), Code::Enter, Modifiers::SHIFT),
             Capture::Refuse(Refusal::Enter)
         );
+        assert_eq!(
+            capture(&Key::Named(NamedKey::Dead), Code::KeyE, none),
+            Capture::Refuse(Refusal::Unnamed)
+        );
+        assert_eq!(
+            capture(&ch("a"), Code::KeyA, COMMAND_MODIFIER | Modifiers::SHIFT),
+            taken(if MAC { "Shift+Meta+a" } else { "Ctrl+Shift+a" })
+        );
+        if !MAC {
+            assert_eq!(
+                capture(&ch(" "), Code::Space, Modifiers::ALT),
+                taken("Alt+ ")
+            );
+            assert_eq!(
+                capture(&Key::Named(NamedKey::F4), Code::F4, Modifiers::ALT),
+                taken("Alt+F4")
+            );
+            assert_eq!(
+                capture(&ch("j"), Code::KeyJ, Modifiers::META),
+                taken("Meta+j")
+            );
+        }
+    }
+
+    #[test]
+    fn chords_name_their_modifiers_in_order() {
+        assert_eq!(
+            name(ch("j"), "KeyJ", Modifiers::CONTROL).as_deref(),
+            Some("Ctrl+j")
+        );
+        assert_eq!(
+            name(ch("j"), "KeyJ", Modifiers::META | Modifiers::CONTROL).as_deref(),
+            Some("Ctrl+Meta+j")
+        );
+        // A shifted symbol drops Shift with a chord too.
+        assert_eq!(
+            name(ch("!"), "Digit1", Modifiers::CONTROL | Modifiers::SHIFT).as_deref(),
+            Some("Ctrl+!")
+        );
+        // Option types `∆` on the J key on macOS, makes E a dead key, and has no name
+        // with other keys.
+        if MAC {
+            assert_eq!(
+                name(ch("∆"), "KeyJ", Modifiers::ALT).as_deref(),
+                Some("Alt+j")
+            );
+            assert_eq!(
+                name(ch("Ø"), "KeyO", Modifiers::ALT | Modifiers::SHIFT).as_deref(),
+                Some("Alt+Shift+o")
+            );
+            assert_eq!(
+                name(Key::Named(NamedKey::Dead), "KeyE", Modifiers::ALT),
+                None
+            );
+            assert_eq!(name(ch("≤"), "Comma", Modifiers::ALT), None);
+            // With Ctrl, the key's own character.
+            assert_eq!(
+                name(ch("j"), "KeyJ", Modifiers::CONTROL | Modifiers::ALT).as_deref(),
+                Some("Ctrl+Alt+j")
+            );
+        }
     }
 
     #[test]
@@ -526,5 +768,8 @@ mod tests {
         assert_eq!(key_label("Enter", true), "Return");
         assert_eq!(key_label("ArrowUp", false), "↑");
         assert_eq!(key_label("F5", false), "F5");
+        assert_eq!(key_label("Ctrl+Alt+Shift+Meta+k", true), "⌃⌥⇧⌘K");
+        assert_eq!(key_label("Ctrl+Alt+k", false), "Ctrl+Alt+K");
+        assert_eq!(key_label("Alt++", false), "Alt++");
     }
 }

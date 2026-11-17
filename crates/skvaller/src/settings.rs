@@ -773,8 +773,7 @@ fn ShortcutsPane(overrides: shortcuts::Overrides, feedback: Feedback) -> Element
                                         // the window, nor a letter reach anything else.
                                         e.stop_propagation();
                                         e.prevent_default();
-                                        let code = e.code().to_string();
-                                        let new = match shortcuts::capture(&e.key(), &code, e.modifiers()) {
+                                        let new = match shortcuts::capture(&e.key(), e.code(), e.modifiers()) {
                                             Capture::Wait => return,
                                             Capture::Cancel => {
                                                 recording.set(None);
@@ -783,8 +782,12 @@ fn ShortcutsPane(overrides: shortcuts::Overrides, feedback: Feedback) -> Element
                                             }
                                             Capture::Refuse(why) => {
                                                 notice.set(Some(match why {
-                                                    Refusal::NotSingle => t("shortcuts.singleKey"),
+                                                    Refusal::Taken(key) => t_with(
+                                                        "shortcuts.taken",
+                                                        &[("key", &shortcuts::key_label(&key, MAC))],
+                                                    ),
                                                     Refusal::Arrow => t("shortcuts.arrows"),
+                                                    Refusal::Unnamed => t("shortcuts.unnamed"),
                                                     Refusal::Enter => t_with(
                                                         "shortcuts.notAllowed",
                                                         &[("key", &shortcuts::key_label("Enter", MAC))],
