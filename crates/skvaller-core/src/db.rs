@@ -10,7 +10,6 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::full_text::MAX_ATTEMPTS;
 use crate::text::{INVISIBLE, plain_text};
@@ -279,14 +278,13 @@ pub(crate) struct ThumbnailWanted {
     pub url: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Folder {
     pub id: String,
     pub title: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Feed {
     pub id: String,
     pub title: String,
@@ -324,8 +322,7 @@ pub(crate) struct NewFeed<'a> {
 }
 
 /// An article without its HTML, for the article list.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArticleSummary {
     /// The item ID: decimal, or hex for IDs longer than 64 bits.
     pub id: String,
@@ -342,30 +339,27 @@ pub struct ArticleSummary {
 }
 
 /// Which articles to list: those in `view` from `scope`.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Selection {
     pub view: View,
     pub scope: Scope,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     Unread,
     Starred,
     All,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Scope {
     All,
     Folder { id: String },
     Feed { id: String },
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     /// Unread articles per feed ID. Feeds without any are left out.
     pub unread_by_feed: HashMap<String, i64>,
@@ -2222,26 +2216,6 @@ mod tests {
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }
-    }
-
-    #[test]
-    fn selection_parses_the_ui_shape() {
-        let sel: Selection =
-            serde_json::from_str(r#"{"view":"starred","scope":{"kind":"all"}}"#).unwrap();
-        assert!(matches!(
-            sel,
-            Selection {
-                view: View::Starred,
-                scope: Scope::All
-            }
-        ));
-        let sel: Selection =
-            serde_json::from_str(r#"{"view":"unread","scope":{"kind":"feed","id":"feed/1"}}"#)
-                .unwrap();
-        assert!(matches!(
-            sel,
-            Selection { view: View::Unread, scope: Scope::Feed { id } } if id == "feed/1"
-        ));
     }
 
     #[test]
