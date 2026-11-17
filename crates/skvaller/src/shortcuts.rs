@@ -262,8 +262,11 @@ pub type Overrides = BTreeMap<String, Option<String>>;
 /// The key of `action`, with the user's `overrides` applied; `None` for no key.
 pub fn key_of(overrides: &Overrides, action: Action) -> Option<&str> {
     match overrides.get(action.name()) {
-        // An arrow key saved before the arrows were reserved does nothing: the default.
-        Some(Some(key)) if ARROWS.contains(&key.as_str()) => Some(action.default_key()),
+        // An arrow key saved before the arrows were reserved, or a system chord saved on
+        // another platform, such as Ctrl+C from a Mac, does nothing: the default.
+        Some(Some(key)) if ARROWS.contains(&key.as_str()) || system_chord(key) => {
+            Some(action.default_key())
+        }
         Some(key) => key.as_deref(),
         None => Some(action.default_key()),
     }
@@ -578,6 +581,17 @@ mod tests {
         // A stale arrow override counts as the default, and is dropped.
         let (result, _) = rebind(&over(&[("next", Some("ArrowUp"))]), Action::Sync, Some("y"));
         assert_eq!(result, over(&[("sync", Some("y"))]));
+    }
+
+    #[test]
+    fn a_saved_system_chord_falls_back_to_the_default() {
+        let command = if MAC { "Meta" } else { "Ctrl" };
+        let copy = format!("{command}+c");
+        let overrides = over(&[("sync", Some(copy.as_str()))]);
+        assert_eq!(
+            key_of(&overrides, Action::Sync),
+            Some(Action::Sync.default_key())
+        );
     }
 
     #[test]
