@@ -158,7 +158,8 @@ The windows, in Dioxus Native (Blitz).
   runs its own for loading images. Blocking calls (keychain, heavy parsing) go through
   `spawn_blocking`.
 - **On Linux, an `appearance` thread** follows the portal's dark mode and window
-  frame, plus the executor thread zbus starts for its connection. `main` starts it
+  frame on a single-threaded Tokio runtime of its own, plus the executor thread zbus
+  starts for its connection. `main` starts it
   before loading the app, and the first window waits up to 300 ms for its first
   answers, two local calls, not the network. On KDE under X11, each window's shadow keeps
   a connection of its own to the X server.

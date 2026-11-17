@@ -55,6 +55,7 @@ webbrowser.workspace = true
 muda.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+futures-util.workspace = true
 rustix.workspace = true
 wayland-backend.workspace = true
 wayland-client.workspace = true

@@ -6049,6 +6049,7 @@ name = "skvaller"
 version = "0.1.0"
 dependencies = [
  "dioxus-native",
+ "futures-util",
  "icu_calendar",
  "icu_datetime",
  "icu_locale_core",

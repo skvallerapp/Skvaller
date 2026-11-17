@@ -122,9 +122,10 @@ mod imp {
     use std::sync::{Mutex, OnceLock, PoisonError};
     use std::time::Duration;
 
+    use futures_util::StreamExt;
     use tokio::sync::watch;
-    use zbus::blocking::{Connection, Proxy};
     use zbus::zvariant::{OwnedValue, Value};
+    use zbus::{Connection, Proxy};
 
     use super::{Buttons, SystemDark, SystemFrame};
 
@@ -178,7 +179,15 @@ mod imp {
             let started = std::thread::Builder::new()
                 .name("appearance".into())
                 .spawn(move || {
-                    if let Err(err) = follow(&thread_sender, &thread_frame, &first) {
+                    // Its own runtime: zbus runs the connection, this only waits on it.
+                    let followed = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(zbus::Error::from)
+                        .and_then(|runtime| {
+                            runtime.block_on(follow(&thread_sender, &thread_frame, &first))
+                        });
+                    if let Err(err) = followed {
                         tracing::info!("the system's appearance can't be followed: {err}");
                     }
                     // Dropping `first` ends a wait for it if nothing was sent.
@@ -220,19 +229,19 @@ mod imp {
 
     /// Reads the portal's settings into `sender` and `frame`, telling `first` once it
     /// has, then follows their changes until the session bus goes away.
-    fn follow(
+    async fn follow(
         sender: &watch::Sender<SystemDark>,
         frame: &watch::Sender<SystemFrame>,
         first: &mpsc::Sender<()>,
     ) -> zbus::Result<()> {
-        let connection = Connection::session()?;
-        let proxy = Proxy::new(&connection, PORTAL, PATH, SETTINGS)?;
+        let connection = Connection::session().await?;
+        let proxy = Proxy::new(&connection, PORTAL, PATH, SETTINGS).await?;
         // Subscribed before reading, so a change between the two isn't missed. A bus
         // that refuses the subscription may still answer the read: the mode then shows
         // as it was at launch.
-        let changes = proxy.receive_signal("SettingChanged");
+        let changes = proxy.receive_signal("SettingChanged").await;
         // A portal without the setting yet may set it later: keep listening.
-        match read(&proxy) {
+        match read(&proxy).await {
             Ok(dark) => {
                 sender.send_replace(dark);
             }
@@ -243,6 +252,7 @@ mod imp {
         // color scheme changes many keys at once) once their queue is full.
         let mut groups = proxy
             .call::<_, _, Groups>("ReadAll", &(FRAME_NAMESPACES.as_slice(),))
+            .await
             .unwrap_or_else(|err| {
                 tracing::info!("the system's window frame can't be read: {err}");
                 Groups::new()
@@ -253,7 +263,8 @@ mod imp {
         };
         send_frame(&groups);
         let _ = first.send(());
-        for message in changes? {
+        let mut changes = changes?;
+        while let Some(message) = changes.next().await {
             let Ok((namespace, key, value)) =
                 message.body().deserialize::<(String, String, OwnedValue)>()
             else {
@@ -271,11 +282,14 @@ mod imp {
 
     /// The setting now. `ReadOne` is the portal's call since version 2; older ones have
     /// only `Read`, which wraps the value in one more variant.
-    fn read(proxy: &Proxy<'_>) -> zbus::Result<SystemDark> {
-        match proxy.call::<_, _, OwnedValue>("ReadOne", &(NAMESPACE, KEY)) {
+    async fn read(proxy: &Proxy<'_>) -> zbus::Result<SystemDark> {
+        match proxy
+            .call::<_, _, OwnedValue>("ReadOne", &(NAMESPACE, KEY))
+            .await
+        {
             Ok(value) => Ok(dark(&value)),
             Err(zbus::Error::MethodError(name, ..)) if name.as_str() == UNKNOWN_METHOD => {
-                let value: OwnedValue = proxy.call("Read", &(NAMESPACE, KEY))?;
+                let value: OwnedValue = proxy.call("Read", &(NAMESPACE, KEY)).await?;
                 Ok(dark(&value))
             }
             Err(err) => Err(err),

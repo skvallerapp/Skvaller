@@ -48,6 +48,8 @@ webbrowser = "1.2.6"
 writeable = "0.6.4"
 # Already in the tree through keyring (Secret Service), with these default features.
 zbus = "5.19.0"
+# Its signal stream's `next()`: already in the tree through zbus and reqwest.
+futures-util = { version = "0.3.34", default-features = false }
 # KDE's window shadows on Wayland (shadow.rs): already in the tree through winit, which
 # talks to the same compositor connection.
 rustix = { version = "1.1.6", default-features = false, features = ["fs", "std"] }
