@@ -130,6 +130,14 @@ const LIST_SLIDE: Duration = Duration::from_millis(320);
 /// would snap the next list the last pixels into place.
 const GHOST_STAYS: Duration = LIST_SLIDE.saturating_add(Duration::from_millis(3 * 16));
 
+/// How long the sidebar rows that mark-all-read emptied take to close and fade:
+/// app.css's `leave`, `.folder-feeds.leaving` and `.highlight.leaving`. They stay in the
+/// document this long.
+const LEAVE: Duration = Duration::from_millis(220);
+/// How long the leaving rows stay: [`LEAVE`], and some frames for their animation to
+/// start, as [`GHOST_STAYS`] has.
+const LEAVING_STAYS: Duration = LEAVE.saturating_add(Duration::from_millis(3 * 16));
+
 /// A frame, at 60 Hz.
 pub(crate) const FRAME: Duration = Duration::from_millis(16);
 /// How many frames to wait at most for a layout Blitz hasn't run yet, as for an element
@@ -336,6 +344,8 @@ struct Reading {
     drawn: CopyValue<Option<Rc<Drawn>>>,
     /// The old list sliding away after mark-all-read, until the slide ends.
     ghost: Signal<Option<Ghost>>,
+    /// The sidebar's feeds that mark-all-read emptied, closing until [`LEAVE`] ends.
+    leaving: Signal<Option<Rc<Leaving>>>,
     search: Signal<Search>,
     /// The search field, focused again by the search key while it is open.
     search_field: Signal<Option<Rc<MountedData>>>,
@@ -824,13 +834,52 @@ impl Reading {
         let lib = app.library(&account).unwrap_or_default();
         let collapsed = self.collapsed_folders();
         let next = next_with_articles(&lib, view, &pinned, &collapsed, &scope, sort);
-        if let Some(scope) = next {
+        // With no next row, as with All selected, the selection stays, and so do the
+        // emptied rows: they are pinned until it changes.
+        if let Some(next) = next {
             let list = list_key(&self);
-            self.select(Selection { view, scope });
-            if app.settings().animations {
+            let animate = app.settings().animations;
+            // From the library the sidebar shows now, before the select.
+            let leaving = animate.then(|| {
+                let shown = self.library.peek();
+                Leaving::after_mark(&shown, &lib, &account, view, &pinned, &scope, &next, sort)
+            });
+            self.select(Selection { view, scope: next });
+            if animate {
                 self.slide_away(list);
             }
+            if let Some(leaving) = leaving.filter(|l| !l.feeds.is_empty()) {
+                self.leave(leaving);
+            }
         }
+    }
+
+    /// Closes and fades the sidebar rows of `leaving`'s feeds, then lets them go.
+    fn leave(mut self, leaving: Leaving) {
+        let leaving = Rc::new(leaving);
+        self.leaving.set(Some(Rc::clone(&leaving)));
+        let mut current = self.leaving;
+        let cache = self.cache;
+        let heard = cache.peek().library;
+        spawn(async move {
+            tokio::time::sleep(LEAVING_STAYS).await;
+            // Let go before the library loads again without them, they would show again
+            // until it does: wait for it, a few frames at most.
+            for _ in 0..LAYOUT_WAITS {
+                if cache.peek().library != heard {
+                    break;
+                }
+                tokio::time::sleep(FRAME).await;
+            }
+            // Another mark-all meanwhile already replaced it.
+            let ours = current
+                .peek()
+                .as_ref()
+                .is_some_and(|l| Rc::ptr_eq(l, &leaving));
+            if ours {
+                current.set(None);
+            }
+        });
     }
 
     /// Slides the list as last drawn up out of sight, as the next one slides in from
@@ -1280,6 +1329,7 @@ pub fn Root() -> Element {
         list_pane: Signal::new(None),
         drawn: CopyValue::new(None),
         ghost: Signal::new(None),
+        leaving: Signal::new(None),
         search,
         search_field: Signal::new(None),
         restore: CopyValue::new(None),
@@ -1658,6 +1708,75 @@ fn next_with_articles(
     )
 }
 
+/// The sidebar rows that mark-all-read in `account` and `view` emptied: they close and
+/// fade instead of going at once.
+#[derive(Debug)]
+struct Leaving {
+    account: String,
+    view: View,
+    feeds: HashSet<String>,
+    /// The folders that go with their last feed.
+    folders: HashSet<String>,
+}
+
+impl Leaving {
+    /// The rows the sidebar shows from `shown` with `from` selected that it has none for
+    /// once `to` is selected, given `after`'s counts: the cache's after the mark. The
+    /// selection then pins only the feeds with articles, so a feed read to zero earlier
+    /// goes too. The row selected next stays, even with no articles; a folder goes
+    /// with its last feed unless it is selected next, and a selected folder's emptied
+    /// feeds go.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the state before and after a mark, plain data for the tests"
+    )]
+    fn after_mark(
+        shown: &Library,
+        after: &Library,
+        account: &str,
+        view: View,
+        pinned: &HashSet<String>,
+        from: &Scope,
+        to: &Scope,
+        sort: SortSubscriptions,
+    ) -> Self {
+        let kept = counts_by_feed(&after.counts, view);
+        let leaves = |f: &skvaller_core::Feed| {
+            !kept.contains_key(&f.id) && !matches!(to, Scope::Feed { id } if *id == f.id)
+        };
+        let (mut feeds, mut folders) = (HashSet::new(), HashSet::new());
+        for entry in sidebar_tree(shown, view, pinned, from, sort) {
+            match entry {
+                Entry::Folder(folder, shown_feeds) => {
+                    let before = feeds.len();
+                    feeds.extend(
+                        shown_feeds
+                            .iter()
+                            .filter(|f| leaves(f))
+                            .map(|f| f.id.clone()),
+                    );
+                    let all_go = !shown_feeds.is_empty()
+                        && feeds.len() - before == shown_feeds.len()
+                        && !matches!(to, Scope::Folder { id } if *id == folder.id);
+                    if all_go {
+                        folders.insert(folder.id.clone());
+                    }
+                }
+                Entry::Feed(f) if leaves(f) => {
+                    feeds.insert(f.id.clone());
+                }
+                Entry::Feed(_) => {}
+            }
+        }
+        Self {
+            account: account.to_owned(),
+            view,
+            feeds,
+            folders,
+        }
+    }
+}
+
 /// The sidebar's scopes from top to bottom, as the arrow keys step through them: all
 /// feeds, then each entry, with a folder's feeds unless it is `collapsed`.
 fn sidebar_scopes(entries: &[Entry<'_>], collapsed: &HashSet<String>) -> Vec<Scope> {
@@ -1734,22 +1853,34 @@ fn Sidebar() -> Element {
         .map_or_default(|a| a.description);
     let sort = live.settings.read().sort_subscriptions;
     let font_size = use_memo(move || live.settings.read().font_size);
-    let entries = sidebar_tree(
-        &lib,
-        current.view,
-        &reading.pinned.read(),
-        &current.scope,
-        sort,
-    );
+    // Rows mark-all-read emptied stay while they close, but only in its account and
+    // view.
+    let leaving = reading.leaving.read().clone().filter(|l| {
+        l.view == current.view && reading.account.read().as_deref() == Some(l.account.as_str())
+    });
+    let pinned = reading.pinned.read().clone();
+    let shown = match &leaving {
+        Some(l) => Rc::new(pinned.union(&l.feeds).cloned().collect()),
+        None => pinned,
+    };
+    let entries = sidebar_tree(&lib, current.view, &shown, &current.scope, sort);
+    let feed_leaves = |id: &str| leaving.as_ref().is_some_and(|l| l.feeds.contains(id));
+    let folder_leaves = |id: &str| leaving.as_ref().is_some_and(|l| l.folders.contains(id));
+    let row_leaves = |scope: &Scope| match scope {
+        Scope::Feed { id } => feed_leaves(id),
+        Scope::Folder { id } => folder_leaves(id),
+        Scope::All => false,
+    };
     let sidebar_width = use_memo(move || reading.layout.read().sidebar_width)();
     let feeds_pane = use_signal(|| None::<Rc<MountedData>>);
     // Pulled past their ends, the feeds stretch, with no refresh.
     let pull = use_hook(|| Pull::new(&live, feeds_pane, None));
     // Unlike the article list, the feeds don't know their scroll range: measured again
-    // when rows come or go, a folder opens or closes, the rows grow or shrink with the
-    // font size, or the window resizes.
+    // when rows come or go, as when leaving rows have closed, a folder opens or closes,
+    // the rows grow or shrink with the font size, or the window resizes.
     use_effect(move || {
         reading.library.read();
+        reading.leaving.read();
         reading.collapsed.read();
         reading.pinned.read();
         reading.window_size.read();
@@ -1771,8 +1902,10 @@ fn Sidebar() -> Element {
     let last_collapsed = use_hook(|| Rc::new(RefCell::new(HashSet::new())));
     let collapsed = reading.collapsed_folders();
     let row_scope = row_scope(&lib, &current.scope, &collapsed);
+    // Placed among the rows that stay, as they will be once the leaving ones closed.
     let row = sidebar_scopes(&entries, &collapsed)
         .iter()
+        .filter(|s| !row_leaves(s))
         .position(|s| *s == row_scope);
     selected_row.set(row);
     let folded = *last_collapsed.borrow() != collapsed;
@@ -1782,7 +1915,11 @@ fn Sidebar() -> Element {
         let settles = settle
             .borrow_mut()
             .settles(current.scope.clone(), place.top);
-        let class = if settles && folded {
+        // A sync or a folder moving the same selection's row meanwhile still settles or
+        // folds it.
+        let class = if leaving.is_some() && !settles {
+            "highlight leaving"
+        } else if settles && folded {
             "highlight folding"
         } else {
             highlight_class(settles)
@@ -1845,7 +1982,7 @@ fn Sidebar() -> Element {
                 if let Some((class, place)) = highlight {
                     div { class, style: "transform: translateY({place.top}px); height: {place.height}px" }
                 }
-                ScopeItem { scope: Scope::All, title: all_label, count: all_count, nested: false, expanded: None }
+                ScopeItem { scope: Scope::All, title: all_label, count: all_count, nested: false, expanded: None, leaving: false }
                 if !entries.is_empty() {
                     div { class: "heading", {t("sidebar.feeds")} }
                 }
@@ -1858,15 +1995,18 @@ fn Sidebar() -> Element {
                             let scope = Scope::Folder { id: folder.id.clone() };
                             let count: i64 = feeds.iter().map(|f| count_of(&f.id)).sum();
                             let expanded = !reading.is_collapsed(&folder.id);
-                            let feeds: Vec<_> =
-                                feeds.into_iter().map(|f| (f.clone(), count_of(&f.id))).collect();
+                            let leaves = folder_leaves(&folder.id);
+                            let feeds: Vec<_> = feeds
+                                .into_iter()
+                                .map(|f| (f.clone(), count_of(&f.id), feed_leaves(&f.id)))
+                                .collect();
                             rsx! {
-                                ScopeItem { key: "folder-{folder.id}", scope, title: folder.title.clone(), count, nested: false, expanded }
+                                ScopeItem { key: "folder-{folder.id}", scope, title: folder.title.clone(), count, nested: false, expanded, leaving: leaves }
                                 FolderFeeds { feeds, expanded, row: scale::sidebar_row(font_size()) }
                             }
                         }
                         Entry::Feed(feed) => rsx! {
-                            FeedItem { key: "{feed.id}", count: count_of(&feed.id), feed: feed.clone(), nested: false }
+                            FeedItem { key: "{feed.id}", count: count_of(&feed.id), feed: feed.clone(), nested: false, leaving: feed_leaves(&feed.id) }
                         },
                     }
                     }
@@ -2249,9 +2389,11 @@ fn AccountSwitcher() -> Element {
 
 /// A folder's feeds, with their unread counts, under its row. They slide open and
 /// closed: the box's height goes from 0 to its rows', each `row` high, or back, and
-/// closing, the rows stay in it until the slide ends.
+/// closing, the rows stay in it until the slide ends. Each feed comes with its count and
+/// whether it is leaving: a leaving feed's row closes, and the box shrinks with it to
+/// the rows that stay.
 #[component]
-fn FolderFeeds(feeds: Vec<(skvaller_core::Feed, i64)>, expanded: bool, row: f64) -> Element {
+fn FolderFeeds(feeds: Vec<(skvaller_core::Feed, i64, bool)>, expanded: bool, row: f64) -> Element {
     let shown = use_closing(expanded, FOLDER_SLIDE);
     // Whether the folder last opened or closed, and when: only that slides the box, not
     // a sync adding or removing a feed, which moves the rows and highlight at once.
@@ -2261,28 +2403,31 @@ fn FolderFeeds(feeds: Vec<(skvaller_core::Feed, i64)>, expanded: bool, row: f64)
         toggled = Some(Instant::now());
         last.set((expanded, toggled));
     }
+    let staying = feeds.iter().filter(|(_, _, leaving)| !leaving).count();
     let class = if toggled.is_some_and(|t| t.elapsed() < FOLDER_SLIDE) {
         "folder-feeds sliding"
+    } else if staying < feeds.len() {
+        "folder-feeds leaving"
     } else {
         "folder-feeds"
     };
-    let rows = if expanded { feeds.len() } else { 0 };
+    let rows = if expanded { staying } else { 0 };
     let height = f64::from(u32::try_from(rows).unwrap_or(u32::MAX)) * row;
     let feeds = if shown { feeds } else { Vec::new() };
     rsx! {
         div { class, style: "height: {height}px",
-            for (feed, count) in feeds {
-                FeedItem { key: "{feed.id}", count, feed, nested: true }
+            for (feed, count, leaving) in feeds {
+                FeedItem { key: "{feed.id}", count, feed, nested: true, leaving }
             }
         }
     }
 }
 
 #[component]
-fn FeedItem(feed: skvaller_core::Feed, count: i64, nested: bool) -> Element {
+fn FeedItem(feed: skvaller_core::Feed, count: i64, nested: bool, leaving: bool) -> Element {
     let scope = Scope::Feed { id: feed.id };
     rsx! {
-        ScopeItem { scope, title: feed.title, count, nested, expanded: None }
+        ScopeItem { scope, title: feed.title, count, nested, expanded: None, leaving }
     }
 }
 
@@ -2415,7 +2560,8 @@ fn sidebar_place(index: usize, font_size: FontSize) -> Place {
 }
 
 /// A folder or feed in the sidebar, or every feed. A folder, with `expanded`, has a
-/// disclosure button that shows or hides its feeds.
+/// disclosure button that shows or hides its feeds. A `leaving` row closes and fades
+/// after mark-all-read emptied it, and takes no clicks meanwhile.
 #[component]
 fn ScopeItem(
     scope: Scope,
@@ -2423,6 +2569,7 @@ fn ScopeItem(
     count: i64,
     nested: bool,
     expanded: Option<bool>,
+    leaving: bool,
 ) -> Element {
     let app = use_context::<Arc<App>>();
     let reading = use_context::<Reading>();
@@ -2441,6 +2588,11 @@ fn ScopeItem(
         (true, false) => "item selected",
         (false, true) => "item nested",
         (false, false) => "item",
+    };
+    let class = if leaving {
+        format!("{class} leaving")
+    } else {
+        class.to_owned()
     };
     rsx! {
         div {
@@ -4132,6 +4284,69 @@ mod tests {
         let collapsed = HashSet::from(["d".to_owned()]);
         assert_eq!(step(&collapsed, &feed_scope("a"), 1), Some(feed_scope("y")));
         assert_eq!(step(&collapsed, &feed_scope("a"), -1), Some(Scope::All));
+    }
+
+    /// A library for the leaving rows: folder "d" with "a" and "b", folder "e" with
+    /// "e1", and loose "c", "x" and "y". Before the mark, "a", "b", "e1" and "y" had
+    /// unread articles; after it, "a" and "e1" have none. "x" was read to zero earlier and
+    /// is still pinned; "c" had no row.
+    fn leaving_rows(to: &Scope) -> Leaving {
+        let before = Library {
+            folders: vec![folder("d"), folder("e")],
+            feeds: vec![
+                feed("a", Some("d")),
+                feed("b", Some("d")),
+                feed("e1", Some("e")),
+                feed("c", None),
+                feed("x", None),
+                feed("y", None),
+            ],
+            ..Default::default()
+        };
+        let mut shown = before.clone();
+        for id in ["a", "b", "e1", "y"] {
+            shown.counts.unread_by_feed.insert(id.into(), 1);
+        }
+        let mut after = before;
+        after.counts.unread_by_feed.insert("b".into(), 1);
+        after.counts.unread_by_feed.insert("y".into(), 2);
+        let pinned = HashSet::from(["a", "b", "e1", "x", "y"].map(String::from));
+        Leaving::after_mark(
+            &shown,
+            &after,
+            "1",
+            View::Unread,
+            &pinned,
+            &feed_scope("a"),
+            to,
+            SortSubscriptions::FoldersFirst,
+        )
+    }
+
+    #[test]
+    fn mark_all_read_lets_go_of_the_rows_it_emptied() {
+        let leaving = leaving_rows(&feed_scope("b"));
+        // "b" and "y" keep their rows, and so does "d" with "b" in it.
+        assert_eq!(
+            leaving.feeds,
+            HashSet::from(["a", "e1", "x"].map(String::from))
+        );
+        // "e" goes with its last feed.
+        assert_eq!(leaving.folders, HashSet::from(["e".to_owned()]));
+    }
+
+    #[test]
+    fn mark_all_read_keeps_the_row_it_moves_to() {
+        // A feed with no articles left.
+        let leaving = leaving_rows(&feed_scope("x"));
+        assert_eq!(leaving.feeds, HashSet::from(["a", "e1"].map(String::from)));
+        // A folder whose feeds all go: they close, but it stays.
+        let leaving = leaving_rows(&folder_scope("e"));
+        assert_eq!(
+            leaving.feeds,
+            HashSet::from(["a", "e1", "x"].map(String::from))
+        );
+        assert!(leaving.folders.is_empty());
     }
 
     #[test]

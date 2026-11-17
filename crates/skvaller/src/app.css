@@ -523,6 +523,13 @@ button {
   transition: transform 160ms ease;
 }
 
+/* Rows that mark-all-read emptied closing: the highlight slides to the selection's
+   place once they have closed, as long as they take, ui.rs's LEAVE. Only its place
+   changes, so height needs no transition. */
+.highlight.leaving {
+  transition: transform 220ms ease;
+}
+
 .active .highlight {
   background: var(--accent);
 }
@@ -567,6 +574,27 @@ button {
 
 .folder-feeds.sliding {
   transition: height 160ms ease;
+}
+
+/* A folder's feeds that mark-all-read emptied closing: the box shrinks with them, as
+   long as they take, ui.rs's LEAVE. */
+.folder-feeds.leaving {
+  transition: height 220ms ease;
+}
+
+/* A row that mark-all-read emptied, closing and fading for ui.rs's LEAVE. It takes no
+   clicks meanwhile. */
+.item.leaving {
+  overflow: hidden;
+  pointer-events: none;
+  animation: leave 220ms ease forwards;
+}
+
+@keyframes leave {
+  to {
+    height: 0;
+    opacity: 0;
+  }
 }
 
 /* A folder's chevron, which shows or hides its feeds. */
