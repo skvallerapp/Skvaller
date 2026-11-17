@@ -11,7 +11,7 @@ How Skvaller fits together. Each module's details are in its module docs (`//!`)
  skvaller-core  ── sync / refresh_local ──► SQLite cache, one per account
                                                      │  ▲
  skvaller-app   ── App: accounts, config, schedules ─┘  │ set_read, set_starred
-                   │ broadcast SyncStatus               │ (queued in `pending`)
+                   │ broadcast SyncStatus, Change       │ (queued in `pending`)
                    ▼                                    │
  skvaller       ── windows (Dioxus Native) ─────────────┘  reads only from the cache
 ```
@@ -19,10 +19,13 @@ How Skvaller fits together. Each module's details are in its module docs (`//!`)
 1. `App::load` reads `config.json` and opens each account's cache.
 2. `App::start_sync` runs each account's sync in the background, on its schedule.
 3. The UI reads folders, feeds and articles from the cache, synchronously.
-4. When a sync changes the cache, `App` sends a `SyncStatus` with `changed` set. The
-   main window bumps a revision, which reloads the sidebar and the list.
-5. A read or star change from the UI is written to the cache at once and queued in
-   the `pending` table. The next sync pushes it.
+4. Every `App` method that changes what a window shows of a cache sends a `Change`:
+   the account, and whether flags, feeds or articles changed. A sync sends one when it
+   changed the articles or their feeds, or failed and may have. Reader View pages are
+   stored without one: no list shows them. The main window reloads its sidebar and list from these alone.
+5. A read or star change from the UI goes through `App` too: it is written to the
+   cache at once, queued in the `pending` table and sent as a `Change`. The next sync
+   pushes it.
 
 ## Crates
 
@@ -63,11 +66,15 @@ The app without a UI.
 - `sync`, `gate`: each account's schedule, one sync at a time.
 - `thumbnails`: the background thumbnail runs after a sync.
 
-`App` is shared as `Arc<App>` and is `Sync`. It has two channels out:
+`App` is shared as `Arc<App>` and is `Sync`. It has three channels out:
 
-- `subscribe()`: a `broadcast` of `SyncStatus`, for sync progress and cache changes.
+- `subscribe()`: a `broadcast` of `SyncStatus`, for sync progress.
+- `changes()`: a `broadcast` of `Change`, sent by every method that changes what a
+  window shows of a cache:
+  read, star and mark all read (`Flags`, `AllRead`), feed and folder changes
+  (`Feeds`), and syncs and thumbnail fetches (`Articles`).
 - `watch_config()`: a `watch` of the config revision, bumped by every settings or
-  account change.
+  account change. A cache change doesn't bump it.
 
 ### `skvaller`
 
@@ -76,7 +83,9 @@ The windows, in Dioxus Native (Blitz).
 - `main`: starts the sync runtime, sets up the HTTP client, request filter and `thumb:`
   scheme, and launches the main window.
 - `ui`: the main window, with the sidebar, the virtualized article list and the reader.
-  `ui/manage`: feed and folder menus. `ui/listed`: the rows each load of the article
+  It counts the shown account's `Change`s in `Cached`: every one reloads the library,
+  every one but a read or star change reloads the list, and a mark-all-read also
+  empties Unread of the rows it kept. `ui/manage`: feed and folder menus. `ui/listed`: the rows each load of the article
   list shows, keeping those read or unstarred here and the open article, so a sync
   doesn't pull them away while you read.
 - `ui/command`: what the main window does. Every key, macOS menu bar item and button
@@ -111,7 +120,8 @@ The windows, in Dioxus Native (Blitz).
   refresh, as state alone: `ui` feeds it the events and draws the offset.
 - `live`: each window's view of the settings, following `watch_config()`, and of the
   system's dark mode and window frame, following `appearance::watch()` and
-  `watch_frame()`. Its `theme` is the one to show.
+  `watch_frame()`. Its `theme` is the one to show. `use_cache_changes` hands a window
+  each `Change` from `changes()`, or `None` when it may have missed some.
 - `appearance`: the system's dark mode on Linux, which winit doesn't report, read from
   the XDG desktop portal over D-Bus. It makes the System theme Light or Dark. It also
   reads how the system draws a window's frame: on KDE, the outline's color made from
@@ -153,7 +163,8 @@ The windows, in Dioxus Native (Blitz).
   answers, two local calls, not the network. On KDE under X11, each window's shadow keeps
   a connection of its own to the X server.
 - **One `VirtualDom` per window.** Windows share only the `Arc<App>` they're given.
-  Each follows the app through `live::use_live` and its own `subscribe()`.
+  Each follows the app through `live::use_live`, `live::use_cache_changes` and its own
+  `subscribe()`.
 - **One sync per account at a time.** A second one asked for meanwhile reports `Busy`
   instead of queueing (`gate`). `sync_now` hands back a wait that ends with the
   account's sync, its own or the one it found running: pull to refresh awaits it.

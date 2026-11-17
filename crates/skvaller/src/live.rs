@@ -1,8 +1,11 @@
-//! The settings as they are now, for a window to follow as they change.
+//! The settings as they are now, for a window to follow as they change, and the
+//! changes to the accounts' caches.
 //!
 //! Each window runs its own `VirtualDom`, so each makes its own [`Live`] from the
 //! [`App`]'s config revision, which every settings or account change bumps, and from
 //! the system's dark mode and window frame where the app reads them ([`appearance`]).
+//! A change to a cache doesn't bump the config revision: a window hears it through
+//! [`use_cache_changes`], from [`App::changes`].
 
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -10,7 +13,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use dioxus_native::prelude::*;
-use skvaller_app::{App, Settings, Theme};
+use skvaller_app::{App, Change, Settings, Theme};
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::watch;
 
 use crate::appearance::{self, SystemFrame};
@@ -21,7 +25,7 @@ use crate::shortcuts::{Action, bindings};
 /// they do.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Live {
-    /// Bumped on every change to the settings or an account's.
+    /// Bumped on every change to the settings or the accounts, not their caches.
     pub revision: Signal<u64>,
     pub settings: Memo<Settings>,
     /// The theme to show: the setting, with System made Light or Dark where the app
@@ -112,4 +116,24 @@ fn use_followed<T: Copy + PartialEq + 'static>(
         });
     });
     signal
+}
+
+/// Calls `heard` with each change to an account's cache, for as long as the component
+/// lives: once with `None` when it starts listening, and again after missing some, as
+/// either may come after changes it didn't hear.
+pub fn use_cache_changes(app: &Arc<App>, mut heard: impl FnMut(Option<&Change>) + 'static) {
+    let app = Arc::clone(app);
+    use_hook(move || {
+        spawn(async move {
+            let mut changes = app.changes();
+            heard(None);
+            loop {
+                match changes.recv().await {
+                    Ok(change) => heard(Some(&change)),
+                    Err(RecvError::Lagged(_)) => heard(None),
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        });
+    });
 }

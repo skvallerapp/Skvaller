@@ -1,14 +1,14 @@
 //! Article thumbnails: fetched into the cache in the background, shown from it.
 //!
 //! After each sync, and after a feed is added, the new articles' lead images are
-//! fetched and stored small, unless thumbnails are off. The list is told as each batch
-//! is stored, so they show up while a long run goes on.
+//! fetched and stored small, unless thumbnails are off. [`App::changes`] listeners are
+//! told as each batch is stored, so they show up while a long run goes on.
 
 use skvaller_core::prefetch_thumbnails;
 use tracing::Level;
 
 use crate::ThumbnailSize;
-use crate::app::{App, Runtime, lock};
+use crate::app::{App, Change, Changed, Runtime, lock};
 use crate::error::Result;
 
 impl App {
@@ -36,14 +36,13 @@ impl App {
         let (Some(runtime), Ok(rt)) = (self.sync_runtime.get(), self.runtime(&rt.id)) else {
             return;
         };
-        let events = self.events.clone();
+        let changes = self.changes.clone();
         let task = runtime.spawn(async move {
             let stored = || {
-                // The status as it is now, as a sync may have started meanwhile. No
-                // listener yet is fine: a window that opens later loads the list.
-                let _ = events.send(crate::SyncStatus {
-                    changed: true,
-                    ..rt.status()
+                // No listener yet is fine: a window that opens later loads the list.
+                let _ = changes.send(Change {
+                    account_id: rt.id.clone(),
+                    what: Changed::Articles,
                 });
             };
             if let Err(e) = prefetch_thumbnails(&rt.db, stored).await {

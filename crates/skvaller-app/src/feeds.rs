@@ -1,8 +1,8 @@
 //! Managing the local account's feeds and folders.
 //!
 //! Only the local account keeps its own subscriptions; a sync account's are managed on
-//! its server. Each change is saved to the cache, backed up as OPML and announced, so
-//! every window shows it at once.
+//! its server. Each change is saved to the cache, backed up as OPML and told to
+//! [`App::changes`] listeners, so every window shows it at once.
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use skvaller_core::subscribe;
 use tracing::Level;
 
-use crate::app::{App, Runtime};
+use crate::app::{App, Changed, Runtime};
 use crate::config::AccountKind;
 use crate::error::{Error, Result};
 
@@ -59,7 +59,7 @@ impl App {
                 return Err(Error::Core(skvaller_core::Error::Local(e.to_string())));
             }
         };
-        self.changed(&rt);
+        self.feeds_changed(&rt);
         // Its articles are new to the cache: their thumbnails now, not at the next sync.
         self.fetch_thumbnails(&rt);
         Ok(id)
@@ -73,7 +73,7 @@ impl App {
     pub fn unsubscribe(&self, account_id: &str, feed_id: &str) -> Result<()> {
         let rt = self.local(account_id)?;
         rt.db.unsubscribe(feed_id)?;
-        self.changed(&rt);
+        self.feeds_changed(&rt);
         Ok(())
     }
 
@@ -88,7 +88,7 @@ impl App {
         let title = non_empty(title)?;
         let rt = self.local(account_id)?;
         rt.db.rename_feed(feed_id, title)?;
-        self.changed(&rt);
+        self.feeds_changed(&rt);
         Ok(())
     }
 
@@ -105,7 +105,7 @@ impl App {
     ) -> Result<()> {
         let rt = self.local(account_id)?;
         rt.db.move_feed(feed_id, folder_id)?;
-        self.changed(&rt);
+        self.feeds_changed(&rt);
         Ok(())
     }
 
@@ -119,7 +119,7 @@ impl App {
         let title = non_empty(title)?;
         let rt = self.local(account_id)?;
         let id = rt.db.create_folder(title)?;
-        self.changed(&rt);
+        self.feeds_changed(&rt);
         Ok(id)
     }
 
@@ -132,7 +132,7 @@ impl App {
         let title = non_empty(title)?;
         let rt = self.local(account_id)?;
         rt.db.rename_folder(folder_id, title)?;
-        self.changed(&rt);
+        self.feeds_changed(&rt);
         Ok(())
     }
 
@@ -144,7 +144,7 @@ impl App {
     pub fn delete_folder(&self, account_id: &str, folder_id: &str) -> Result<()> {
         let rt = self.local(account_id)?;
         rt.db.delete_folder(folder_id)?;
-        self.changed(&rt);
+        self.feeds_changed(&rt);
         Ok(())
     }
 
@@ -158,9 +158,9 @@ impl App {
     }
 
     /// Backs up the changed subscriptions and tells every window.
-    fn changed(&self, rt: &Runtime) {
+    pub(crate) fn feeds_changed(&self, rt: &Runtime) {
         self.back_up_feeds(rt);
-        self.announce();
+        self.cache_changed(&rt.id, Changed::Feeds);
     }
 }
 
@@ -174,7 +174,7 @@ fn non_empty(title: &str) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use crate::app::tests::dirs;
-    use crate::app::{App, import_local};
+    use crate::app::{App, Change, Changed, import_local};
     use crate::error::Error;
 
     const OPML: &str = r#"<opml version="2.0"><body>
@@ -194,14 +194,22 @@ mod tests {
         import_local(&dirs, OPML.as_bytes()).unwrap();
         let app = App::load(&dirs).unwrap();
         let (id, feed) = local(&app);
-        let watch = app.watch_config();
+        let config = app.watch_config();
+        let mut changes = app.changes();
 
         let folder = app.create_folder(&id, "  Tech  ").unwrap();
         app.move_feed(&id, &feed, Some(&folder)).unwrap();
         app.rename_feed(&id, &feed, " Renamed ").unwrap();
         app.rename_folder(&id, &folder, "News").unwrap();
 
-        assert!(watch.has_changed().unwrap());
+        let feeds = Change {
+            account_id: id.clone(),
+            what: Changed::Feeds,
+        };
+        for _ in 0..4 {
+            assert_eq!(changes.try_recv().unwrap(), feeds);
+        }
+        assert!(!config.has_changed().unwrap(), "not a config change");
         let lib = app.library(&id).unwrap();
         assert_eq!(lib.folders[0].title, "News");
         assert_eq!(lib.feeds[0].title, "Renamed");

@@ -2,9 +2,9 @@
 //!
 //! Each account syncs on start and then as its [`SyncSchedule`] says, one sync at a
 //! time, and after the computer wakes when the account asks for that or the sleep held
-//! its schedule up. Every change of status is sent to [`App::subscribe`] listeners; a
-//! status with `changed` set means the cached articles changed and lists need loading
-//! again.
+//! its schedule up. Every change of status is sent to [`App::subscribe`] listeners. A
+//! sync that changed the cached articles or their feeds, or failed and may have changed
+//! some, also tells [`App::changes`] listeners, as [`Changed::Articles`].
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -16,16 +16,12 @@ use skvaller_core::{
 use tokio::time::{Instant, sleep_until};
 use tracing::Level;
 
-use crate::app::{App, Runtime, lock};
+use crate::app::{App, Changed, Runtime, lock};
 use crate::config::{Account, AccountKind, SyncSchedule};
 use crate::gate::Outcome;
 
 /// An account's sync, as the UI shows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent facts about one sync"
-)]
 pub struct SyncStatus {
     /// The account it is about.
     pub account_id: String,
@@ -37,8 +33,6 @@ pub struct SyncStatus {
     pub error: Option<String>,
     /// The server rejected the token: the user has to sign in again.
     pub unauthorized: bool,
-    /// The sync that just finished changed the cached articles or their feeds.
-    pub changed: bool,
     /// The cache is damaged.
     pub cache_broken: bool,
 }
@@ -206,9 +200,10 @@ impl App {
             if synced.is_ok() && client.is_none() {
                 self.back_up_feeds(rt);
             }
+            // A sync that failed part way may have stored or pruned articles before.
             let changed = synced
                 .as_ref()
-                .is_ok_and(skvaller_core::SyncReport::changed_articles);
+                .map_or(true, skvaller_core::SyncReport::changed_articles);
             Some(self.finish(rt, &synced.map(drop), changed))
         };
         match rt.gate.run(work).await {
@@ -247,10 +242,12 @@ impl App {
             }
         }
         lock(&rt.last_error).clone_from(&error);
+        if changed {
+            self.cache_changed(&rt.id, Changed::Articles);
+        }
         // Sent from inside the gate, which `status` reads as still syncing.
         self.emit(SyncStatus {
             syncing: false,
-            changed,
             ..rt.status()
         });
         match result {
@@ -578,6 +575,65 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), wait)
             .await
             .expect("ends with the other sync");
+    }
+
+    /// Serves an RSS feed of one article at the returned address, and nothing else.
+    async fn serve_feed() -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/feed.xml", listener.local_addr().unwrap());
+        let rss = format!(
+            r#"<rss version="2.0"><channel><title>A</title><link>{url}</link>
+               <item><guid>a-1</guid><title>One</title><link>{url}#1</link>
+               <pubDate>Tue, 17 Nov 2026 12:00:00 GMT</pubDate></item>
+               </channel></rss>"#
+        );
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut request = [0; 4096];
+                let read = stream.read(&mut request).await.unwrap_or(0);
+                let response = if request[..read].starts_with(b"GET /feed.xml ") {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/rss+xml\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{rss}",
+                        rss.len()
+                    )
+                } else {
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_owned()
+                };
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn a_sync_that_stores_articles_tells_the_listeners() {
+        let url = serve_feed().await;
+        let (_tmp, dirs) = crate::app::tests::dirs();
+        let opml = format!(
+            r#"<opml version="2.0"><body><outline text="A" type="rss" xmlUrl="{url}"/></body></opml>"#
+        );
+        crate::import_local(&dirs, opml.as_bytes()).unwrap();
+        let app = Arc::new(App::load(&dirs).unwrap());
+        let mut changes = app.changes();
+        let config = app.watch_config();
+        let id = app.active().unwrap();
+
+        app.start_sync();
+        app.sync_now(&id).unwrap().await;
+
+        assert_eq!(app.status(&id).unwrap().error, None);
+        assert_eq!(
+            changes.try_recv().unwrap(),
+            crate::Change {
+                account_id: id,
+                what: Changed::Articles,
+            }
+        );
+        assert!(!config.has_changed().unwrap(), "not a config change");
     }
 
     #[test]

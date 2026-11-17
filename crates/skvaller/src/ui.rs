@@ -1,9 +1,10 @@
 //! The main window: sidebar, article list and reader.
 //!
 //! Everything shown is read from the local caches through [`App`]; nothing here waits
-//! for the network. A sync that changes the cache bumps a revision, which reloads the
-//! sidebar and the list. A change made here shows at once and is saved to the cache;
-//! the next sync sends it.
+//! for the network. Every change to the shown account's cache, a sync's or one made
+//! here, comes from [`App::changes`] and reloads the sidebar and the list as [`Cached`]
+//! says. A change made here shows at once and is saved to the cache; the next sync
+//! sends it.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -18,7 +19,7 @@ use dioxus_native::{
     BlitzScrollSource, BlitzWheelPhase, NativeWheelData, use_window, use_window_event, use_windows,
 };
 use skvaller_app::{
-    App, Error as AppError, FontSize, LIST_WIDTH, Layout, Library, MarkReadOn, PaneWidth,
+    App, Changed, Error as AppError, FontSize, LIST_WIDTH, Layout, Library, MarkReadOn, PaneWidth,
     SIDEBAR_WIDTH, SortSubscriptions, SyncStatus, ThumbnailSize,
 };
 use skvaller_core::{ArticleSummary, Counts, Scope, Selection, View};
@@ -294,13 +295,8 @@ struct Reading {
     /// The open article, as it was when opened: [`Reading::open_article`] has its flags
     /// now.
     article: Signal<Option<ArticleSummary>>,
-    /// Bumped when the cache changed under the lists: they load again, keeping what was
-    /// read or unstarred here meanwhile. By a sync's report, and [`Self::feeds_changed`].
-    revision: Signal<u64>,
-    /// Bumped to load the list again without keeping those: [`Self::all_marked_read`].
-    cleared: Signal<u64>,
-    /// Bumped when a change made here changed the counts: [`Self::flags_changed`].
-    counts: Signal<u64>,
+    /// The shown account's cache changes, as [`App::changes`] told them.
+    cache: Signal<Cached>,
     marks: Signal<Marks>,
     library: Memo<Library>,
     /// The feeds Unread and Starred keep showing after they are read to zero.
@@ -471,26 +467,6 @@ impl Reading {
                 .cloned()
                 .unwrap_or(open),
         )
-    }
-
-    /// The shown account's feeds or folders changed here: added, moved, renamed or
-    /// removed. The list loads again, as its rows show feeds' names and a folder's list
-    /// gains or loses a feed's articles. The sidebar needs nothing from here: every feed
-    /// change in [`App`] announces itself, which `live.revision` and the library follow.
-    fn feeds_changed(mut self) {
-        self.revision += 1;
-    }
-
-    /// A read or star change made here: the library loads again for its counts. The
-    /// list keeps its rows, which show the change through `marks`.
-    fn flags_changed(mut self) {
-        self.counts += 1;
-    }
-
-    /// Every article of the list was marked read: in Unread it loads again without
-    /// keeping the rows read here, so it empties.
-    fn all_marked_read(mut self) {
-        self.cleared += 1;
     }
 
     /// Records changes made here on top of the list as loaded now.
@@ -773,7 +749,6 @@ impl Reading {
         if let Err(e) = app.set_read(&account, ids, read) {
             tracing::error!("saving a read change failed: {e}");
         }
-        self.flags_changed();
     }
 
     fn toggle_read(self, app: &App) {
@@ -791,7 +766,6 @@ impl Reading {
         if let Err(e) = app.set_starred(&account, &[a.id], starred) {
             tracing::error!("saving a star failed: {e}");
         }
-        self.flags_changed();
     }
 
     /// Marks all as read, asking first when the settings say so. Not while Add Feed is
@@ -828,26 +802,28 @@ impl Reading {
             .filter(|a| !self.is_read(a))
             .map(|a| a.id.clone())
             .collect();
-        self.set_read(app, &ids, true);
+        let Some(account) = self.account.peek().clone() else {
+            return;
+        };
+        self.mark_generation += 1;
+        self.mark(&ids, Some(true), None);
+        // `App` tells the window, which then loads the list again without the rows read
+        // here: in Unread it empties.
+        if let Err(e) = app.mark_all_read(&account, &ids) {
+            tracing::error!("marking all read failed: {e}");
+        }
         let Selection { view, scope } = self.selection.peek().clone();
-        if view != View::Unread {
-            return;
-        }
-        self.all_marked_read();
         // Search results don't move on to another feed.
-        if self.search.peek().active().is_some() {
+        if view != View::Unread || self.search.peek().active().is_some() {
             return;
         }
-        // Before the library's guard: reading `pinned` may recompute it, which reads
-        // the library. Read, not peek: a peek can return the library from before these
-        // counts.
         let pinned = (self.pinned)();
         let sort = app.settings().sort_subscriptions;
-        let next = {
-            let lib = self.library.read();
-            let collapsed = self.collapsed_folders();
-            next_with_articles(&lib, view, &pinned, &collapsed, &scope, sort)
-        };
+        // From the cache, not `library`: that loads again only once `App`'s change
+        // arrives, and until then has the counts from before.
+        let lib = app.library(&account).unwrap_or_default();
+        let collapsed = self.collapsed_folders();
+        let next = next_with_articles(&lib, view, &pinned, &collapsed, &scope, sort);
         if let Some(scope) = next {
             let list = list_key(&self);
             self.select(Selection { view, scope });
@@ -1158,62 +1134,51 @@ pub fn Root() -> Element {
         scope: Scope::All,
     });
     let article = use_signal(|| None::<ArticleSummary>);
-    let mut revision = use_signal(|| 0_u64);
-    let cleared = use_signal(|| 0_u64);
-    let counts = use_signal(|| 0_u64);
+    let mut cache = use_signal(Cached::default);
     let marks = use_signal(Marks::default);
     let search = use_signal(Search::default);
     let mut status = use_signal(|| account.peek().as_deref().and_then(|id| app.status(id).ok()));
 
-    // Sync reports: the status for the sidebar, and a reload when articles changed.
+    // Sync reports, for the sidebar's status.
     use_hook({
         let app = Arc::clone(&app);
         move || {
             spawn(async move {
                 let mut events = app.subscribe();
-                // A report sent before this listened, as by the first sync at start: its
-                // status, and what it changed since the lists first loaded.
+                // A report sent before this listened, as by the first sync at start.
                 let shown = account.peek().clone();
                 if let Some(id) = shown {
                     status.set(app.status(&id).ok());
-                    revision += 1;
                 }
                 loop {
                     match events.recv().await {
                         Ok(report) => {
-                            if Some(&report.account_id) != account.peek().as_ref() {
-                                continue;
-                            }
-                            if report.changed {
-                                revision += 1;
-                            }
-                            // The thumbnails' prefetch reports after each batch, most
-                            // often with nothing new to show: no render then.
-                            if status.peek().as_ref() != Some(&report) {
+                            let shown = Some(&report.account_id) == account.peek().as_ref();
+                            if shown && status.peek().as_ref() != Some(&report) {
                                 status.set(Some(report));
                             }
                         }
-                        // Missed some: reload, the latest status follows.
-                        Err(RecvError::Lagged(_)) => revision += 1,
+                        // Missed some: the latest status follows.
+                        Err(RecvError::Lagged(_)) => {}
                         Err(RecvError::Closed) => break,
                     }
                 }
             });
         }
     });
+    // The shown account's cache changes, made here, in Settings or by a sync.
+    crate::live::use_cache_changes(&app, move |change| {
+        let shown = change.is_none_or(|c| Some(&c.account_id) == account.peek().as_ref());
+        if shown {
+            cache.write().heard(change.map(|c| c.what));
+        }
+    });
 
-    // Before the library, which follows it: Settings changes feeds' Reader View.
     let live = use_live(&app);
     let library = use_memo({
         let app = Arc::clone(&app);
         move || {
-            // A sync changed the cache.
-            revision();
-            // Read or star changes made here changed the counts.
-            counts();
-            // The config changed: a feed added, moved, renamed or removed, its Reader
-            // View turned on or off, here or in Settings.
-            (live.revision)();
+            cache.read();
             account()
                 .and_then(|id| app.library(&id).ok())
                 .unwrap_or_default()
@@ -1241,11 +1206,15 @@ pub fn Root() -> Element {
             .active()
             .map(|(query, everywhere)| (query.to_owned(), everywhere))
     });
+    // Only the changes the list loads again for: not a read or star change.
+    let relisted = use_memo(move || {
+        let cache = cache.read();
+        (cache.list, cache.cleared)
+    });
     let articles = use_memo({
         let app = Arc::clone(&app);
         move || {
-            revision();
-            let (selection, account, cleared) = (selection(), account(), cleared());
+            let (selection, account, (_, cleared)) = (selection(), account(), relisted());
             let searched = searched();
             let rows = account
                 .as_ref()
@@ -1289,9 +1258,7 @@ pub fn Root() -> Element {
         account,
         selection,
         article,
-        revision,
-        cleared,
-        counts,
+        cache,
         marks,
         library,
         pinned,
@@ -1492,6 +1459,32 @@ fn counts_by_feed(counts: &Counts, view: View) -> &HashMap<String, i64> {
 
 /// What the account, view and selection were, and when the last sync finished.
 type PinnedKey = (Option<String>, Selection, Option<i64>);
+
+/// The shown account's cache changes, as [`App::changes`] told them, counted by what
+/// loads again for them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Cached {
+    /// Every change: the library loads again, for its feeds and counts.
+    library: u64,
+    /// Every change but a read or star change, which the list shows through its marks:
+    /// the list loads again, keeping what was read or unstarred here meanwhile.
+    list: u64,
+    /// Every mark-all-read: the list loads again, and Unread keeps none of those.
+    cleared: u64,
+}
+
+impl Cached {
+    /// Counts `what` changed, or `None` for changes that may have been missed.
+    fn heard(&mut self, what: Option<Changed>) {
+        self.library += 1;
+        if what != Some(Changed::Flags) {
+            self.list += 1;
+        }
+        if what == Some(Changed::AllRead) {
+            self.cleared += 1;
+        }
+    }
+}
 
 /// The feeds with articles when the key last changed.
 #[derive(Debug, Default)]
@@ -4053,6 +4046,19 @@ mod tests {
                 feed_scope("y"),
             ]
         );
+    }
+
+    #[test]
+    fn a_read_or_star_change_reloads_the_library_but_not_the_list() {
+        let mut cache = Cached::default();
+        cache.heard(Some(Changed::Flags));
+        assert_eq!((cache.library, cache.list, cache.cleared), (1, 0, 0));
+        for what in [Some(Changed::Feeds), Some(Changed::Articles), None] {
+            cache.heard(what);
+        }
+        assert_eq!((cache.library, cache.list, cache.cleared), (4, 3, 0));
+        cache.heard(Some(Changed::AllRead));
+        assert_eq!((cache.library, cache.list, cache.cleared), (5, 4, 1));
     }
 
     #[test]

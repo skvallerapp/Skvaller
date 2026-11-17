@@ -84,6 +84,30 @@ pub struct Library {
     pub counts: Counts,
 }
 
+/// A change to an account's cache, as [`App::changes`] tells it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Change {
+    /// The account whose cache changed.
+    pub account_id: String,
+    pub what: Changed,
+}
+
+/// What kind of data in a cache changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Changed {
+    /// Articles were marked read or unread, starred or unstarred: [`App::set_read`] and
+    /// [`App::set_starred`].
+    Flags,
+    /// Every article of a list was marked read: [`App::mark_all_read`].
+    AllRead,
+    /// Feeds or folders were added, renamed, moved or removed, or a feed's Reader View
+    /// turned on or off.
+    Feeds,
+    /// A sync or a thumbnail fetch stored articles, flags, feeds or thumbnails from
+    /// outside the app.
+    Articles,
+}
+
 /// A change to an account's name or sync settings; fields left `None` stay.
 #[derive(Clone, Debug, Default)]
 pub struct AccountChange {
@@ -157,7 +181,6 @@ impl Runtime {
             last_sync: self.db.last_sync().ok().flatten(),
             error: lock(&self.last_error).clone(),
             unauthorized: self.token_rejected.load(Ordering::Relaxed),
-            changed: false,
             cache_broken: self.corrupt.load(Ordering::Relaxed),
         }
     }
@@ -178,15 +201,17 @@ pub struct App {
     pub(crate) broken: Mutex<HashMap<String, String>>,
     notice: Option<Notice>,
     pub(crate) events: broadcast::Sender<SyncStatus>,
-    /// Bumped on every change to the settings or an account's, so each window can show
-    /// them at once.
+    /// Every change to an account's cache, so each window shows it at once.
+    pub(crate) changes: broadcast::Sender<Change>,
+    /// Bumped on every change to the settings or the accounts, so each window can show
+    /// them at once. Not by a change to a cache: that goes to `changes`.
     config_revision: watch::Sender<u64>,
     /// The runtime [`App::start_sync`] ran on, where every sync runs, away from the UI.
     pub(crate) sync_runtime: OnceLock<tokio::runtime::Handle>,
 }
 
-/// How many sync reports wait for a slow listener before it misses the oldest. A
-/// listener that falls behind only misses statuses, and reloads on the next one.
+/// How many sync reports, or cache changes, wait for a slow listener before it misses
+/// the oldest. A listener that falls behind is told so, and reloads.
 const EVENT_BACKLOG: usize = 64;
 
 impl App {
@@ -324,6 +349,7 @@ impl App {
             broken: Mutex::new(broken),
             notice,
             events: broadcast::channel(EVENT_BACKLOG).0,
+            changes: broadcast::channel(EVENT_BACKLOG).0,
             config_revision: watch::Sender::new(0),
             sync_runtime: OnceLock::new(),
         })
@@ -441,7 +467,8 @@ impl App {
         self.update_config(|config| config.layout = layout)
     }
 
-    /// Changes in the settings or the accounts: the revision changes on each.
+    /// Changes in the settings or the accounts: the revision changes on each. A change
+    /// to an account's cache goes to [`App::changes`] instead.
     #[must_use]
     pub fn watch_config(&self) -> watch::Receiver<u64> {
         self.config_revision.subscribe()
@@ -450,6 +477,23 @@ impl App {
     /// Tells every window that the settings or the accounts changed.
     pub(crate) fn announce(&self) {
         self.config_revision.send_modify(|r| *r += 1);
+    }
+
+    /// Hears every change to an account's cache that a window shows, from every method
+    /// that makes one, as it is made. Reader View pages, stored by [`App::full_text`]
+    /// and the prefetch after a sync, aren't told: no list or sidebar shows them.
+    #[must_use]
+    pub fn changes(&self) -> broadcast::Receiver<Change> {
+        self.changes.subscribe()
+    }
+
+    /// Tells every window that the account's cache changed.
+    pub(crate) fn cache_changed(&self, account_id: &str, what: Changed) {
+        // No listener yet is fine: a window that opens later reads the cache as it is.
+        let _ = self.changes.send(Change {
+            account_id: account_id.to_owned(),
+            what,
+        });
     }
 
     /// Changes the config and saves it, giving what `change` gives. The change takes only
@@ -591,7 +635,7 @@ impl App {
         self.runtime(account_id)?
             .db
             .set_feed_reader_view(feed_id, on)?;
-        self.announce();
+        self.cache_changed(account_id, Changed::Feeds);
         Ok(())
     }
 
@@ -602,7 +646,21 @@ impl App {
     ///
     /// As [`App::library`].
     pub fn set_read(&self, account_id: &str, ids: &[String], read: bool) -> Result<()> {
-        Ok(self.runtime(account_id)?.db.set_read(ids, read)?)
+        self.runtime(account_id)?.db.set_read(ids, read)?;
+        self.cache_changed(account_id, Changed::Flags);
+        Ok(())
+    }
+
+    /// Marks every article of a list read, as [`App::set_read`] does, and tells the
+    /// windows so as [`Changed::AllRead`], not as a read change.
+    ///
+    /// # Errors
+    ///
+    /// As [`App::library`].
+    pub fn mark_all_read(&self, account_id: &str, ids: &[String]) -> Result<()> {
+        self.runtime(account_id)?.db.set_read(ids, true)?;
+        self.cache_changed(account_id, Changed::AllRead);
+        Ok(())
     }
 
     /// Stars or unstars articles in the cache, sent on the next sync as
@@ -612,7 +670,9 @@ impl App {
     ///
     /// As [`App::library`].
     pub fn set_starred(&self, account_id: &str, ids: &[String], starred: bool) -> Result<()> {
-        Ok(self.runtime(account_id)?.db.set_starred(ids, starred)?)
+        self.runtime(account_id)?.db.set_starred(ids, starred)?;
+        self.cache_changed(account_id, Changed::Flags);
+        Ok(())
     }
 
     /// The account's sync status now.
@@ -1062,11 +1122,23 @@ pub(crate) mod tests {
         };
         assert_eq!(unread(&app), 3);
 
+        let mut changes = app.changes();
+        let config = app.watch_config();
+
         app.set_read(&id, &first, true).unwrap();
         app.set_starred(&id, &first, true).unwrap();
+        app.mark_all_read(&id, &first).unwrap();
 
         assert_eq!(unread(&app), 2);
         let article = &app.articles(&id, &all).unwrap()[0];
         assert!(article.read && article.starred);
+        let heard = |what| Change {
+            account_id: id.clone(),
+            what,
+        };
+        assert_eq!(changes.try_recv().unwrap(), heard(Changed::Flags));
+        assert_eq!(changes.try_recv().unwrap(), heard(Changed::Flags));
+        assert_eq!(changes.try_recv().unwrap(), heard(Changed::AllRead));
+        assert!(!config.has_changed().unwrap(), "not a config change");
     }
 }

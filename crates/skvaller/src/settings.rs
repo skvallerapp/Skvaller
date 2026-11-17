@@ -3,7 +3,7 @@
 //! It runs its own `VirtualDom`, so it shares nothing with the main window but what it
 //! is given: the [`App`], and the [`SettingsWindow`] slot that says whether it is open.
 //! A change is saved at once, and every window follows it through the app's config
-//! revision. Settings for what the native app doesn't have yet are left out until it
+//! revision, or for a feed's Reader View, through [`App::changes`]. Settings for what the native app doesn't have yet are left out until it
 //! does.
 
 use std::cell::RefCell;
@@ -14,8 +14,8 @@ use dioxus_native::prelude::*;
 use dioxus_native::winit::window::Window;
 use dioxus_native::{Config, LogicalSize, WindowAttributes, Windows, use_window};
 use skvaller_app::{
-    Account, AccountChange, AccountKind, App, Clock, DateFormat, Font, FontSize, LineWidth,
-    MarkReadOn, Settings, SortSubscriptions, SyncSchedule, Theme, ThumbnailSize,
+    Account, AccountChange, AccountKind, App, Changed, Clock, DateFormat, Font, FontSize,
+    LineWidth, MarkReadOn, Settings, SortSubscriptions, SyncSchedule, Theme, ThumbnailSize,
 };
 use skvaller_core::ImportReport;
 use tokio::sync::Notify;
@@ -155,6 +155,19 @@ fn SettingsRoot() -> Element {
             }
         }
     });
+    // The shown Reader View page's feeds changed, here, in the main window or by a sync.
+    let mut feeds_changed = use_signal(|| 0_u64);
+    crate::live::use_cache_changes(&app, move |change| {
+        let shown = match &*pane.peek() {
+            Pane::ReaderView(id) => change.is_none_or(|c| {
+                &c.account_id == id && matches!(c.what, Changed::Feeds | Changed::Articles)
+            }),
+            _ => false,
+        };
+        if shown {
+            feeds_changed += 1;
+        }
+    });
     // Back from an account's Reader View page: its row takes the focus again.
     let returned = use_signal(|| false);
     let feedback = Feedback {
@@ -184,8 +197,8 @@ fn SettingsRoot() -> Element {
         (Pane::Account(_), Some(AccountKind::Greader { username, .. })) => Some(username.clone()),
         _ => None,
     };
-    // The account's subscribed feeds, for its Reader View page. Read again with every
-    // config revision, which a change of a feed's setting bumps.
+    // The account's subscribed feeds, for its Reader View page, read again as they change.
+    feeds_changed();
     let feeds = match &current {
         Pane::ReaderView(id) => app
             .library(id)

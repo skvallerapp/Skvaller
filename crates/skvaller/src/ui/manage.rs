@@ -182,9 +182,8 @@ impl Reading {
         };
         self.overlay.set(Overlay::None);
         let saved = match (item, &target) {
-            // Nothing to reload from here: `App` announces the change, and the library
-            // follows `live.revision`, as for a change made in Settings. The list shows
-            // no feed's Reader View.
+            // Nothing to reload from here: `App` tells the window of each change to the
+            // feeds, as of one made in Settings.
             (Item::ReaderView { on }, Target::Feed(id)) => {
                 app.set_feed_reader_view(&account, id, !on)
             }
@@ -194,7 +193,6 @@ impl Reading {
                 if let Some(folder) = folder {
                     self.set_collapsed(folder, false);
                 }
-                self.feeds_changed();
                 moved
             }
             (Item::Rename, _) => {
@@ -236,14 +234,13 @@ impl Reading {
             Target::Feed(id) => app.rename_feed(&account, id, title),
             Target::Folder(id) => app.rename_folder(&account, id, title),
         };
-        match renamed {
-            Ok(()) => self.feeds_changed(),
-            Err(e) => tracing::error!("renaming failed: {e}"),
+        if let Err(e) = renamed {
+            tracing::error!("renaming failed: {e}");
         }
     }
 
     /// Unsubscribes from the feed or deletes the folder, as just confirmed. A selected
-    /// one gives way to All; any other list loads again, as it may have its articles.
+    /// one gives way to All.
     pub(super) fn remove(self, app: &App, target: &Target) {
         self.close_overlay();
         let Some(account) = self.account.peek().clone() else {
@@ -259,8 +256,6 @@ impl Reading {
         }
         if self.selection.peek().scope == target.scope() {
             self.select_scope(Scope::All);
-        } else {
-            self.feeds_changed();
         }
     }
 }
@@ -484,7 +479,6 @@ pub(super) fn AddFeed() -> Element {
                     // Another account showing now: the feed is in the one it went to.
                     if reading.account.peek().as_deref() == Some(account.as_str()) {
                         reading.select_scope(Scope::Feed { id });
-                        reading.feeds_changed();
                     }
                 }
                 Err(e) => error.set(Some(add_error(&e))),

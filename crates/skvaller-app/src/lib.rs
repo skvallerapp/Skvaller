@@ -2,8 +2,9 @@
 //!
 //! [`App::load`] reads `config.json` and opens each account's cache from the folders in
 //! [`Dirs`]. The UI then reads folders, feeds and articles from the local caches only,
-//! and [`App::start_sync`] keeps them up to date in the background, reporting through
-//! [`App::subscribe`]. Nothing the UI calls waits for the network.
+//! and [`App::start_sync`] keeps them up to date in the background, reporting its
+//! progress through [`App::subscribe`]. Every change to a cache, a sync's or the
+//! user's, is told through [`App::changes`]. Nothing the UI calls waits for the network.
 
 mod accounts;
 mod app;
@@ -15,7 +16,9 @@ mod sync;
 mod thumbnails;
 
 #[doc(inline)]
-pub use app::{AccountChange, App, Dirs, Library, Notice, import_local, seed_local};
+pub use app::{
+    AccountChange, App, Change, Changed, Dirs, Library, Notice, import_local, seed_local,
+};
 #[doc(inline)]
 pub use config::{
     Account, AccountKind, Clock, Config, DateFormat, Font, FontSize, LIST_WIDTH, Layout, LineWidth,

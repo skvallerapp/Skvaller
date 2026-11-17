@@ -275,7 +275,7 @@ impl App {
             )));
         }
         let report = import_opml(&rt.db, &file)?;
-        self.back_up_feeds(&rt);
+        self.feeds_changed(&rt);
         if report.added > 0 {
             self.sync_soon(rt);
         }

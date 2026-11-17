@@ -102,8 +102,8 @@ impl Relist {
     /// The list for `load` now that the cache lists `rows` for it.
     ///
     /// `marks` are the changes made on top of the last load, `cleared` is bumped by
-    /// each mark-all-read, `open` is the open article, and `fetch` looks an article up
-    /// in the cache by id.
+    /// each mark-all-read, which leaves Unread nothing to keep, `open` is the open
+    /// article, and `fetch` looks an article up in the cache by id.
     pub(super) fn next(
         &mut self,
         load: Load,
@@ -129,12 +129,11 @@ impl Relist {
             // After a sync, the Unread view keeps what was read here since it opened,
             // and the Starred view what was unstarred, so the list doesn't jump.
             let a = marks.apply(before.load, a);
-            same && self.cleared == cleared
-                && match load.selection.view {
-                    View::Unread => a.read,
-                    View::Starred => !a.starred,
-                    View::All => false,
-                }
+            same && match load.selection.view {
+                View::Unread => a.read && self.cleared == cleared,
+                View::Starred => !a.starred,
+                View::All => false,
+            }
         };
         let kept: Vec<ArticleSummary> = before
             .rows
@@ -296,6 +295,15 @@ mod tests {
         marks.record(listed.load, &["2".into(), "1".into()], Some(true), None);
         let next = relist.next(unread, Vec::new(), 1, &marks, None, none);
         assert_eq!(next.rows, []);
+    }
+
+    #[test]
+    fn mark_all_read_in_starred_keeps_what_was_unstarred_here() {
+        let starred = load(View::Starred);
+        let (mut relist, listed, mut marks) = loaded(&starred, &[2, 1]);
+        marks.record(listed.load, &["1".into()], None, Some(false));
+        let next = relist.next(starred, articles(&[2]), 1, &marks, None, none);
+        assert_eq!(ids(&next), ["2", "1"]);
     }
 
     #[test]
