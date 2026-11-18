@@ -569,8 +569,9 @@ button {
 }
 
 /* A folder's feeds, which slide open and closed: ui.rs sets the height, from 0 to its
-   rows', keeps the rows in it until a close's slide ends (FOLDER_SLIDE), and adds
-   `sliding` only for an open or close, not for a feed a sync adds or removes. */
+   rows', keeps the rows in it until a close's slide ends (FOLDER_SLIDE and
+   FIRST_FRAME), and adds `sliding` only for an open or close, not for a feed a sync
+   adds or removes. */
 .folder-feeds {
   overflow: hidden;
   /* Positioned, so its rows paint over the selection's highlight: Blitz paints an
@@ -839,7 +840,7 @@ input.search-field {
 }
 
 /* The next list slides in from below as the old one's ghost slides up out of sight.
-   ui.rs's LIST_SLIDE is how long the ghost stays. */
+   ui.rs's LIST_SLIDE is how long it takes, and GHOST_STAYS how long the ghost stays. */
 .list-body.sliding > .viewport {
   animation: list-in 320ms cubic-bezier(0.3, 0, 0, 1);
 }

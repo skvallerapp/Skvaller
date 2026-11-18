@@ -115,28 +115,33 @@ const READER_VIEW_HOLD: Duration = Duration::from_millis(400);
 const READ_ON_PAGE: f64 = 0.9;
 
 /// How long the sidebar takes to slide open or closed: app.css's `.sidebar-slot`
-/// transition. Closing, the sidebar stays in the document this long.
+/// transition. Closing, the sidebar stays in the document this long and [`FIRST_FRAME`]
+/// more.
 const SIDEBAR_SLIDE: Duration = Duration::from_millis(180);
 
 /// How long a folder's feeds take to slide open or closed: app.css's `.folder-feeds`
-/// and `.highlight.folding` transitions. Closing, the rows stay in the document this long.
+/// and `.highlight.folding` transitions. Closing, the rows stay in the document this
+/// long and [`FIRST_FRAME`] more.
 const FOLDER_SLIDE: Duration = Duration::from_millis(160);
 
 /// How long the list takes to slide on to the next one after mark-all-read: app.css's
 /// `list-in` and `list-out`.
 const LIST_SLIDE: Duration = Duration::from_millis(320);
-/// How long the old list's ghost stays: the slide, and some frames for it to start,
-/// which on a slow machine may be a few frames after the mark. Ending the slide early
-/// would snap the next list the last pixels into place.
-const GHOST_STAYS: Duration = LIST_SLIDE.saturating_add(Duration::from_millis(3 * 16));
+/// How long the old list's ghost stays: the slide, and its first frame. Ending the slide
+/// early would snap the next list the last pixels into place.
+const GHOST_STAYS: Duration = LIST_SLIDE.saturating_add(FIRST_FRAME);
 
 /// How long the sidebar rows that mark-all-read emptied take to close and fade:
-/// app.css's `leave`, `.folder-feeds.leaving` and `.highlight.leaving`. They stay in the
-/// document this long.
+/// app.css's `leave`, `.folder-feeds.leaving` and `.highlight.leaving`.
 const LEAVE: Duration = Duration::from_millis(220);
-/// How long the leaving rows stay: [`LEAVE`], and some frames for their animation to
-/// start, as [`GHOST_STAYS`] has.
-const LEAVING_STAYS: Duration = LEAVE.saturating_add(Duration::from_millis(3 * 16));
+/// How long the leaving rows stay: [`LEAVE`], and its first frame.
+const LEAVING_STAYS: Duration = LEAVE.saturating_add(FIRST_FRAME);
+
+/// How long the frame an animation or transition starts in may take: Blitz starts it as
+/// that frame ends, as a browser does, and it may be long, as the first time a view is
+/// built or on a slow machine. What stays in the document for a closing animation stays
+/// this much longer, by then unseen.
+const FIRST_FRAME: Duration = Duration::from_millis(250);
 
 /// A frame, at 60 Hz.
 pub(crate) const FRAME: Duration = Duration::from_millis(16);
@@ -1886,7 +1891,7 @@ fn Sidebar() -> Element {
         reading.window_size.read();
         font_size.read();
         spawn(async move {
-            tokio::time::sleep(FOLDER_SLIDE + FRAME).await;
+            tokio::time::sleep(FOLDER_SLIDE + FIRST_FRAME).await;
             pull.measure().await;
         });
     });
@@ -2093,7 +2098,7 @@ fn SidebarSlot() -> Element {
     let reading = use_context::<Reading>();
     let open = use_memo(move || reading.layout.read().sidebar_open)();
     let width = use_memo(move || reading.layout.read().sidebar_width)();
-    let shown = use_closing(open, SIDEBAR_SLIDE);
+    let shown = use_closing(open, SIDEBAR_SLIDE + FIRST_FRAME);
     let slot_width = if open { width } else { 0.0 };
 
     rsx! {
@@ -2108,10 +2113,10 @@ fn SidebarSlot() -> Element {
     }
 }
 
-/// Whether something `open` is still in the document: while open, and for `slide` after
+/// Whether something `open` is still in the document: while open, and for `stays` after
 /// it closes, so its closing transition plays. With Settings → Animations off, only
 /// while open.
-fn use_closing(open: bool, slide: Duration) -> bool {
+fn use_closing(open: bool, stays: Duration) -> bool {
     let live = use_context::<Live>();
     // Shown at the last change: true from an open until its close's slide ends.
     let mut present = use_signal(move || open);
@@ -2130,7 +2135,7 @@ fn use_closing(open: bool, slide: Duration) -> bool {
         }
         let changes = Rc::clone(&changes);
         spawn(async move {
-            tokio::time::sleep(slide).await;
+            tokio::time::sleep(stays).await;
             if changes.get() == change {
                 present.set(false);
             }
@@ -2394,7 +2399,7 @@ fn AccountSwitcher() -> Element {
 /// the rows that stay.
 #[component]
 fn FolderFeeds(feeds: Vec<(skvaller_core::Feed, i64, bool)>, expanded: bool, row: f64) -> Element {
-    let shown = use_closing(expanded, FOLDER_SLIDE);
+    let shown = use_closing(expanded, FOLDER_SLIDE + FIRST_FRAME);
     // Whether the folder last opened or closed, and when: only that slides the box, not
     // a sync adding or removing a feed, which moves the rows and highlight at once.
     let last = use_hook(|| Rc::new(std::cell::Cell::new((expanded, None::<Instant>))));
@@ -2404,7 +2409,7 @@ fn FolderFeeds(feeds: Vec<(skvaller_core::Feed, i64, bool)>, expanded: bool, row
         last.set((expanded, toggled));
     }
     let staying = feeds.iter().filter(|(_, _, leaving)| !leaving).count();
-    let class = if toggled.is_some_and(|t| t.elapsed() < FOLDER_SLIDE) {
+    let class = if toggled.is_some_and(|t| t.elapsed() < FOLDER_SLIDE + FIRST_FRAME) {
         "folder-feeds sliding"
     } else if staying < feeds.len() {
         "folder-feeds leaving"
@@ -3494,7 +3499,8 @@ fn Reader() -> Element {
         }
     });
     let open = reading.open_article();
-    // The sidebar counts until its closing slide ends, as the reader widens only then.
+    // The sidebar counts until its closing slide ends, as the reader widens only then:
+    // without its first frame, as the buttons showing a frame early do no harm.
     let sidebar_open = use_memo(move || reading.layout.read().sidebar_open)();
     let sidebar_shown = use_closing(sidebar_open, SIDEBAR_SLIDE);
     // A memo, so a resize re-renders the reader only when this changes.
