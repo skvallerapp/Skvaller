@@ -68,7 +68,7 @@ dependencies = [
 [[package]]
 name = "accesskit_xplat"
 version = "0.2.1"
-source = "git+https://github.com/SinderC/blitz?rev=005411b5#005411b5c847b4f7b8856d56facd909ba2c88696"
+source = "git+https://github.com/SinderC/blitz?rev=c32fbbcb#c32fbbcbe59b71fe60fe904b95b16fbe6c5a9c96"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -641,7 +641,7 @@ dependencies = [
 [[package]]
 name = "blitz-dom"
 version = "0.3.0-beta.4"
-source = "git+https://github.com/SinderC/blitz?rev=005411b5#005411b5c847b4f7b8856d56facd909ba2c88696"
+source = "git+https://github.com/SinderC/blitz?rev=c32fbbcb#c32fbbcbe59b71fe60fe904b95b16fbe6c5a9c96"
 dependencies = [
  "accesskit",
  "anyrender",
@@ -652,7 +652,7 @@ dependencies = [
  "color",
  "cssparser",
  "cursor-icon",
- "debug_timer 0.1.3 (git+https://github.com/SinderC/blitz?rev=005411b5)",
+ "debug_timer 0.1.3 (git+https://github.com/SinderC/blitz?rev=c32fbbcb)",
  "euclid",
  "html-escape",
  "icu_locale_core",
@@ -688,7 +688,7 @@ dependencies = [
 [[package]]
 name = "blitz-html"
 version = "0.3.0-beta.4"
-source = "git+https://github.com/SinderC/blitz?rev=005411b5#005411b5c847b4f7b8856d56facd909ba2c88696"
+source = "git+https://github.com/SinderC/blitz?rev=c32fbbcb#c32fbbcbe59b71fe60fe904b95b16fbe6c5a9c96"
 dependencies = [
  "blitz-dom",
  "blitz-traits",
@@ -699,7 +699,7 @@ dependencies = [
 [[package]]
 name = "blitz-net"
 version = "0.3.0-beta.4"
-source = "git+https://github.com/SinderC/blitz?rev=005411b5#005411b5c847b4f7b8856d56facd909ba2c88696"
+source = "git+https://github.com/SinderC/blitz?rev=c32fbbcb#c32fbbcbe59b71fe60fe904b95b16fbe6c5a9c96"
 dependencies = [
  "blitz-traits",
  "data-url",
@@ -711,7 +711,7 @@ dependencies = [
 [[package]]
 name = "blitz-paint"
 version = "0.3.0-beta.4"
-source = "git+https://github.com/SinderC/blitz?rev=005411b5#005411b5c847b4f7b8856d56facd909ba2c88696"
+source = "git+https://github.com/SinderC/blitz?rev=c32fbbcb#c32fbbcbe59b71fe60fe904b95b16fbe6c5a9c96"
 dependencies = [
  "anyrender",
  "anyrender_svg",
@@ -733,7 +733,7 @@ dependencies = [
 [[package]]
 name = "blitz-shell"
 version = "0.3.0-beta.4"
-source = "git+https://github.com/SinderC/blitz?rev=005411b5#005411b5c847b4f7b8856d56facd909ba2c88696"
+source = "git+https://github.com/SinderC/blitz?rev=c32fbbcb#c32fbbcbe59b71fe60fe904b95b16fbe6c5a9c96"
 dependencies = [
  "accesskit",
  "accesskit_xplat",
@@ -754,7 +754,7 @@ dependencies = [
 [[package]]
 name = "blitz-traits"
 version = "0.3.0-beta.4"
-source = "git+https://github.com/SinderC/blitz?rev=005411b5#005411b5c847b4f7b8856d56facd909ba2c88696"
+source = "git+https://github.com/SinderC/blitz?rev=c32fbbcb#c32fbbcbe59b71fe60fe904b95b16fbe6c5a9c96"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.13.2",
@@ -1516,7 +1516,7 @@ checksum = "da220af51a1a335e9a930beaaef53d261e41ea9eecfb3d973a3ddae1a7284b9c"
 [[package]]
 name = "debug_timer"
 version = "0.1.3"
-source = "git+https://github.com/SinderC/blitz?rev=005411b5#005411b5c847b4f7b8856d56facd909ba2c88696"
+source = "git+https://github.com/SinderC/blitz?rev=c32fbbcb#c32fbbcbe59b71fe60fe904b95b16fbe6c5a9c96"
 
 [[package]]
 name = "derive_more"
@@ -1736,7 +1736,7 @@ dependencies = [
 [[package]]
 name = "dioxus-native"
 version = "0.7.0"
-source = "git+https://github.com/SinderC/blitz?rev=005411b5#005411b5c847b4f7b8856d56facd909ba2c88696"
+source = "git+https://github.com/SinderC/blitz?rev=c32fbbcb#c32fbbcbe59b71fe60fe904b95b16fbe6c5a9c96"
 dependencies = [
  "android-activity",
  "anyrender",
@@ -1776,7 +1776,7 @@ dependencies = [
 [[package]]
 name = "dioxus-native-dom"
 version = "0.7.0"
-source = "git+https://github.com/SinderC/blitz?rev=005411b5#005411b5c847b4f7b8856d56facd909ba2c88696"
+source = "git+https://github.com/SinderC/blitz?rev=c32fbbcb#c32fbbcbe59b71fe60fe904b95b16fbe6c5a9c96"
 dependencies = [
  "blitz-dom",
  "blitz-traits",
@@ -6443,7 +6443,7 @@ dependencies = [
 [[package]]
 name = "stylo_taffy"
 version = "0.3.0-beta.4"
-source = "git+https://github.com/SinderC/blitz?rev=005411b5#005411b5c847b4f7b8856d56facd909ba2c88696"
+source = "git+https://github.com/SinderC/blitz?rev=c32fbbcb#c32fbbcbe59b71fe60fe904b95b16fbe6c5a9c96"
 dependencies = [
  "bitflags 2.13.2",
  "stylo",
