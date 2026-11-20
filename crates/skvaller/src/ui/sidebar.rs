@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::dates::Dates;
+use crate::icons::RSS;
 
 /// What the sidebar says of the account's sync, and whether it is a failure.
 pub(super) fn status_line(status: Option<&SyncStatus>, dates: &Dates) -> (String, bool) {
@@ -538,11 +539,7 @@ pub(super) fn AccountSwitcher() -> Element {
                     reading.open_overlay(Overlay::AccountMenu { at: at.unwrap_or(0) });
                 },
                 // Lucide's rss.
-                svg { width: "18", height: "18", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
-                    path { d: "M4 11a9 9 0 0 1 9 9" }
-                    path { d: "M4 4a16 16 0 0 1 16 16" }
-                    circle { cx: "5", cy: "19", r: "1" }
-                }
+                Icon { size: 18, stroke: "2", paths: RSS }
             }
             if let Some(at) = menu {
                 div { class: "menu popover sidebar-popover", role: "menu", aria_label: t("accounts.menu"),

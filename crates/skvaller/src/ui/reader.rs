@@ -1,6 +1,7 @@
 //! The reader: the open article in its own document, and its buttons.
 
 use super::*;
+use crate::icons::{GLOBE, SQUARE_TEXT};
 
 /// Lucide's star.
 pub(super) const STAR_PATH: &str = "M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z";
@@ -359,13 +360,7 @@ pub(super) fn ReaderButtons(article: ArticleSummary) -> Element {
             "aria-busy": "{rv_loading}",
             disabled: article.url.is_empty(),
             onclick: move |_| reading.run(&reader_app, Action::ToggleReaderView.into()),
-            // Lucide's square-text.
-            svg { width: "18", height: "18", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
-                rect { x: "3", y: "3", width: "18", height: "18", rx: "2" }
-                path { d: "M7 8h8" }
-                path { d: "M7 12h10" }
-                path { d: "M7 16h6" }
-            }
+            Icon { size: 18, stroke: "2", paths: SQUARE_TEXT }
         }
         button {
             class: "icon-button",
@@ -373,11 +368,7 @@ pub(super) fn ReaderButtons(article: ArticleSummary) -> Element {
             title: t("reader.openInBrowser"),
             disabled: article.url.is_empty(),
             onclick: move |_| reading.run(&browser_app, Action::OpenInBrowser.into()),
-            svg { width: "18", height: "18", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
-                circle { cx: "12", cy: "12", r: "10" }
-                path { d: "M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" }
-                path { d: "M2 12h20" }
-            }
+            Icon { size: 18, stroke: "2", paths: GLOBE }
         }
     }
 }

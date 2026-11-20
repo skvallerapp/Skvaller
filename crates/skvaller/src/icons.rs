@@ -87,6 +87,18 @@ pub const RSS: &[&str] = &[
     "M4 19a1 1 0 1 0 2 0a1 1 0 1 0 -2 0",
 ];
 pub const X: &[&str] = &["M18 6 6 18", "m6 6 12 12"];
+pub const CIRCLE_CHECK: &[&str] = &["M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0", "m9 12 2 2 4-4"];
+pub const SQUARE_TEXT: &[&str] = &[
+    "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z",
+    "M7 8h8",
+    "M7 12h10",
+    "M7 16h6",
+];
+pub const GLOBE: &[&str] = &[
+    "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0",
+    "M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20",
+    "M2 12h20",
+];
 /// The window buttons Skvaller draws on Linux, as GNOME's: Lucide's minus, a smaller
 /// square, and copy. KDE's are in `chrome`, drawn as Breeze draws them.
 pub const WINDOW_MINIMIZE: &[&str] = &["M5 12h14"];

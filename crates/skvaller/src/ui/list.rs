@@ -1,6 +1,7 @@
 //! The article list: its title and search bar, and the rows it draws as it scrolls.
 
 use super::*;
+use crate::icons::CIRCLE_CHECK;
 
 /// What the list shows: the view's label for every feed, else the feed's or folder's
 /// name. Empty for one gone from the library.
@@ -102,10 +103,7 @@ pub(super) fn ArticleList() -> Element {
                         "aria-expanded": "{confirming}",
                         disabled: unread == 0,
                         onclick: move |_| reading.run(&app, Action::MarkAllRead.into()),
-                        svg { width: "18", height: "18", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
-                            circle { cx: "12", cy: "12", r: "10" }
-                            path { d: "m9 12 2 2 4-4" }
-                        }
+                        Icon { size: 18, stroke: "2", paths: CIRCLE_CHECK }
                     }
                     if confirming {
                         div { class: "confirm popover", role: "dialog", "aria-labelledby": "mark-all-question",
