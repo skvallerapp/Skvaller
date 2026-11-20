@@ -2439,7 +2439,7 @@ fn FeedItem(feed: skvaller_core::Feed, count: i64, nested: bool, leaving: bool) 
 /// This runs before Blitz lays out the rows' new heights, and a scroll past the old
 /// range would stop at its end: it waits for the range, a few frames at most, and else
 /// returns as far as it reaches.
-async fn reachable(el: &MountedData, target: f64) -> f64 {
+pub(crate) async fn reachable(el: &MountedData, target: f64) -> f64 {
     let mut to = target;
     for _ in 0..LAYOUT_WAITS {
         match el.get_scroll_size().await {

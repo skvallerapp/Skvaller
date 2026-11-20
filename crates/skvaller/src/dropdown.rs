@@ -16,7 +16,7 @@ use crate::icons::{CHECK, CHEVRONS_UP_DOWN, Icon};
 use crate::place;
 use crate::shortcuts;
 use crate::ui::focus;
-use crate::ui::{FRAME, LAYOUT_WAITS};
+use crate::ui::reachable;
 
 /// A row's height: `.menu-item`'s.
 const ROW: f64 = 28.0;
@@ -71,7 +71,7 @@ pub fn Dropdown(
                 width: rect.width(),
                 height: rect.height(),
             };
-            let place = place(button, selected, count, size.height);
+            let place = place_list(button, selected, count, size.height);
             open.set(Some(Open {
                 at: selected,
                 place,
@@ -109,12 +109,8 @@ pub fn Dropdown(
                 return;
             };
             let y = reveal(offset.y, state.place.height, i);
-            if (y - offset.y).abs() > 0.5
-                && let Err(e) = mounted
-                    .scroll(PixelsVector2D::new(0.0, y), ScrollBehavior::Instant)
-                    .await
-            {
-                tracing::warn!("scrolling a dropdown's list failed: {e}");
+            if (y - offset.y).abs() > 0.5 {
+                scroll_list_to(&mounted, y).await;
             }
         });
     };
@@ -249,20 +245,18 @@ pub fn Dropdown(
                                     return;
                                 };
                                 let y = (offset.y - by).clamp(0.0, place.range);
-                                if let Err(e) = mounted
-                                    .scroll(PixelsVector2D::new(0.0, y), ScrollBehavior::Instant)
-                                    .await
-                                {
-                                    tracing::warn!("scrolling a dropdown's list failed: {e}");
-                                }
+                                scroll_list_to(&mounted, y).await;
                             });
                         },
                         onmounted: move |e: MountedEvent| {
                             let mounted = e.data();
                             list.set(Some(Rc::clone(&mounted)));
                             async move {
+                                // A list mounted moments ago has no size yet, so a
+                                // scroll would stop at 0.
                                 if place.scroll > 0.0 {
-                                    scroll_when_laid_out(&mounted, place).await;
+                                    let y = reachable(&mounted, place.scroll).await;
+                                    scroll_list_to(&mounted, y).await;
                                 }
                             }
                         },
@@ -298,26 +292,10 @@ pub fn Dropdown(
     }
 }
 
-/// Scrolls a list just mounted to `place.scroll`, once Blitz has laid it out.
-///
-/// A list mounted moments ago has no size yet, so a scroll would stop at 0. Its scroll
-/// range shows when it has one; this waits for that for a few frames at most.
-async fn scroll_when_laid_out(list: &MountedData, place: Place) {
-    for _ in 0..LAYOUT_WAITS {
-        match list.get_scroll_size().await {
-            Ok(size) if size.height >= place.range - 0.5 => break,
-            Ok(_) => tokio::time::sleep(FRAME).await,
-            Err(e) => {
-                tracing::warn!("reading a dropdown's list failed: {e}");
-                return;
-            }
-        }
-    }
+/// Scrolls the open list to `y`.
+async fn scroll_list_to(list: &MountedData, y: f64) {
     if let Err(e) = list
-        .scroll(
-            PixelsVector2D::new(0.0, place.scroll),
-            ScrollBehavior::Instant,
-        )
+        .scroll(PixelsVector2D::new(0.0, y), ScrollBehavior::Instant)
         .await
     {
         tracing::warn!("scrolling a dropdown's list failed: {e}");
@@ -328,7 +306,7 @@ async fn scroll_when_laid_out(list: &MountedData, place: Place) {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Open {
     at: usize,
-    place: Place,
+    place: ListPlace,
 }
 
 /// A box in window coordinates.
@@ -342,7 +320,7 @@ struct Rect {
 
 /// Where the open list goes, in window coordinates, and how far it starts scrolled.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Place {
+struct ListPlace {
     left: f64,
     top: f64,
     width: f64,
@@ -357,7 +335,7 @@ struct Place {
 /// Near the window's top or bottom the list slides to stay inside, and when the window
 /// is too short for it, it fills the window's height and scrolls so the row stays as
 /// close to the button as it can. The CSS keeps it off the sides.
-fn place(button: Rect, selected: usize, count: usize, window_height: f64) -> Place {
+fn place_list(button: Rect, selected: usize, count: usize, window_height: f64) -> ListPlace {
     let full = 2.0 * INSET + rows(count);
     let height = full.min((window_height - 2.0 * MARGIN).max(ROW + 2.0 * INSET));
     let row_y = button.y + (button.height - ROW) / 2.0;
@@ -366,7 +344,7 @@ fn place(button: Rect, selected: usize, count: usize, window_height: f64) -> Pla
     let range = full - height;
     let scroll = (top - wanted).clamp(0.0, range);
     let left = (button.x + BUTTON_LABEL_X - INSET - LABEL_X).max(MARGIN);
-    Place {
+    ListPlace {
         left,
         top,
         width: button.x + button.width - left,
@@ -409,7 +387,7 @@ mod tests {
 
     #[test]
     fn selected_row_covers_the_button() {
-        let p = place(BUTTON, 2, 5, 600.0);
+        let p = place_list(BUTTON, 2, 5, 600.0);
         let row_top = p.top + INSET + 2.0 * ROW;
         assert_eq!(row_top, BUTTON.y + (BUTTON.height - ROW) / 2.0);
         assert_eq!(p.left + INSET + LABEL_X, BUTTON.x + BUTTON_LABEL_X);
@@ -419,7 +397,7 @@ mod tests {
     #[test]
     fn slides_down_from_the_top_edge() {
         let button = Rect { y: 10.0, ..BUTTON };
-        let p = place(button, 4, 5, 600.0);
+        let p = place_list(button, 4, 5, 600.0);
         assert_eq!(p.top, MARGIN);
         assert_eq!(p.height, 2.0 * INSET + 5.0 * ROW);
         assert_eq!(p.scroll, 0.0);
@@ -428,13 +406,13 @@ mod tests {
     #[test]
     fn slides_up_from_the_bottom_edge() {
         let button = Rect { y: 580.0, ..BUTTON };
-        let p = place(button, 0, 5, 600.0);
+        let p = place_list(button, 0, 5, 600.0);
         assert_eq!(p.top + p.height, 600.0 - MARGIN);
     }
 
     #[test]
     fn scrolls_when_taller_than_the_window() {
-        let p = place(BUTTON, 30, 40, 400.0);
+        let p = place_list(BUTTON, 30, 40, 400.0);
         assert_eq!(p.top, MARGIN);
         assert_eq!(p.height, 400.0 - 2.0 * MARGIN);
         // The row stays over the button.
@@ -445,14 +423,14 @@ mod tests {
     #[test]
     fn scroll_stops_at_the_list_end() {
         let button = Rect { y: 10.0, ..BUTTON };
-        let p = place(button, 39, 40, 400.0);
+        let p = place_list(button, 39, 40, 400.0);
         assert_eq!(p.scroll, 2.0 * INSET + 40.0 * ROW - p.height);
     }
 
     #[test]
     fn keeps_off_the_left_edge() {
         let button = Rect { x: 4.0, ..BUTTON };
-        let p = place(button, 0, 3, 600.0);
+        let p = place_list(button, 0, 3, 600.0);
         assert_eq!(p.left, MARGIN);
         assert_eq!(p.left + p.width, button.x + button.width);
     }
