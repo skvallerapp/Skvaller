@@ -5,6 +5,7 @@ mod db;
 mod error;
 mod full_text;
 mod html;
+mod icons;
 mod keychain;
 mod local;
 mod net;
@@ -14,6 +15,9 @@ mod seed;
 mod sync;
 mod text;
 mod thumbnail;
+
+/// Seconds in a day.
+pub(crate) const DAY: i64 = 24 * 60 * 60;
 
 pub use api::Client;
 pub use db::{ArticleSummary, Counts, Db, Feed, Folder, Scope, Selection, View};

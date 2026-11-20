@@ -4,7 +4,6 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use encoding_rs::Encoding;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::{StatusCode, Url};
 
@@ -20,12 +19,6 @@ const PREFETCH_PAGES: usize = 30;
 /// Larger pages are not read. A long article page is a few hundred kilobytes.
 const MAX_PAGE_BYTES: usize = 2 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(15);
-/// Browser-like, since some sites turn away anything else, but says what it is.
-pub(crate) const USER_AGENT: &str = concat!(
-    "Mozilla/5.0 (compatible; Skvaller/",
-    env!("CARGO_PKG_VERSION"),
-    "; +https://github.com/skvallerapp/Skvaller)"
-);
 
 /// The article's full text, from the cache or else fetched from its web page and cached.
 ///
@@ -100,17 +93,14 @@ fn http() -> Result<Untrusted> {
 /// never be readable (not an http(s) URL, gone, not HTML, too large). `Err`: it may
 /// work later (network errors, server errors, rate limits and bot walls).
 async fn fetch_page(http: &Untrusted, url: &str) -> Result<Option<(String, String)>> {
-    let Ok(url) = Url::parse(url) else {
+    let Some(url) = Url::parse(url).ok().and_then(net::web_url) else {
         return Ok(None);
     };
-    if !matches!(url.scheme(), "http" | "https") {
-        return Ok(None);
-    }
     // On this device or a private network: never fetched.
     let Some(request) = http.get(url) else {
         return Ok(None);
     };
-    let mut res = match request.send().await {
+    let res = match request.send().await {
         Ok(res) => res,
         // A name or a redirect that leads there: as never readable.
         Err(e) if net::is_blocked(&e) => return Ok(None),
@@ -134,62 +124,14 @@ async fn fetch_page(http: &Untrusted, url: &str) -> Result<Option<(String, Strin
         .to_ascii_lowercase();
     let mime = content_type.split(';').next().unwrap_or("").trim();
     let is_html = matches!(mime, "text/html" | "application/xhtml+xml");
-    let too_large = res
-        .content_length()
-        .is_some_and(|n| n > MAX_PAGE_BYTES as u64);
-    if !status.is_success() || !is_html || too_large {
+    if !status.is_success() || !is_html {
         return Ok(None);
     }
     let final_url = res.url().to_string();
-    let mut body = Vec::new();
-    while let Some(chunk) = res.chunk().await? {
-        body.extend_from_slice(&chunk);
-        if body.len() > MAX_PAGE_BYTES {
-            return Ok(None);
-        }
-    }
-    Ok(Some((decode(&body, &content_type), final_url)))
-}
-
-/// Decodes like a browser, mostly: a byte order mark, else the Content-Type charset,
-/// else a `<meta>` charset in the first 1024 bytes, else UTF-8.
-pub(crate) fn decode(body: &[u8], content_type: &str) -> String {
-    let encoding = content_type
-        .split(';')
-        .skip(1)
-        .find_map(|param| {
-            let (name, value) = param.split_once('=')?;
-            (name.trim() == "charset").then(|| label(value.trim().trim_matches(['"', '\''])))?
-        })
-        .or_else(|| meta_charset(&body[..body.len().min(1024)]))
-        .unwrap_or(encoding_rs::UTF_8);
-    encoding.decode(body).0.into_owned()
-}
-
-/// The charset of a `<meta charset>` or `<meta http-equiv="Content-Type">` tag. A rough
-/// search for `charset=`, not the HTML spec's full prescan.
-fn meta_charset(head: &[u8]) -> Option<&'static Encoding> {
-    let head = String::from_utf8_lossy(head).to_ascii_lowercase();
-    let mut rest = head.as_str();
-    while let Some(i) = rest.find("charset") {
-        rest = &rest[i + "charset".len()..];
-        let Some(value) = rest.trim_start().strip_prefix('=') else {
-            continue;
-        };
-        let value = value.trim_start().trim_start_matches(['"', '\'']);
-        let end = value
-            .find(|c: char| c.is_whitespace() || "\"';>/".contains(c))
-            .unwrap_or(value.len());
-        if let Some(encoding) = label(&value[..end]) {
-            // UTF-16 becomes UTF-8: a page whose meta tag reads as ASCII isn't UTF-16.
-            return Some(encoding.output_encoding());
-        }
-    }
-    None
-}
-
-fn label(name: &str) -> Option<&'static Encoding> {
-    Encoding::for_label(name.as_bytes())
+    let Some(body) = net::read_capped(res, MAX_PAGE_BYTES).await? else {
+        return Ok(None);
+    };
+    Ok(Some((net::decode(&body, &content_type), final_url)))
 }
 
 /// The main content of `html`, the page at `url`, as HTML with absolute links. `None`
@@ -276,29 +218,6 @@ mod tests {
         let page = format!("<html><body><article>{icons}<p>{text}</p></article></body></html>");
         assert!(extract(&page, "https://example.com/").is_some());
         assert!(extract(&nested(50), "https://example.com/").is_some());
-    }
-
-    #[test]
-    fn decodes_with_the_header_charset_then_the_meta_charset() {
-        assert_eq!(decode(b"caf\xe9", "text/html; charset=ISO-8859-1"), "café");
-        assert_eq!(
-            decode(b"caf\xe9", "text/html; charset = \"windows-1252\""),
-            "café"
-        );
-        assert_eq!(decode("café".as_bytes(), "text/html"), "café");
-        let meta = b"<html><head><meta charset=\"windows-1252\"></head><body>r\xe4ksm\xf6rg\xe5s";
-        assert!(decode(meta, "text/html").ends_with("räksmörgås"));
-        let http_equiv =
-            b"<meta http-equiv=\"Content-Type\" content=\"text/html; charset=iso-8859-1\">\xe5";
-        assert!(decode(http_equiv, "text/html").ends_with('å'));
-        // The header wins over the meta tag.
-        let both = "<meta charset=\"windows-1252\">å".as_bytes();
-        assert!(decode(both, "text/html; charset=utf-8").ends_with('å'));
-        // A meta tag can't make a page UTF-16.
-        assert_eq!(
-            meta_charset(b"<meta charset=utf-16>"),
-            Some(encoding_rs::UTF_8)
-        );
     }
 
     async fn serve(server: &MockServer, at: &str, response: ResponseTemplate) -> String {

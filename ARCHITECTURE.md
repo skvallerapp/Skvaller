@@ -53,6 +53,7 @@ server).
 - `html`, `text`, `reader`, `full_text`: parsing, previewing, readying and extracting
   untrusted article HTML.
 - `thumbnail`: lead images, fetched after a sync and stored small in the cache.
+- `icons`: feed icons, fetched into the cache for both kinds of account.
 - `opml`, `seed`: subscription import and export; synthetic articles for testing.
 
 ### `skvaller-app`

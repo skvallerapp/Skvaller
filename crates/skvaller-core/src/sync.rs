@@ -1,20 +1,9 @@
 //! Two-way sync between the server and the local cache.
 
-use std::sync::Arc;
-use std::time::Duration;
-
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
-
-use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
-
 use crate::api::{Item, READ, READING_LIST, STARRED, Subscription, parse_item_id};
 use crate::db::{ArticleRow, FeedRow, Flag};
-use crate::net::{self, Untrusted};
-use crate::{Client, Db, Error, Result, thumbnail};
+use crate::{Client, DAY, Db, Error, Result, icons, thumbnail};
 
-pub(crate) const DAY: i64 = 24 * 60 * 60;
 /// Later syncs list articles from this much before the newest crawl time already seen,
 /// so an article the server stored while the last sync ran is not missed.
 const CRAWL_OVERLAP: i64 = 60 * 60;
@@ -23,11 +12,6 @@ const CRAWL_OVERLAP: i64 = 60 * 60;
 pub const DEFAULT_KEEP_READ_DAYS: u32 = 30;
 /// Item IDs per `edit-tag` or `stream/items/contents` request.
 const BATCH: usize = 250;
-/// Larger icons are skipped. Favicons are a few kilobytes.
-const MAX_ICON_BYTES: usize = 100 * 1024;
-const ICON_TIMEOUT: Duration = Duration::from_secs(10);
-/// Icons fetched at the same time.
-const PARALLEL_ICONS: usize = 6;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SyncReport {
@@ -119,7 +103,7 @@ pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Re
     let pruned = db.prune(prune_before, i64::MIN)?;
     db.optimize()?;
     let server: Vec<_> = client.base_url().into_iter().collect();
-    fetch_icons(db, |url| client.resolve(url), &server, None).await?;
+    icons::fetch(db, |url| client.resolve(url), &server, None).await?;
     let pushed = pushed?;
     db.set_last_sync(now * 1000)?;
     Ok(SyncReport {
@@ -159,96 +143,6 @@ async fn push(client: &Client, db: &Db) -> Result<usize> {
         }
     }
     failed.map_or(Ok(pending.len()), Err)
-}
-
-/// Fetches the icons of feeds that are new or whose icon URL changed, `resolve` making
-/// each URL absolute; with `only`, just that feed's. A few at a time, since feeds can
-/// point at slow hosts. An icon that can't be fetched now is tried again next sync; one
-/// that isn't an image is not.
-///
-/// Only from public addresses, and from the hosts of `trusted`: the sync server, which
-/// often serves the icons from the LAN, or the local account's feeds.
-pub(crate) async fn fetch_icons(
-    db: &Db,
-    resolve: impl Fn(&str) -> Option<reqwest::Url>,
-    trusted: &[reqwest::Url],
-    only: Option<&str>,
-) -> Result<()> {
-    let stale: Vec<_> = db
-        .stale_icons()?
-        .into_iter()
-        .filter(|(id, _)| only.is_none_or(|only| only == id))
-        .collect();
-    if stale.is_empty() {
-        return Ok(());
-    }
-    // Not the API client: icons may redirect, and they get no access token.
-    let http = Untrusted::new(ICON_TIMEOUT, trusted)?;
-    let limit = Arc::new(Semaphore::new(PARALLEL_ICONS));
-    let mut fetches = JoinSet::new();
-    for (feed_id, url) in stale {
-        let Some(resolved) = resolve(&url) else {
-            db.set_icon(&feed_id, &url, None)?;
-            continue;
-        };
-        let (http, limit) = (http.clone(), Arc::clone(&limit));
-        fetches.spawn(async move {
-            let _permit = limit.acquire_owned().await;
-            (feed_id, url, fetch_icon(&http, resolved).await)
-        });
-    }
-    while let Some(done) = fetches.join_next().await {
-        if let Ok((feed_id, url, Some(icon))) = done {
-            db.set_icon(&feed_id, &url, icon.as_deref())?;
-        }
-    }
-    Ok(())
-}
-
-/// The icon as a `data:` URL, `Some(None)` if there is no usable image there, or `None`
-/// to try again next sync.
-async fn fetch_icon(http: &Untrusted, url: reqwest::Url) -> Option<Option<String>> {
-    // On this device or a private network: no icon, for good.
-    let Some(request) = http.get(url) else {
-        return Some(None);
-    };
-    let mut res = match request.send().await {
-        Ok(res) => res,
-        // A name or a redirect that leads there: no icon, for good.
-        Err(e) if net::is_blocked(&e) => return Some(None),
-        Err(_) => return None,
-    };
-    let status = res.status();
-    if status.is_server_error()
-        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
-        || status == reqwest::StatusCode::REQUEST_TIMEOUT
-    {
-        return None;
-    }
-    let mime = res
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.split(';').next().unwrap_or(v).trim().to_owned())
-        .filter(|m| m.starts_with("image/"));
-    let too_big = res
-        .content_length()
-        .is_some_and(|n| n > MAX_ICON_BYTES as u64);
-    let (true, Some(mime)) = (status.is_success() && !too_big, mime) else {
-        return Some(None);
-    };
-    // Read up to the limit only: a server may send no length, or the wrong one.
-    let mut body = Vec::new();
-    while let Some(chunk) = res.chunk().await.ok()? {
-        body.extend_from_slice(&chunk);
-        if body.len() > MAX_ICON_BYTES {
-            return Some(None);
-        }
-    }
-    if body.is_empty() {
-        return Some(None);
-    }
-    Some(Some(format!("data:{mime};base64,{}", BASE64.encode(&body))))
 }
 
 /// Skvaller shows each feed in one folder: the first one the server lists.

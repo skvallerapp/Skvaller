@@ -8,6 +8,7 @@
 use reqwest::Url;
 
 use crate::html::parse;
+use crate::net::absolute;
 
 /// `html` readied for the reader, with relative URLs resolved against `base`.
 ///
@@ -36,7 +37,7 @@ pub fn ready_article(html: &str, base: &str) -> String {
             link.remove_attr("target");
             continue;
         }
-        match absolute(href, base.as_ref()).filter(leaves_frame) {
+        match absolute(base.as_ref(), href).filter(leaves_frame) {
             Some(url) => {
                 link.set_attr("href", url.as_str());
                 link.set_attr("target", "_blank");
@@ -69,24 +70,17 @@ fn leaves_frame(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https" | "mailto")
 }
 
-fn absolute(url: &str, base: Option<&Url>) -> Option<Url> {
-    match base {
-        Some(base) => base.join(url).ok(),
-        None => Url::parse(url).ok(),
-    }
-}
-
 /// `url` made absolute against `base`, and asked for over https. Left as it is when it
 /// can't be made absolute: there's no better guess.
 fn resource(url: &str, base: Option<&Url>) -> String {
-    let url = url.trim();
-    let absolute = absolute(url, base).map_or_else(|| url.to_owned(), String::from);
-    match absolute.get(..7) {
-        Some(scheme) if scheme.eq_ignore_ascii_case("http://") => {
-            format!("https://{}", &absolute[7..])
-        }
-        _ => absolute,
+    let Some(mut url) = absolute(base, url) else {
+        return url.trim().to_owned();
+    };
+    if url.scheme() == "http" {
+        // Infallible between two special schemes.
+        let _ = url.set_scheme("https");
     }
+    url.into()
 }
 
 /// A `srcset` with each candidate's URL readied by [`resource`]. As in HTML, a URL runs

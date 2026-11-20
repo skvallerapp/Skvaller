@@ -2,14 +2,13 @@
 //! exported; the local account's can be imported, since a sync account's live on its
 //! server.
 
-use std::collections::HashMap;
-
 use encoding_rs::{Encoding, UTF_8};
 use opml::{Body, Head, OPML, Outline};
 use reqwest::Url;
-use serde::Serialize;
 
 use crate::db::NewFeed;
+use crate::local;
+use crate::net::web_url;
 use crate::{Db, Error, Result};
 
 /// Deepest element nesting an import accepts. Folders in real files nest a few levels
@@ -47,7 +46,7 @@ fn depth(xml: &str) -> usize {
     max
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct ImportReport {
     /// Feeds added.
     pub added: usize,
@@ -152,100 +151,77 @@ pub fn import(db: &Db, bytes: &[u8]) -> Result<ImportReport> {
         reason = "the parser's error is not worded for the user"
     )]
     let document = OPML::from_str(xml).map_err(|_| Error::Local("not an OPML file".into()))?;
-    let mut import = Import {
-        db,
-        folders: HashMap::new(),
-        report: ImportReport::default(),
-    };
+    let mut report = ImportReport::default();
     for outline in &document.body.outlines {
-        import.add(outline, None)?;
+        add(db, outline, None, &mut report)?;
     }
-    Ok(import.report)
+    Ok(report)
 }
 
-struct Import<'a> {
-    db: &'a Db,
-    /// Folder IDs by title, made as the first feed goes in, so no folder is left empty.
-    folders: HashMap<String, String>,
-    report: ImportReport,
-}
-
-impl Import<'_> {
-    /// Adds the outline's feed, or its feeds, into the folder titled `folder`.
-    fn add(&mut self, outline: &Outline, folder: Option<&str>) -> Result<()> {
-        let (db, report) = (self.db, &mut self.report);
-        let name = || {
-            outline
-                .title
-                .as_deref()
-                .filter(|t| !t.trim().is_empty())
-                .unwrap_or(&outline.text)
-                .trim()
-                .to_owned()
-        };
-        if let Some(xml_url) = &outline.xml_url {
-            if report.added >= MAX_FEEDS {
-                report.skipped += 1;
-                return Ok(());
-            }
-            let Some(url) = Url::parse(xml_url.trim())
-                .ok()
-                .filter(|u| matches!(u.scheme(), "http" | "https"))
-            else {
-                report.skipped += 1;
-                return Ok(());
-            };
-            // Subscribed already, maybe by the address after a redirect.
-            if db.feed_by_url(&[url.as_str(), xml_url.trim()])?.is_some() {
-                report.skipped += 1;
-                return Ok(());
-            }
-            let site = outline
-                .html_url
-                .as_deref()
-                .and_then(|u| Url::parse(u).ok())
-                .filter(|u| matches!(u.scheme(), "http" | "https"));
-            let icon = site.as_ref().and_then(|s| s.join("/favicon.ico").ok());
-            let title = Some(name()).filter(|t| !t.is_empty());
-            let folder_id = folder
-                .map(|folder| -> Result<String> {
-                    if let Some(id) = self.folders.get(folder) {
-                        return Ok(id.clone());
-                    }
-                    let id = db.create_folder(folder)?;
-                    self.folders.insert(folder.to_owned(), id.clone());
-                    Ok(id)
-                })
-                .transpose()?;
-            let added = db.add_local_feed(&NewFeed {
-                id: &format!("feed/{url}"),
-                url: url.as_str(),
-                title: title.as_deref().or(url.host_str()).unwrap_or(url.as_str()),
-                site_url: site.as_ref().map(Url::as_str),
-                folder_id: folder_id.as_deref(),
-                icon_url: icon.as_ref().map(Url::as_str),
-            })?;
-            if added {
-                self.report.added += 1;
-            } else {
-                self.report.skipped += 1;
-            }
+/// Adds the outline's feed, or its feeds, into the folder titled `folder`. A folder is
+/// made, or found by its title, as each feed goes in, so none is left empty.
+fn add(db: &Db, outline: &Outline, folder: Option<&str>, report: &mut ImportReport) -> Result<()> {
+    let name = || {
+        outline
+            .title
+            .as_deref()
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or(&outline.text)
+            .trim()
+            .to_owned()
+    };
+    if let Some(xml_url) = &outline.xml_url {
+        if report.added >= MAX_FEEDS {
+            report.skipped += 1;
             return Ok(());
         }
-        if outline.outlines.is_empty() {
+        let Some(url) = Url::parse(xml_url.trim()).ok().and_then(web_url) else {
+            report.skipped += 1;
+            return Ok(());
+        };
+        // Subscribed already, maybe by the address after a redirect.
+        if db.feed_by_url(&[url.as_str(), xml_url.trim()])?.is_some() {
+            report.skipped += 1;
             return Ok(());
         }
-        let title = name();
-        let inner = match folder {
-            Some(folder) => Some(folder.to_owned()),
-            None if title.is_empty() => None,
-            None => Some(title),
-        };
-        for child in &outline.outlines {
-            self.add(child, inner.as_deref())?;
+        let site = outline
+            .html_url
+            .as_deref()
+            .and_then(|u| Url::parse(u).ok())
+            .and_then(web_url);
+        let icon = site.as_ref().and_then(|s| s.join("/favicon.ico").ok());
+        let title = Some(name())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| local::fallback_title(&url));
+        let folder_id = folder.map(|folder| db.create_folder(folder)).transpose()?;
+        let added = db.add_local_feed(&NewFeed {
+            id: &local::feed_id(&url),
+            url: url.as_str(),
+            title: &title,
+            site_url: site.as_ref().map(Url::as_str),
+            folder_id: folder_id.as_deref(),
+            icon_url: icon.as_ref().map(Url::as_str),
+        })?;
+        if added {
+            report.added += 1;
+        } else {
+            report.skipped += 1;
         }
-        Ok(())
+        return Ok(());
     }
+    if outline.outlines.is_empty() {
+        return Ok(());
+    }
+    let title = name();
+    let inner = match folder {
+        Some(folder) => Some(folder.to_owned()),
+        None if title.is_empty() => None,
+        None => Some(title),
+    };
+    for child in &outline.outlines {
+        add(db, child, inner.as_deref(), report)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

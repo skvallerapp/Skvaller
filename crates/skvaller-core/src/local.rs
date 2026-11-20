@@ -13,12 +13,11 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::db::{ArticleRow, LocalFeed, NewFeed};
-use crate::full_text::{USER_AGENT, decode};
 use crate::html;
-use crate::sync::{DAY, fetch_icons};
+use crate::net::{self, USER_AGENT, decode, web_url};
 use crate::text::plain_text;
 use crate::thumbnail;
-use crate::{Db, Error, Result, SyncReport};
+use crate::{DAY, Db, Error, Result, SyncReport, icons};
 
 /// Larger feeds are not read. Big ones, with full articles, are a few megabytes.
 const MAX_FEED_BYTES: usize = 10 * 1024 * 1024;
@@ -114,7 +113,7 @@ pub async fn refresh(
     if tried > 0 && reached == 0 {
         return Err(Error::Local("could not reach any feed".into()));
     }
-    fetch_icons(db, |url| Url::parse(url).ok(), &trusted, None).await?;
+    icons::fetch(db, |url| Url::parse(url).ok(), &trusted, None).await?;
     db.set_last_sync(now * 1000)?;
     Ok(SyncReport {
         fetched,
@@ -137,18 +136,12 @@ pub async fn refresh(
 pub async fn subscribe(db: &Db, url: &str, folder_id: Option<&str>, now: i64) -> Result<String> {
     let http = http()?;
     let url = with_scheme(url).ok_or(Error::BadUrl)?;
-    let page = fetch(&http, url.as_str(), None)
-        .await
-        .map_err(|e| Error::Local(e.message()))?
-        .ok_or(Error::NoFeed)?;
+    let page = fetch_new(&http, &url).await?;
     let (page, parsed) = if let Some(parsed) = parse(&page) {
         (page, parsed)
     } else {
         let link = discover_off_runtime(&page).await.ok_or(Error::NoFeed)?;
-        let page = fetch(&http, link.as_str(), None)
-            .await
-            .map_err(|e| Error::Local(e.message()))?
-            .ok_or(Error::NoFeed)?;
+        let page = fetch_new(&http, &link).await?;
         let parsed = parse(&page).ok_or(Error::NoFeed)?;
         (page, parsed)
     };
@@ -157,15 +150,14 @@ pub async fn subscribe(db: &Db, url: &str, folder_id: Option<&str>, now: i64) ->
     if let Some(id) = db.feed_by_url(&[url.as_str(), page.url.as_str()])? {
         return Ok(id);
     }
-    let id = format!("feed/{}", page.url);
+    let id = feed_id(&page.url);
     let site_url = site_url(&parsed, &page.url);
     let title = parsed
         .title
         .as_ref()
         .map(text)
         .filter(|t| !t.is_empty())
-        .or_else(|| page.url.host_str().map(str::to_owned))
-        .unwrap_or_else(|| page.url.to_string());
+        .unwrap_or_else(|| fallback_title(&page.url));
     let icon_url = icon_url(&parsed, site_url.as_ref().unwrap_or(&page.url));
     let added = db.add_local_feed(&NewFeed {
         id: &id,
@@ -178,9 +170,29 @@ pub async fn subscribe(db: &Db, url: &str, folder_id: Option<&str>, now: i64) ->
     if added {
         store(db, &id, &parsed, &page, now)?;
         let trusted = [page.url.clone()];
-        fetch_icons(db, |url| Url::parse(url).ok(), &trusted, Some(&id)).await?;
+        icons::fetch(db, |url| Url::parse(url).ok(), &trusted, Some(&id)).await?;
     }
     Ok(id)
+}
+
+/// A feed's ID: its address, after redirects. Subscribing and importing must agree on
+/// it, since it tells a feed subscribed to already.
+pub(crate) fn feed_id(url: &Url) -> String {
+    format!("feed/{url}")
+}
+
+/// The title of a feed that names none: its host, else its address.
+pub(crate) fn fallback_title(url: &Url) -> String {
+    url.host_str()
+        .map_or_else(|| url.to_string(), str::to_owned)
+}
+
+/// `url` fetched unconditionally, its failure said for the user.
+async fn fetch_new(http: &reqwest::Client, url: &Url) -> Result<Page> {
+    match fetch(http, url.as_str(), None).await {
+        Ok(page) => Ok(page.expect("only a conditional fetch finds nothing new")),
+        Err(e) => Err(Error::Local(e.message())),
+    }
 }
 
 /// A fetched feed or page.
@@ -205,9 +217,8 @@ async fn fetch(
         reason = "the parser's error is not worded for the user"
     )]
     let url = Url::parse(url).map_err(|_| FetchError::Refused("not a valid address".to_owned()))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err(FetchError::Refused("not an http or https address".into()));
-    }
+    let url =
+        web_url(url).ok_or_else(|| FetchError::Refused("not an http or https address".into()))?;
     let mut req = http.get(url);
     if let Some(feed) = known {
         if let Some(etag) = &feed.etag {
@@ -217,7 +228,7 @@ async fn fetch(
             req = req.header(IF_MODIFIED_SINCE, modified);
         }
     }
-    let mut res = req.send().await.map_err(network_error)?;
+    let res = req.send().await.map_err(network_error)?;
     let status = res.status();
     if status == StatusCode::NOT_MODIFIED && known.is_some() {
         return Ok(None);
@@ -227,12 +238,6 @@ async fn fetch(
             Some(reason) => format!("the server answered {} {reason}", status.as_u16()),
             None => format!("the server answered {}", status.as_u16()),
         }));
-    }
-    if res
-        .content_length()
-        .is_some_and(|n| n > MAX_FEED_BYTES as u64)
-    {
-        return Err(FetchError::Refused("the feed is too large".into()));
     }
     let header = |name| {
         res.headers()
@@ -246,13 +251,10 @@ async fn fetch(
         header(LAST_MODIFIED),
     );
     let url = res.url().clone();
-    let mut body = Vec::new();
-    while let Some(chunk) = res.chunk().await.map_err(network_error)? {
-        body.extend_from_slice(&chunk);
-        if body.len() > MAX_FEED_BYTES {
-            return Err(FetchError::Refused("the feed is too large".into()));
-        }
-    }
+    let body = net::read_capped(res, MAX_FEED_BYTES)
+        .await
+        .map_err(network_error)?
+        .ok_or_else(|| FetchError::Refused("the feed is too large".into()))?;
     Ok(Some(Page {
         url,
         body,
@@ -319,23 +321,23 @@ fn entry_key(links: &[model::Link], title: &Option<model::Text>, _uri: Option<&s
 
 /// `discover`, off the async runtime: parsing a large page takes a while.
 async fn discover_off_runtime(page: &Page) -> Option<Url> {
-    let (body, content_type, url) = (
-        page.body.clone(),
+    // The links are in the head, so only its start is parsed.
+    let (head, content_type, url) = (
+        page.body[..page.body.len().min(MAX_HEAD_BYTES)].to_vec(),
         page.content_type.clone(),
         page.url.clone(),
     );
-    tokio::task::spawn_blocking(move || discover(&body, &content_type, &url))
+    tokio::task::spawn_blocking(move || discover(&head, &content_type, &url))
         .await
         .ok()
         .flatten()
 }
 
-/// The feed a web page links to with `<link rel="alternate">`, the first one. `None`
-/// for a page that nests too deeply to parse in good time, like Reader View's guard.
-fn discover(body: &[u8], content_type: &str, base: &Url) -> Option<Url> {
-    // The links are in the head, so only its start is parsed.
-    let start = &body[..body.len().min(MAX_HEAD_BYTES)];
-    let html = decode(start, content_type);
+/// The feed the start of a web page, `head`, links to with `<link rel="alternate">`, the
+/// first one. `None` for a page that nests too deeply to parse in good time, like Reader
+/// View's guard.
+fn discover(head: &[u8], content_type: &str, base: &Url) -> Option<Url> {
+    let html = decode(head, content_type);
     let end = html
         .to_ascii_lowercase()
         .find("<body")
@@ -438,11 +440,6 @@ fn site_url(feed: &model::Feed, base: &Url) -> Option<Url> {
         .and_then(|l| web_url(base.join(&l.href).ok()?))
 }
 
-/// Only http(s) addresses from a feed: it is untrusted.
-fn web_url(url: Url) -> Option<Url> {
-    matches!(url.scheme(), "http" | "https").then_some(url)
-}
-
 /// The feed's icon, else its logo, else the site's favicon.
 fn icon_url(feed: &model::Feed, site: &Url) -> Option<String> {
     feed.icon
@@ -456,12 +453,20 @@ fn icon_url(feed: &model::Feed, site: &Url) -> Option<String> {
 /// What the user typed, with `https://` when no scheme is given.
 fn with_scheme(input: &str) -> Option<Url> {
     let input = input.trim();
-    let url = if input.contains("://") {
+    // A scheme is only letters, digits, `+`, `-` and `.` before the `://`: in
+    // `example.com/?next=https://x`, the `://` is in the query.
+    let has_scheme = input.split_once("://").is_some_and(|(scheme, _)| {
+        !scheme.is_empty()
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+    });
+    let url = if has_scheme {
         Url::parse(input)
     } else {
         Url::parse(&format!("https://{input}"))
     };
-    url.ok().filter(|u| matches!(u.scheme(), "http" | "https"))
+    url.ok().and_then(web_url)
 }
 
 /// A stable ID for an entry: 63 bits of an FNV-1a hash of the feed and the entry's own

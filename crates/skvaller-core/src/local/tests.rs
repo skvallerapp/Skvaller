@@ -536,3 +536,25 @@ async fn new_entries_want_a_thumbnail_from_their_media_and_only_once() {
         Some(Some("https://cdn.example/e.png".to_owned()))
     );
 }
+
+#[test]
+fn a_typed_address_gets_https_unless_it_names_a_scheme() {
+    let url = |s| with_scheme(s).map(String::from);
+    assert_eq!(
+        url("example.com/feed").as_deref(),
+        Some("https://example.com/feed")
+    );
+    assert_eq!(
+        url("example.com/?next=https://x").as_deref(),
+        Some("https://example.com/?next=https://x")
+    );
+    assert_eq!(
+        url("localhost:8080").as_deref(),
+        Some("https://localhost:8080/")
+    );
+    assert_eq!(
+        url("http://example.com/").as_deref(),
+        Some("http://example.com/")
+    );
+    assert_eq!(url("ftp://example.com/"), None);
+}

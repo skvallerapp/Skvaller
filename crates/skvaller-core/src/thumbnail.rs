@@ -172,10 +172,7 @@ fn is_image(mime: Option<&str>, url: &Url) -> bool {
 /// path that serves only trackers, buttons and emoji. None with a user name or password
 /// in it, which would be sent to the image's host.
 fn resolve(base: Option<&Url>, url: &str) -> Option<Url> {
-    let url = match base {
-        Some(base) => base.join(url.trim()).ok()?,
-        None => Url::parse(url.trim()).ok()?,
-    };
+    let url = net::absolute(base, url)?;
     let credentials = !url.username().is_empty() || url.password().is_some();
     if !matches!(url.scheme(), "http" | "https") || credentials {
         return None;
@@ -298,7 +295,7 @@ async fn fetch(http: &Untrusted, url: &str) -> Fetched {
     let Some(request) = Url::parse(url).ok().and_then(|url| http.get(url)) else {
         return Fetched::Unusable;
     };
-    let mut res = match request.send().await {
+    let res = match request.send().await {
         Ok(res) => res,
         // A name or a redirect that leads there: unusable for good, the next one is tried.
         Err(e) if net::is_blocked(&e) => return Fetched::Unusable,
@@ -316,25 +313,13 @@ async fn fetch(http: &Untrusted, url: &str) -> Fetched {
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.trim().to_ascii_lowercase().starts_with("image/"));
-    let too_large = res
-        .content_length()
-        .is_some_and(|n| n > MAX_IMAGE_BYTES as u64);
-    if !status.is_success() || !is_image || too_large {
+    if !status.is_success() || !is_image {
         return Fetched::Unusable;
     }
-    // Read up to the limit only: a server may send no length, or the wrong one.
-    let mut body = Vec::new();
-    loop {
-        match res.chunk().await {
-            Ok(Some(chunk)) => {
-                body.extend_from_slice(&chunk);
-                if body.len() > MAX_IMAGE_BYTES {
-                    return Fetched::Unusable;
-                }
-            }
-            Ok(None) => return Fetched::Image(body),
-            Err(_) => return Fetched::Later,
-        }
+    match net::read_capped(res, MAX_IMAGE_BYTES).await {
+        Ok(Some(body)) => Fetched::Image(body),
+        Ok(None) => Fetched::Unusable,
+        Err(_) => Fetched::Later,
     }
 }
 
