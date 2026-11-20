@@ -73,16 +73,8 @@ impl Target {
     /// Its name, if it is still there.
     fn title(&self, lib: &Library) -> Option<String> {
         match self {
-            Self::Feed(id) => lib
-                .feeds
-                .iter()
-                .find(|f| &f.id == id)
-                .map(|f| f.title.clone()),
-            Self::Folder(id) => lib
-                .folders
-                .iter()
-                .find(|f| &f.id == id)
-                .map(|f| f.title.clone()),
+            Self::Feed(id) => lib.feed(id).map(|f| f.title.clone()),
+            Self::Folder(id) => lib.folder(id).map(|f| f.title.clone()),
         }
     }
 }
@@ -109,7 +101,7 @@ pub(super) enum Item {
 fn items(target: &Target, lib: &Library, local: bool) -> Vec<Item> {
     match target {
         Target::Feed(id) => {
-            let Some(feed) = lib.feeds.iter().find(|f| &f.id == id) else {
+            let Some(feed) = lib.feed(id) else {
                 return Vec::new();
             };
             let mut items = vec![Item::ReaderView {
@@ -141,11 +133,9 @@ fn items(target: &Target, lib: &Library, local: bool) -> Vec<Item> {
 
 /// Whether the account keeps its own feeds: the local account.
 pub(super) fn is_local(app: &App, account_id: Option<&str>) -> bool {
-    account_id.is_some_and(|id| {
-        app.accounts()
-            .iter()
-            .any(|a| a.id == id && a.kind == AccountKind::Local)
-    })
+    account_id
+        .and_then(|id| app.account(id))
+        .is_some_and(|a| a.kind == AccountKind::Local)
 }
 
 impl Reading {

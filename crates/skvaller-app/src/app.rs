@@ -83,6 +83,20 @@ pub struct Library {
     pub counts: Counts,
 }
 
+impl Library {
+    /// The feed with this ID, if the account has it.
+    #[must_use]
+    pub fn feed(&self, id: &str) -> Option<&Feed> {
+        self.feeds.iter().find(|f| f.id == id)
+    }
+
+    /// The folder with this ID, if the account has it.
+    #[must_use]
+    pub fn folder(&self, id: &str) -> Option<&Folder> {
+        self.folders.iter().find(|f| f.id == id)
+    }
+}
+
 /// A change to an account's cache, as [`App::changes`] tells it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Change {
@@ -652,7 +666,9 @@ impl App {
         self.events.subscribe()
     }
 
-    pub(crate) fn account(&self, id: &str) -> Option<Account> {
+    /// The account with this ID, if there is one.
+    #[must_use]
+    pub fn account(&self, id: &str) -> Option<Account> {
         lock(&self.config).account(id).cloned()
     }
 

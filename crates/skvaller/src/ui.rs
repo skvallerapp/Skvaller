@@ -502,9 +502,7 @@ impl Reading {
         if left.everywhere != self.search.peek().everywhere {
             self.search.write().everywhere = left.everywhere;
         }
-        if *self.overlay.peek() != left.overlay {
-            self.overlay.set(left.overlay);
-        }
+        self.set_overlay(left.overlay);
         self.selection.set(selection);
         self.restore.set(None);
         self.article.set(None);
@@ -554,9 +552,7 @@ impl Reading {
         self.follow_reader_view(app, &a);
         self.article.set(Some(a));
         let overlay = self.overlay.peek().after_list_change();
-        if *self.overlay.peek() != overlay {
-            self.overlay.set(overlay);
-        }
+        self.set_overlay(overlay);
         self.mark_generation += 1;
         // The old article's frame, if focused, goes away with it.
         self.refocus();
@@ -599,9 +595,8 @@ impl Reading {
             && self
                 .library
                 .peek()
-                .feeds
-                .iter()
-                .any(|f| f.id == a.feed_id && f.reader_view);
+                .feed(&a.feed_id)
+                .is_some_and(|f| f.reader_view);
         if always {
             self.load_full_text(app, false, true);
         }
@@ -1121,9 +1116,7 @@ impl Reading {
         if !open {
             self.pane.set(Pane::List);
             let overlay = self.overlay.peek().after_sidebar_hidden();
-            if *self.overlay.peek() != overlay {
-                self.overlay.set(overlay);
-            }
+            self.set_overlay(overlay);
             self.refocus();
         }
         self.save_layout(app);
@@ -1169,9 +1162,7 @@ impl Reading {
     fn show_account(mut self, app: &App, id: Option<String>) {
         // Another account's feeds are its own, and so are its articles: its overlays go,
         // even a busy Add Feed, which then adds to the account it was for.
-        if *self.overlay.peek() != Overlay::None {
-            self.overlay.set(Overlay::None);
-        }
+        self.set_overlay(Overlay::None);
         self.close_search();
         let view = self.selection.peek().view;
         self.select(Selection {
@@ -1453,9 +1444,7 @@ pub fn Root() -> Element {
             // The click has moved the focus already.
             onclick: move |_| {
                 let overlay = reading.overlay.peek().after_click();
-                if *reading.overlay.peek() != overlay {
-                    reading.overlay.set(overlay);
-                }
+                reading.set_overlay(overlay);
             },
             if (reading.account)().is_none() || signed_out {
                 AddAccountScreen {}
@@ -1480,7 +1469,7 @@ fn AddAccountScreen() -> Element {
     let signed_out = (reading.status)().is_some_and(|s| s.unauthorized);
     let again = (reading.account)()
         .filter(|_| signed_out)
-        .and_then(|id| app.accounts().into_iter().find(|a| a.id == id));
+        .and_then(|id| app.account(&id));
     let error = again
         .as_ref()
         .map(|a| t_with("app.signInAgain", &[("account", &a.description)]));
@@ -1668,9 +1657,7 @@ fn step_scope(
 fn row_scope(lib: &Library, scope: &Scope, collapsed: &HashSet<String>) -> Scope {
     match scope {
         Scope::Feed { id } => lib
-            .feeds
-            .iter()
-            .find(|f| &f.id == id)
+            .feed(id)
             .and_then(|f| f.folder_id.clone())
             .filter(|folder| collapsed.contains(folder))
             .map_or_else(|| scope.clone(), |id| Scope::Folder { id }),
@@ -1860,7 +1847,7 @@ fn Sidebar() -> Element {
         .account
         .read()
         .as_deref()
-        .and_then(|id| app.accounts().into_iter().find(|a| a.id == id))
+        .and_then(|id| app.account(id))
         .map_or_default(|a| a.description);
     let sort = live.settings.read().sort_subscriptions;
     let font_size = use_memo(move || live.settings.read().font_size);
@@ -2651,16 +2638,8 @@ fn ScopeItem(
 fn list_title(lib: &Library, selection: &Selection) -> String {
     match &selection.scope {
         Scope::All => t(&format!("views.{}.all", view_key(selection.view))),
-        Scope::Feed { id } => lib
-            .feeds
-            .iter()
-            .find(|f| &f.id == id)
-            .map_or_default(|f| f.title.clone()),
-        Scope::Folder { id } => lib
-            .folders
-            .iter()
-            .find(|f| &f.id == id)
-            .map_or_default(|f| f.title.clone()),
+        Scope::Feed { id } => lib.feed(id).map_or_default(|f| f.title.clone()),
+        Scope::Folder { id } => lib.folder(id).map_or_default(|f| f.title.clone()),
     }
 }
 
@@ -3073,12 +3052,7 @@ fn Viewport() -> Element {
         ))
     };
     let lib = reading.library.read();
-    let feed_title = |id: &str| {
-        lib.feeds
-            .iter()
-            .find(|f| f.id == id)
-            .map_or_default(|f| f.title.clone())
-    };
+    let feed_title = |id: &str| lib.feed(id).map_or_default(|f| f.title.clone());
     let rows: Vec<Row> = shown
         .iter()
         .map(|&i| {
@@ -3495,7 +3469,7 @@ fn Reader() -> Element {
                 None => app.article_html(&account, &a.id).ok().flatten()?,
             };
             let lib = reading.library.peek();
-            let feed = lib.feeds.iter().find(|f| f.id == a.feed_id);
+            let feed = lib.feed(&a.feed_id);
             let date = live.dates.read().full(a.published);
             let mut look = (remake.look)();
             if (remake.article).read().as_ref() == Some(&a.id) {

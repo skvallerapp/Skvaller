@@ -499,16 +499,23 @@ impl Reading {
         }
     }
 
+    /// Sets the overlay to `next` if it differs, so an unchanged one renders nothing.
+    /// `next` is worked out before, in its own statement: a borrow of the overlay held
+    /// into the write would make it panic.
+    pub(super) fn set_overlay(mut self, next: Overlay) {
+        if *self.overlay.peek() != next {
+            self.overlay.set(next);
+        }
+    }
+
     /// Opens `next` in place of the open overlay, unless that one is busy. Returns
     /// whether it opened.
-    pub(super) fn open_overlay(mut self, next: Overlay) -> bool {
+    pub(super) fn open_overlay(self, next: Overlay) -> bool {
         // Copied out: a borrow held into the write would make it panic.
         let opened = self.overlay.peek().open(next);
         match opened {
             Some(next) => {
-                if *self.overlay.peek() != next {
-                    self.overlay.set(next);
-                }
+                self.set_overlay(next);
                 true
             }
             None => false,
