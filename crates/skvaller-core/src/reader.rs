@@ -3,7 +3,7 @@
 //! The article still renders without scripts; this only makes what it loads and links
 //! to behave: resources and links are made absolute against the article's own URL
 //! (the reader document's base is the app's, not the article's), resources are asked
-//! for over https, and media waits to be asked for.
+//! for over https, media waits to be asked for, and forms can't be sent.
 
 use reqwest::Url;
 
@@ -14,10 +14,13 @@ use crate::html::parse;
 /// - Links to other pages become absolute and get `target="_blank"`, so they leave the
 ///   reader's frame for the browser; one that can't be made absolute loses its `href`,
 ///   so it can't resolve against the app. Links within the article (`#…`) stay in it.
+///   Only http, https and mailto links are kept: no other scheme should leave the frame.
 /// - `src`, `poster` and `srcset` URLs become absolute, and `http:` becomes `https:`:
 ///   most hosts serve https too.
 /// - Audio and video don't autoplay or preload, and show their controls: without
 ///   scripts, controls are the only way to play.
+/// - Forms are unwrapped, their fields kept: sending one would load any page into the
+///   reader's frame, in place of the article and its header.
 ///
 /// An article nested too deeply to parse safely gives an empty string.
 #[must_use]
@@ -33,7 +36,7 @@ pub fn ready_article(html: &str, base: &str) -> String {
             link.remove_attr("target");
             continue;
         }
-        match absolute(href, base.as_ref()) {
+        match absolute(href, base.as_ref()).filter(leaves_frame) {
             Some(url) => {
                 link.set_attr("href", url.as_str());
                 link.set_attr("target", "_blank");
@@ -41,6 +44,7 @@ pub fn ready_article(html: &str, base: &str) -> String {
             None => link.remove_attr("href"),
         }
     }
+    doc.root().strip_elements(&["form"]);
     for media in doc.select("audio, video").nodes() {
         media.remove_attr("autoplay");
         media.set_attr("preload", "none");
@@ -59,6 +63,10 @@ pub fn ready_article(html: &str, base: &str) -> String {
     let head = doc.select("head").inner_html();
     let body = doc.select("body").inner_html();
     format!("{head}{body}")
+}
+
+fn leaves_frame(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https" | "mailto")
 }
 
 fn absolute(url: &str, base: Option<&Url>) -> Option<Url> {
@@ -158,6 +166,25 @@ mod tests {
             ready_srcset("a.png?w=1,2 1x,b.png", Url::parse(BASE).ok().as_ref()),
             "https://example.com/posts/a.png?w=1,2 1x, https://example.com/posts/b.png"
         );
+    }
+
+    #[test]
+    fn links_with_other_schemes_lose_their_href() {
+        let html = ready_article(
+            r#"<a href="javascript:alert(1)">j</a><a href="file:///etc/passwd">f</a><a href="mailto:a@example.com">m</a>"#,
+            BASE,
+        );
+        assert!(html.contains("<a>j</a><a>f</a>"), "{html}");
+        assert!(html.contains(r#"href="mailto:a@example.com""#), "{html}");
+    }
+
+    #[test]
+    fn forms_are_unwrapped_and_their_fields_kept() {
+        let html = ready_article(
+            r#"<form action="https://evil.example/"><input name="q"><button>Go</button></form>"#,
+            BASE,
+        );
+        assert_eq!(html, r#"<input name="q"><button>Go</button>"#);
     }
 
     #[test]
