@@ -12,7 +12,7 @@ use skvaller_core::{Client, ImportReport, delete_token, export_opml, import_opml
 use tracing::Level;
 
 use crate::app::{App, Runtime, default_description, lock, read, remove_db_files, stop, write};
-use crate::config::{Account, AccountKind, Config, DEFAULT_KEEP_UNREAD_DAYS, SyncSchedule};
+use crate::config::{Account, AccountKind, Config};
 use crate::error::{Error, Result, io, task_failed};
 
 /// The largest OPML file read: far more than any real subscription list.
@@ -148,15 +148,7 @@ impl App {
             {
                 description = format!("{description} ({username})");
             }
-            Account {
-                id: id.clone(),
-                description,
-                kind: kind.clone(),
-                sync: SyncSchedule::default(),
-                keep_read_days: skvaller_core::DEFAULT_KEEP_READ_DAYS,
-                keep_unread_days: DEFAULT_KEEP_UNREAD_DAYS,
-                sync_on_wake: false,
-            }
+            Account::new(id.clone(), description, kind.clone())
         };
         let rt = Arc::new(Runtime::open(&self.accounts_dir, &account)?);
         let added = self.update_config(|config| {

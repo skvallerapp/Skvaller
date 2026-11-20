@@ -328,26 +328,26 @@ fn or_default<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(
 /// a bad `animations` must give `true`, not `bool`'s `false`.
 fn or_else<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
-    fallback: impl FnOnce(Settings) -> T,
+    fallback: impl FnOnce() -> T,
 ) -> Result<T, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
-    Ok(T::deserialize(value).unwrap_or_else(|_| fallback(Settings::default())))
+    Ok(T::deserialize(value).unwrap_or_else(|_| fallback()))
 }
 
 fn article_font_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<Font, D::Error> {
-    or_else(d, |s| s.article_font)
+    or_else(d, || Settings::default().article_font)
 }
 
 fn animations_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
-    or_else(d, |s| s.animations)
+    or_else(d, || Settings::default().animations)
 }
 
 fn confirm_mark_all_read_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
-    or_else(d, |s| s.confirm_mark_all_read)
+    or_else(d, || Settings::default().confirm_mark_all_read)
 }
 
 fn unread_badge_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
-    or_else(d, |s| s.unread_badge)
+    or_else(d, || Settings::default().unread_badge)
 }
 
 impl Default for Settings {
@@ -404,6 +404,22 @@ pub struct Account {
     /// Sync when the computer wakes from sleep.
     #[serde(default, deserialize_with = "or_default")]
     pub sync_on_wake: bool,
+}
+
+impl Account {
+    /// A new account, with the default schedule and retention.
+    #[must_use]
+    pub fn new(id: String, description: String, kind: AccountKind) -> Self {
+        Self {
+            id,
+            description,
+            kind,
+            sync: SyncSchedule::default(),
+            keep_read_days: DEFAULT_KEEP_READ_DAYS,
+            keep_unread_days: DEFAULT_KEEP_UNREAD_DAYS,
+            sync_on_wake: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -478,8 +494,7 @@ fn default_keep_read_days() -> u32 {
 }
 
 fn keep_read_days_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
-    let value = serde_json::Value::deserialize(d)?;
-    Ok(u32::deserialize(value).unwrap_or(DEFAULT_KEEP_READ_DAYS))
+    or_else(d, default_keep_read_days)
 }
 
 /// Half a year: long enough that nothing the user may still read goes, short enough that
@@ -491,8 +506,7 @@ fn default_keep_unread_days() -> u32 {
 }
 
 fn keep_unread_days_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
-    let value = serde_json::Value::deserialize(d)?;
-    Ok(u32::deserialize(value).unwrap_or(DEFAULT_KEEP_UNREAD_DAYS))
+    or_else(d, default_keep_unread_days)
 }
 
 /// A broken account is left out, instead of losing the others.

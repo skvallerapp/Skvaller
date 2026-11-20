@@ -5,11 +5,10 @@
 //! [`App::changes`] listeners, so every window shows it at once.
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use skvaller_core::{Db, subscribe};
 
-use crate::app::{App, Changed, Runtime};
+use crate::app::{App, Changed, Runtime, now_secs};
 use crate::config::AccountKind;
 use crate::error::{Error, Result, task_failed};
 
@@ -38,9 +37,7 @@ impl App {
         let rt = self.local(account_id)?;
         let db = Arc::clone(&rt.db);
         let (url, folder_id) = (url.to_owned(), folder_id.map(str::to_owned));
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+        let now = now_secs();
         let added = self
             .sync_runtime
             .get()

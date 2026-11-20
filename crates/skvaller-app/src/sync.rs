@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use skvaller_core::{
     Client, Error as CoreError, load_token, prefetch_full_text, refresh_local, sync,
@@ -16,7 +16,7 @@ use skvaller_core::{
 use tokio::time::{Instant, sleep_until};
 use tracing::Level;
 
-use crate::app::{App, Changed, Runtime, lock};
+use crate::app::{App, Changed, Runtime, lock, now_secs};
 use crate::config::{Account, AccountKind, SyncSchedule};
 use crate::gate::Outcome;
 
@@ -321,13 +321,6 @@ impl App {
     }
 }
 
-fn now_secs() -> i64 {
-    let since = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-}
-
 /// How often the clock is checked for a sleep.
 const WAKE_CHECK: Duration = Duration::from_secs(30);
 /// More time than this past a check's wait means the computer slept. Large, so a
@@ -425,6 +418,8 @@ fn due(schedule: SyncSchedule, history: &History, now: SystemTime) -> Option<Dur
 
 #[cfg(test)]
 mod tests {
+    use std::time::UNIX_EPOCH;
+
     use super::*;
 
     const MINUTE: Duration = Duration::from_secs(60);

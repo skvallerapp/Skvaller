@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{
     Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use skvaller_core::{
     ArticleSummary, Client, Counts, Db, Feed, Folder, ImportReport, Selection, export_opml,
@@ -14,9 +15,7 @@ use skvaller_core::{
 use tokio::sync::{Notify, broadcast, watch};
 use tracing::Level;
 
-use crate::config::{
-    Account, AccountKind, Config, DEFAULT_KEEP_UNREAD_DAYS, FIRST_ACCOUNT_ID, SyncSchedule,
-};
+use crate::config::{Account, AccountKind, Config, FIRST_ACCOUNT_ID, SyncSchedule};
 use crate::error::{Error, Result, io};
 use crate::gate::Gate;
 use crate::sync::SyncStatus;
@@ -762,40 +761,42 @@ pub fn import_local(dirs: &Dirs, opml: &[u8]) -> Result<ImportReport> {
 ///
 /// As [`App::load`], and [`Error::Core`] when the articles can't be stored.
 pub fn seed_local(dirs: &Dirs, count: usize) -> Result<usize> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0));
-    Ok(skvaller_core::seed_articles(&local_db(dirs)?, count, now)?)
+    Ok(skvaller_core::seed_articles(
+        &local_db(dirs)?,
+        count,
+        now_secs() * 1000,
+    )?)
+}
+
+/// Now, in Unix seconds.
+pub(crate) fn now_secs() -> i64 {
+    let since = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
 }
 
 /// Opens the local account's cache, making the account active, or adding it first.
 fn local_db(dirs: &Dirs) -> Result<Db> {
     let app = App::load(dirs)?;
-    let config_path = dirs.config_file();
-    let mut config = lock(&app.config).clone();
-    let local = config
-        .accounts
-        .iter()
-        .find(|a| a.kind == AccountKind::Local);
-    let id = if let Some(account) = local {
-        account.id.clone()
-    } else {
-        let id = config.take_id();
-        config.accounts.push(Account {
-            id: id.clone(),
-            description: default_description(&AccountKind::Local),
-            kind: AccountKind::Local,
-            sync: SyncSchedule::default(),
-            keep_read_days: skvaller_core::DEFAULT_KEEP_READ_DAYS,
-            keep_unread_days: DEFAULT_KEEP_UNREAD_DAYS,
-            sync_on_wake: false,
-        });
+    let id = app.update_config(|config| {
+        let local = config
+            .accounts
+            .iter()
+            .find(|a| a.kind == AccountKind::Local);
+        let id = if let Some(account) = local {
+            account.id.clone()
+        } else {
+            let id = config.take_id();
+            let description = default_description(&AccountKind::Local);
+            config
+                .accounts
+                .push(Account::new(id.clone(), description, AccountKind::Local));
+            id
+        };
+        config.active = Some(id.clone());
         id
-    };
-    config.active = Some(id.clone());
-    config
-        .save(&config_path)
-        .map_err(io("Saving", &config_path))?;
+    })?;
     Ok(Db::open(db_path(&app.accounts_dir, &id))?)
 }
 
