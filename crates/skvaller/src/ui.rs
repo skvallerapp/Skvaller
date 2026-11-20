@@ -568,7 +568,9 @@ impl Reading {
             // Stepping on before then, as with j and k, leaves it unread.
             MarkReadOn::Delay => {
                 let (app, generation) = (Arc::clone(app), *self.mark_generation.peek());
-                spawn(async move {
+                // Not the calling component's task: a row's list or the search bar can go
+                // away within the delay, as a search is typed or closed.
+                dioxus_core::spawn_forever(async move {
                     tokio::time::sleep(MARK_READ_DELAY).await;
                     // Unless another article opened, or the setting changed, meanwhile.
                     if *self.mark_generation.peek() == generation
@@ -866,7 +868,9 @@ impl Reading {
         let mut current = self.leaving;
         let cache = self.cache;
         let heard = cache.peek().library;
-        spawn(async move {
+        // Not the calling component's task, which may go away first: the rows would
+        // stay.
+        dioxus_core::spawn_forever(async move {
             tokio::time::sleep(LEAVING_STAYS).await;
             // Let go before the library loads again without them, they would show again
             // until it does: wait for it, a few frames at most.
@@ -899,7 +903,9 @@ impl Reading {
             drawn: Rc::clone(&drawn),
         }));
         let mut ghost = self.ghost;
-        spawn(async move {
+        // Not the calling component's task, which may go away first: the ghost would
+        // stay.
+        dioxus_core::spawn_forever(async move {
             tokio::time::sleep(GHOST_STAYS).await;
             // A selection or another mark-all meanwhile already replaced it.
             let current = ghost
