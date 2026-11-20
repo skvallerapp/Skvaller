@@ -31,6 +31,7 @@ use crate::icons::{
 };
 use crate::live::use_live;
 use crate::shortcuts::{self, Action, Capture, Refusal};
+use crate::ui::focus;
 use crate::ui::{APP_CSS, Reveal, scroll_into_view};
 
 const SETTINGS_CSS: &str = include_str!("settings.css");
@@ -230,9 +231,7 @@ fn SettingsRoot() -> Element {
             tabindex: "-1",
             onmounted: move |e: MountedEvent| async move {
                 // Without focus the window hears no keys, so Escape wouldn't close it.
-                if let Err(err) = e.data().set_focus(true).await {
-                    tracing::warn!("focusing the Settings window failed: {err}");
-                }
+                focus(&e.data(), "the Settings window").await;
             },
             onkeydown: move |e: Event<KeyboardData>| {
                 if e.key() == Key::Named(NamedKey::Escape) {
@@ -268,9 +267,7 @@ fn SettingsRoot() -> Element {
                             // The row that opened the page is gone: focus moves to the way
                             // back.
                             onmounted: move |e: MountedEvent| async move {
-                                if let Err(err) = e.data().set_focus(true).await {
-                                    tracing::warn!("focusing Back failed: {err}");
-                                }
+                                focus(&e.data(), "Back").await;
                             },
                             onclick: {
                                 let id = id.clone();
@@ -1062,9 +1059,7 @@ fn AccountPane(
                         let mut returned = returned;
                         if *returned.peek() {
                             returned.set(false);
-                            if let Err(err) = e.data().set_focus(true).await {
-                                tracing::warn!("focusing the Reader View row failed: {err}");
-                            }
+                            focus(&e.data(), "the Reader View row").await;
                         }
                     },
                     onclick: move |_| on_reader_view.call(()),
@@ -1178,9 +1173,7 @@ fn AccountPane(
                         button {
                             class: "button",
                             onmounted: move |e: MountedEvent| async move {
-                                if let Err(err) = e.data().set_focus(true).await {
-                                    tracing::warn!("focusing Cancel failed: {err}");
-                                }
+                                focus(&e.data(), "Cancel").await;
                             },
                             onclick: move |_| confirming.set(false),
                             {t("common.cancel")}

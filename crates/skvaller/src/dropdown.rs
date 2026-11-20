@@ -15,6 +15,7 @@ use dioxus_native::use_window;
 use crate::icons::{CHECK, CHEVRONS_UP_DOWN, Icon};
 use crate::place;
 use crate::shortcuts;
+use crate::ui::focus;
 use crate::ui::{FRAME, LAYOUT_WAITS};
 
 /// A row's height: `.menu-item`'s.
@@ -82,9 +83,7 @@ pub fn Dropdown(
         list.set(None);
         if let Some(mounted) = button.peek().clone() {
             spawn(async move {
-                if let Err(e) = mounted.set_focus(true).await {
-                    tracing::warn!("focusing a dropdown failed: {e}");
-                }
+                focus(&mounted, "a dropdown").await;
             });
         }
     };

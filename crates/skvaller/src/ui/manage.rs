@@ -16,6 +16,7 @@ use crate::dropdown::Dropdown;
 use crate::i18n::{sentence, t, t_with};
 use crate::icons::{CHECK, Icon, PLUS};
 use crate::shortcuts::field_key;
+use crate::ui::focus;
 
 /// Heights in a menu, in CSS pixels, as app.css draws it: an item, a line between
 /// groups with its margins, the Move To heading, and the menu's padding and borders.
@@ -378,9 +379,7 @@ pub(super) fn RenameField(target: Target, title: String) -> Element {
             value: "{draft}",
             spellcheck: "false",
             onmounted: move |e: MountedEvent| async move {
-                if let Err(err) = e.data().set_focus(true).await {
-                    tracing::warn!("focusing the name field failed: {err}");
-                }
+                focus(&e.data(), "the name field").await;
             },
             oninput: move |e| draft.set(e.value()),
             // Keeps the click from selecting the row.
@@ -542,9 +541,7 @@ pub(super) fn AddFeed() -> Element {
                             placeholder: "example.com/feed.xml",
                             spellcheck: "false",
                             onmounted: move |e: MountedEvent| async move {
-                                if let Err(err) = e.data().set_focus(true).await {
-                                    tracing::warn!("focusing the address field failed: {err}");
-                                }
+                                focus(&e.data(), "the address field").await;
                             },
                             oninput: move |e| url.set(e.value()),
                             onkeydown: on_key.clone(),

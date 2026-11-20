@@ -192,6 +192,13 @@ impl Search {
     }
 }
 
+/// Focuses `el`, logging why if it fails: nothing more can be done about it.
+pub(crate) async fn focus(el: &MountedData, what: &str) {
+    if let Err(e) = el.set_focus(true).await {
+        tracing::warn!("focusing {what} failed: {e}");
+    }
+}
+
 /// What a search of `selection` looks through: the view's articles in every feed when
 /// `everywhere`, else the selection.
 fn searched_within(selection: &Selection, everywhere: bool) -> Selection {
@@ -552,9 +559,7 @@ impl Reading {
         // Not the calling component's task: a field that closes its own overlay, as the
         // rename field does on Enter, goes away in the same render, and its tasks with it.
         dioxus_core::spawn_forever(async move {
-            if let Err(e) = root.set_focus(true).await {
-                tracing::warn!("focusing the window's root failed: {e}");
-            }
+            focus(&root, "the window's root").await;
         });
     }
 
@@ -940,9 +945,7 @@ impl Reading {
             return;
         };
         spawn(async move {
-            if let Err(e) = field.set_focus(true).await {
-                tracing::warn!("focusing the search field failed: {e}");
-            }
+            focus(&field, "the search field").await;
         });
     }
 
@@ -2255,9 +2258,7 @@ fn ViewSwitcher() -> Element {
                     return;
                 };
                 spawn(async move {
-                    if let Err(e) = button.set_focus(true).await {
-                        tracing::warn!("focusing the view's button failed: {e}");
-                    }
+                    focus(&button, "the view's button").await;
                 });
             },
             style: "--count: {VIEWS.len()}",
@@ -2805,9 +2806,7 @@ fn SearchBar() -> Element {
                 spellcheck: "false",
                 onmounted: move |e: MountedEvent| async move {
                     reading.search_field.set(Some(e.data()));
-                    if let Err(err) = e.data().set_focus(true).await {
-                        tracing::warn!("focusing the search field failed: {err}");
-                    }
+                    focus(&e.data(), "the search field").await;
                 },
                 oninput: move |e| reading.set_query(e.value()),
                 onkeydown: move |e: Event<KeyboardData>| {
