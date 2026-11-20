@@ -83,12 +83,19 @@ The windows, in Dioxus Native (Blitz).
 
 - `main`: starts the sync runtime, sets up the HTTP client, request filter and `thumb:`
   scheme, and launches the main window.
-- `ui`: the main window, with the sidebar, the virtualized article list and the reader.
-  It counts the shown account's `Change`s in `Cached`: every one reloads the library,
-  every one but a read or star change reloads the list, and a mark-all-read also
-  empties Unread of the rows it kept. `ui/manage`: feed and folder menus. `ui/listed`: the rows each load of the article
-  list shows, keeping those read or unstarred here and the open article, so a sync
-  doesn't pull them away while you read.
+- `ui`: the main window, its state (`Reading`) and layout. It counts the shown
+  account's `Change`s in `Cached`: every one reloads the library, every one but a read
+  or star change reloads the list, and a mark-all-read also empties Unread of the rows
+  it kept. Its parts:
+  - `ui/sidebar`: the view and account switchers, feeds and folders. `ui/tree`: the
+    sidebar's rows as a tree and how the selection steps through them, as plain
+    functions.
+  - `ui/list`: the virtualized article list and its search bar. `ui/listed`: the rows
+    each load of it shows, keeping those read or unstarred here and the open article,
+    so a sync doesn't pull them away while you read. `ui/pull`: the lists' rubber band
+    and pull to refresh.
+  - `ui/reader`: the open article and its buttons.
+  - `ui/manage`: feed and folder menus.
 - `ui/command`: what the main window does. Every key, macOS menu bar item and button
   that asks it for something becomes a `Command`, run by `Reading::run`, which holds
   each command's guards, such as needing the panes rather than the sign-in screen.
@@ -101,7 +108,7 @@ The windows, in Dioxus Native (Blitz).
   plain functions, tested without a window, as `overscroll`'s are.
 - `settings`, `add_account`: the Settings window and sign-in.
 - `article`: the reader's `<iframe srcdoc>` document. A new look (theme, fonts, size,
-  line width) remakes it, and the frame loads it from the top: `ui`'s `Remake` reads
+  line width) remakes it, and the frame loads it from the top: `ui/reader`'s `Remake` reads
   the place first, as a share of how far the frame scrolls, hides the new frame and
   scrolls it back there once its layout holds still. Images that load after that move
   it a little.
@@ -115,10 +122,10 @@ The windows, in Dioxus Native (Blitz).
 - `place`: where a scrolled list is, as plain arithmetic on row offsets: the article
   list's visible rows, how it keeps its place from one render to the next (`Keeper`),
   and how far to scroll to show a row, for the article list, `dropdown`, and the
-  panes `ui::scroll_into_view` scrolls: the sidebar and Settings. `ui`'s `Viewport`
+  panes `ui::scroll_into_view` scrolls: the sidebar and Settings. `ui/list`'s `Viewport`
   reads the element and scrolls where it says.
 - `overscroll`: a list stretched past its ends by trackpad or touch, and pull to
-  refresh, as state alone: `ui` feeds it the events and draws the offset.
+  refresh, as state alone: `ui/pull` feeds it the events and draws the offset.
 - `live`: each window's view of the settings, following `watch_config()`, and of the
   system's dark mode and window frame, following `appearance::watch()` and
   `watch_frame()`. Its `theme` is the one to show. `use_cache_changes` hands a window
