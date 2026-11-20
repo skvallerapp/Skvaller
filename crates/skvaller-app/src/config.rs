@@ -566,7 +566,7 @@ fn migrate(value: &mut serde_json::Value) {
 }
 
 impl Config {
-    /// Reads the settings file at `path`.
+    /// Reads the settings file at `path`, and the JSON as it was in the file, if any.
     ///
     /// A missing file gives the defaults. A file from before several accounts is
     /// migrated.
@@ -575,10 +575,10 @@ impl Config {
     ///
     /// The reason, when the file is there but can't be read or parsed. It must not be
     /// overwritten before it is kept somewhere.
-    pub fn load(path: &Path) -> Result<Self, String> {
+    pub fn load(path: &Path) -> Result<(Self, Option<serde_json::Value>), String> {
         match std::fs::read(path) {
-            Ok(bytes) => Self::parse(&bytes),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Ok(bytes) => Ok((Self::parse(&bytes)?, serde_json::from_slice(&bytes).ok())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((Self::default(), None)),
             Err(e) => Err(e.to_string()),
         }
     }

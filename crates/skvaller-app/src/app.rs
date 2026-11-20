@@ -225,10 +225,6 @@ impl App {
     /// [`Error::Backup`] when `config.json` can't be read and can't be copied either:
     /// starting would later overwrite the only copy of the user's accounts.
     /// [`Error::Io`] when a folder can't be made or read, or the config can't be saved.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one startup sequence, in the order it must run"
-    )]
     pub fn load(dirs: &Dirs) -> Result<Self> {
         let accounts_dir = dirs.accounts();
         let config_path = dirs.config_file();
@@ -236,8 +232,8 @@ impl App {
         std::fs::create_dir_all(&dirs.config).map_err(io("Creating", &dirs.config))?;
 
         let mut notice = None;
-        let mut config = match Config::load(&config_path) {
-            Ok(config) => config,
+        let (mut config, raw) = match Config::load(&config_path) {
+            Ok(loaded) => loaded,
             Err(reason) => {
                 let backup = back_up(&config_path)?;
                 tracing::event!(
@@ -258,7 +254,7 @@ impl App {
                         backup.display()
                     ),
                 });
-                Config::default()
+                (Config::default(), None)
             }
         };
         for account in &mut config.accounts {
@@ -272,23 +268,8 @@ impl App {
             .into_iter()
             .filter(|id| config.account(id).is_none() && !remove_db_files(&accounts_dir, id))
             .collect();
-        // No new account takes the ID of a cache on disk, even one a lost config knew.
-        let on_disk = std::fs::read_dir(&accounts_dir)
-            .map_err(io("Reading", &accounts_dir))?
-            .flatten()
-            .filter_map(|e| {
-                e.file_name()
-                    .to_str()?
-                    .split('.')
-                    .next()?
-                    .parse::<u64>()
-                    .ok()
-            });
-        config.next_id = config.next_id.max(on_disk.max().map_or(0, |n| n + 1));
+        config.next_id = config.next_id.max(next_free_id(&accounts_dir)?);
 
-        let raw: Option<serde_json::Value> = std::fs::read(&config_path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok());
         let listed = raw
             .as_ref()
             .and_then(|r| r.get("accounts")?.as_array().map(Vec::len))
@@ -321,24 +302,7 @@ impl App {
                 .map_err(io("Saving", &config_path))?;
         }
 
-        let (mut runtimes, mut broken) = (HashMap::new(), HashMap::new());
-        for account in &config.accounts {
-            match Runtime::open(&accounts_dir, account) {
-                Ok(rt) => {
-                    runtimes.insert(account.id.clone(), Arc::new(rt));
-                }
-                Err(e) => {
-                    tracing::event!(
-                        name: "cache.open.failure",
-                        Level::ERROR,
-                        account.id = %account.id,
-                        error.message = %e,
-                        "opening the cache of account {{account.id}} failed: {{error.message}}",
-                    );
-                    broken.insert(account.id.clone(), e.to_string());
-                }
-            }
-        }
+        let (runtimes, broken) = open_caches(&accounts_dir, &config.accounts);
         Ok(Self {
             accounts_dir,
             config_path,
@@ -766,6 +730,49 @@ pub fn seed_local(dirs: &Dirs, count: usize) -> Result<usize> {
         count,
         now_secs() * 1000,
     )?)
+}
+
+/// The accounts' caches by account ID, and why each one that didn't open failed.
+fn open_caches(
+    accounts_dir: &Path,
+    accounts: &[Account],
+) -> (HashMap<String, Arc<Runtime>>, HashMap<String, String>) {
+    let (mut runtimes, mut broken) = (HashMap::new(), HashMap::new());
+    for account in accounts {
+        match Runtime::open(accounts_dir, account) {
+            Ok(rt) => {
+                runtimes.insert(account.id.clone(), Arc::new(rt));
+            }
+            Err(e) => {
+                tracing::event!(
+                    name: "cache.open.failure",
+                    Level::ERROR,
+                    account.id = %account.id,
+                    error.message = %e,
+                    "opening the cache of account {{account.id}} failed: {{error.message}}",
+                );
+                broken.insert(account.id.clone(), e.to_string());
+            }
+        }
+    }
+    (runtimes, broken)
+}
+
+/// The first account ID past every cache on disk, so no new account takes the ID of
+/// one, even one a lost config knew.
+fn next_free_id(accounts_dir: &Path) -> Result<u64> {
+    let on_disk = std::fs::read_dir(accounts_dir)
+        .map_err(io("Reading", accounts_dir))?
+        .flatten()
+        .filter_map(|e| {
+            e.file_name()
+                .to_str()?
+                .split('.')
+                .next()?
+                .parse::<u64>()
+                .ok()
+        });
+    Ok(on_disk.max().map_or(0, |n| n + 1))
 }
 
 /// Now, in Unix seconds.
