@@ -262,14 +262,19 @@ pub type Overrides = BTreeMap<String, Option<String>>;
 /// The key of `action`, with the user's `overrides` applied; `None` for no key.
 pub fn key_of(overrides: &Overrides, action: Action) -> Option<&str> {
     match overrides.get(action.name()) {
-        // A saved arrow key, or a system chord saved on another platform, such as
-        // Ctrl+C from a Mac, can't be a shortcut: the default applies.
-        Some(Some(key)) if ARROWS.contains(&key.as_str()) || system_chord(key) => {
-            Some(action.default_key())
-        }
+        // A saved key that can't be a shortcut, such as a system chord saved on another
+        // platform (Ctrl+C from a Mac) or a hand-edited Enter: the default applies.
+        Some(Some(key)) if !bindable(key) => Some(action.default_key()),
         Some(key) => key.as_deref(),
         None => Some(action.default_key()),
     }
+}
+
+/// Whether the key named `name` can be a shortcut: not an arrow, which moves; not a
+/// system chord; and not Enter, which also presses the focused button. [`capture`]
+/// refuses these, each with its reason.
+fn bindable(name: &str) -> bool {
+    !ARROWS.contains(&name) && !system_chord(name) && name != "Enter" && name != "Shift+Enter"
 }
 
 /// The action of each key, with the user's `overrides` applied.
@@ -343,19 +348,7 @@ pub fn capture(key: &Key, code: Code, mods: Modifiers) -> Capture {
         _ => {}
     }
     let Some(name) = key_name(key, code, mods) else {
-        let modifier = matches!(
-            key,
-            Key::Named(
-                NamedKey::Shift
-                    | NamedKey::Control
-                    | NamedKey::Alt
-                    | NamedKey::Meta
-                    | NamedKey::AltGraph
-                    | NamedKey::CapsLock
-                    | NamedKey::Fn
-            )
-        );
-        return if modifier {
+        return if matches!(key, Key::Named(named) if is_modifier(*named)) {
             Capture::Wait
         } else {
             Capture::Refuse(Refusal::Unnamed)
@@ -370,6 +363,20 @@ pub fn capture(key: &Key, code: Code, mods: Modifiers) -> Capture {
     } else {
         Capture::Key(name)
     }
+}
+
+/// A key that only changes others, pressed on its way to a chord.
+fn is_modifier(key: NamedKey) -> bool {
+    matches!(
+        key,
+        NamedKey::Shift
+            | NamedKey::Control
+            | NamedKey::Alt
+            | NamedKey::Meta
+            | NamedKey::AltGraph
+            | NamedKey::CapsLock
+            | NamedKey::Fn
+    )
 }
 
 /// How a key name shows in Settings: `⌃⇧Space` on macOS, `Ctrl+Shift+Space` elsewhere.
@@ -439,23 +446,15 @@ pub fn key_name(key: &Key, code: Code, mods: Modifiers) -> Option<String> {
             lower
         }
         Key::Named(named) => {
-            let name = named.to_string();
-            let ignored = [
-                "Shift",
-                "Control",
-                "Alt",
-                "Meta",
-                "CapsLock",
-                "Fn",
-                "AltGraph",
-                "Dead",
-                "Process",
-                "Unidentified",
-            ];
-            if ignored.contains(&name.as_str()) {
+            if is_modifier(*named)
+                || matches!(
+                    named,
+                    NamedKey::Dead | NamedKey::Process | NamedKey::Unidentified
+                )
+            {
                 return None;
             }
-            name
+            named.to_string()
         }
     };
     let mut full = String::new();
@@ -588,6 +587,11 @@ mod tests {
         let command = if MAC { "Meta" } else { "Ctrl" };
         let copy = format!("{command}+c");
         let overrides = over(&[("sync", Some(copy.as_str()))]);
+        assert_eq!(
+            key_of(&overrides, Action::Sync),
+            Some(Action::Sync.default_key())
+        );
+        let overrides = over(&[("sync", Some("Enter"))]);
         assert_eq!(
             key_of(&overrides, Action::Sync),
             Some(Action::Sync.default_key())
