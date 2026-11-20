@@ -180,8 +180,6 @@
   "settings.localAccount": "Feeds on this device",
   "settings.back": "Back to {account}",
 
-  "settings.language": "Language",
-  "settings.languageSystem": "System",
 
   "settings.colors": "Colors",
   "settings.theme": "Theme",
@@ -205,7 +203,6 @@
   "settings.dateFormat": "Date format",
   "settings.dateFormats.system": "System",
 
-  "settings.appIcon": "App Icon",
   "settings.badge": "Unread count badge",
   "settings.badgeNote": "The unread articles of every account.",
 
@@ -236,9 +233,7 @@
   "settings.markReadModes.open": "On Open",
   "settings.markReadModes.delay": "After a Delay",
   "settings.markReadModes.manual": "Manually",
-  "settings.markOnScroll": "Mark as read on scroll",
   "settings.confirmMarkAll": "Ask before marking all as read",
-  "settings.markReadNote": "On scroll, articles are marked read as they leave the top of the list. Scrolling back up doesn’t mark any.",
 
   "settings.noSubscriptions": "No subscriptions yet.",
   "settings.readerViewNote": "Articles of these feeds open in Reader View: the full text, from the article’s web page, instead of what the feed sends.",

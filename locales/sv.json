@@ -180,8 +180,6 @@
   "settings.localAccount": "Flöden på den här enheten",
   "settings.back": "Tillbaka till {account}",
 
-  "settings.language": "Språk",
-  "settings.languageSystem": "System",
 
   "settings.colors": "Färger",
   "settings.theme": "Tema",
@@ -205,7 +203,6 @@
   "settings.dateFormat": "Datumformat",
   "settings.dateFormats.system": "System",
 
-  "settings.appIcon": "Appikon",
   "settings.badge": "Märke med antal olästa",
   "settings.badgeNote": "Olästa artiklar i alla konton.",
 
@@ -236,9 +233,7 @@
   "settings.markReadModes.open": "Vid öppning",
   "settings.markReadModes.delay": "Efter en fördröjning",
   "settings.markReadModes.manual": "Manuellt",
-  "settings.markOnScroll": "Markera som läst vid rullning",
   "settings.confirmMarkAll": "Fråga innan alla markeras som lästa",
-  "settings.markReadNote": "Vid rullning markeras artiklar som lästa när de lämnar listans överkant. När du rullar tillbaka uppåt markeras inga.",
 
   "settings.noSubscriptions": "Inga prenumerationer ännu.",
   "settings.readerViewNote": "Artiklar från de här flödena öppnas i Läsarvy: fulltexten från artikelns webbsida, i stället för det som flödet skickar.",

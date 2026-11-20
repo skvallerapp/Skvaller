@@ -271,19 +271,12 @@
 }
 
 .settings .confirm p {
-  margin: 0 0 12px;
   line-height: 1.45;
 }
 
 .settings .confirm strong {
   display: block;
   margin-bottom: 2px;
-}
-
-.settings .actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
 }
 
 /* Apart from Cancel and Remove, at the start. */

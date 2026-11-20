@@ -183,8 +183,6 @@
   "settings.localAccount": "Feeds en este equipo",
   "settings.back": "Volver a {account}",
 
-  "settings.language": "Idioma",
-  "settings.languageSystem": "Sistema",
 
   "settings.colors": "Colores",
   "settings.theme": "Tema",
@@ -208,7 +206,6 @@
   "settings.dateFormat": "Formato de fecha",
   "settings.dateFormats.system": "Sistema",
 
-  "settings.appIcon": "Icono de la app",
   "settings.badge": "Contador de no leídos",
   "settings.badgeNote": "Los artículos no leídos de todas las cuentas.",
 
@@ -239,9 +236,7 @@
   "settings.markReadModes.open": "Al abrir",
   "settings.markReadModes.delay": "Tras unos segundos",
   "settings.markReadModes.manual": "Manualmente",
-  "settings.markOnScroll": "Marcar como leído al desplazarse",
   "settings.confirmMarkAll": "Preguntar antes de marcar todo como leído",
-  "settings.markReadNote": "Al desplazarse, los artículos se marcan como leídos cuando salen por la parte superior de la lista. Volver a desplazarse hacia arriba no marca ninguno.",
 
   "settings.noSubscriptions": "Aún no hay suscripciones.",
   "settings.readerViewNote": "Los artículos de estos feeds se abren en la vista de lectura: el texto completo, tomado de la página web del artículo, en lugar de lo que envía el feed.",

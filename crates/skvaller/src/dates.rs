@@ -18,7 +18,7 @@ use jiff::tz::TimeZone;
 use skvaller_app::{Clock, DateFormat};
 use writeable::{Part, PartsWrite, Writeable};
 
-use crate::i18n::t;
+use crate::i18n::t_with;
 
 /// Formats dates for one locale, time zone and pair of settings.
 #[derive(Debug)]
@@ -117,13 +117,12 @@ impl Dates {
         let time = self.time.format(&icu(d)).to_string();
         let yesterday = now.date().yesterday().ok();
         if d.date() == now.date() {
-            t("format.today").replace("{time}", &time)
+            t_with("format.today", &[("time", &time)])
         } else if Some(d.date()) == yesterday {
-            t("format.yesterday").replace("{time}", &time)
+            t_with("format.yesterday", &[("time", &time)])
         } else {
-            t("format.dayAt")
-                .replace("{date}", &self.short_date(d, now))
-                .replace("{time}", &time)
+            let date = self.short_date(d, now);
+            t_with("format.dayAt", &[("date", &date), ("time", &time)])
         }
     }
 
