@@ -13,7 +13,7 @@ use tracing::Level;
 
 use crate::app::{App, Runtime, default_description, lock, read, remove_db_files, stop, write};
 use crate::config::{Account, AccountKind, Config, DEFAULT_KEEP_UNREAD_DAYS, SyncSchedule};
-use crate::error::{Error, Result, io};
+use crate::error::{Error, Result, io, task_failed};
 
 /// The largest OPML file read: far more than any real subscription list.
 const MAX_OPML_BYTES: u64 = 10 * 1024 * 1024;
@@ -59,7 +59,7 @@ impl App {
                     .await
             })
             .await
-            .map_err(|e| Error::Core(skvaller_core::Error::Local(e.to_string())))?
+            .map_err(|e| task_failed(&e))?
     }
 
     async fn sign_in_now(
@@ -81,7 +81,7 @@ impl App {
         let token = client.token().to_owned();
         tokio::task::spawn_blocking(move || save_token(&key, &token))
             .await
-            .map_err(|e| Error::Core(skvaller_core::Error::Local(e.to_string())))??;
+            .map_err(|e| task_failed(&e))??;
 
         let (rt, added) = self.add_account(&kind, name)?;
         if added {
@@ -260,8 +260,8 @@ impl App {
     ///
     /// [`Error::NotLocal`] for a sync account, whose server keeps its subscriptions;
     /// [`Error::NoAccount`] or [`Error::Broken`] for an account without a cache;
-    /// [`Error::Io`] for a file that can't be read; and [`Error::Core`] for a file that
-    /// is too large or not OPML.
+    /// [`Error::Io`] for a file that can't be read; [`Error::TooLarge`] for one that is
+    /// too large; and [`Error::Core`] for one that isn't OPML.
     pub fn import_opml(self: &Arc<Self>, account_id: &str, path: &Path) -> Result<ImportReport> {
         let rt = self.local(account_id)?;
         // One byte past the limit tells a file that is too large, without reading it all.
@@ -270,9 +270,7 @@ impl App {
             .and_then(|f| f.take(MAX_OPML_BYTES + 1).read_to_end(&mut file))
             .map_err(io("Reading", path))?;
         if read as u64 > MAX_OPML_BYTES {
-            return Err(Error::Core(skvaller_core::Error::Local(
-                "the file is too large for an OPML file".into(),
-            )));
+            return Err(Error::TooLarge);
         }
         let report = import_opml(&rt.db, &file)?;
         self.feeds_changed(&rt);
@@ -359,7 +357,7 @@ mod tests {
         let too_large = app.import_opml(&id, &file(&tmp, &large));
         let missing = app.import_opml(&id, &tmp.path().join("missing.opml"));
 
-        assert!(matches!(too_large, Err(Error::Core(_))));
+        assert!(matches!(too_large, Err(Error::TooLarge)));
         assert!(matches!(missing, Err(Error::Io { .. })));
     }
 

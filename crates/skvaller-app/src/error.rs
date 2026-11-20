@@ -45,6 +45,12 @@ pub enum Error {
     /// The account's cache didn't open at startup.
     #[error("this account's cache can't be opened: {0}")]
     Broken(String),
+    /// An OPML file is larger than any real one.
+    #[error("the file is too large for an OPML file")]
+    TooLarge,
+    /// A background task stopped before it was done, such as by a panic.
+    #[error("the task stopped: {0}")]
+    Task(String),
     /// The cache, the server or a feed failed.
     #[error(transparent)]
     Core(#[from] skvaller_core::Error),
@@ -52,6 +58,17 @@ pub enum Error {
 
 /// A [`Result`](std::result::Result) with this crate's [`Error`].
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// A background task that stopped, as an [`Error`], logged.
+pub(crate) fn task_failed(e: &tokio::task::JoinError) -> Error {
+    tracing::event!(
+        name: "task.panic",
+        tracing::Level::ERROR,
+        error.message = %e,
+        "a task stopped: {{error.message}}",
+    );
+    Error::Task(e.to_string())
+}
 
 /// Turns an I/O error into an [`Error`] that says what failed, on which path.
 pub(crate) fn io(

@@ -7,12 +7,11 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use skvaller_core::subscribe;
-use tracing::Level;
+use skvaller_core::{Db, subscribe};
 
 use crate::app::{App, Changed, Runtime};
 use crate::config::AccountKind;
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, task_failed};
 
 impl App {
     /// Subscribes the local account to the feed at `url`, or to the one a web page
@@ -47,18 +46,7 @@ impl App {
             .get()
             .expect("start_sync runs before subscribing")
             .spawn(async move { subscribe(&db, &url, folder_id.as_deref(), now).await });
-        let id = match added.await {
-            Ok(id) => id?,
-            Err(e) => {
-                tracing::event!(
-                    name: "feeds.subscribe.panic",
-                    Level::ERROR,
-                    error.message = %e,
-                    "subscribing stopped: {{error.message}}",
-                );
-                return Err(Error::Core(skvaller_core::Error::Local(e.to_string())));
-            }
-        };
+        let id = added.await.map_err(|e| task_failed(&e))??;
         self.feeds_changed(&rt);
         // Its articles are new to the cache: their thumbnails now, not at the next sync.
         self.fetch_thumbnails(&rt);
@@ -71,10 +59,7 @@ impl App {
     ///
     /// As [`App::rename_feed`].
     pub fn unsubscribe(&self, account_id: &str, feed_id: &str) -> Result<()> {
-        let rt = self.local(account_id)?;
-        rt.db.unsubscribe(feed_id)?;
-        self.feeds_changed(&rt);
-        Ok(())
+        self.edit_local(account_id, |db| db.unsubscribe(feed_id))
     }
 
     /// Renames a feed of the local account. The title is trimmed.
@@ -86,10 +71,7 @@ impl App {
     /// title; and [`Error::Core`] when the cache can't be written.
     pub fn rename_feed(&self, account_id: &str, feed_id: &str, title: &str) -> Result<()> {
         let title = non_empty(title)?;
-        let rt = self.local(account_id)?;
-        rt.db.rename_feed(feed_id, title)?;
-        self.feeds_changed(&rt);
-        Ok(())
+        self.edit_local(account_id, |db| db.rename_feed(feed_id, title))
     }
 
     /// Moves a feed of the local account into a folder, or out of any with `None`.
@@ -103,10 +85,7 @@ impl App {
         feed_id: &str,
         folder_id: Option<&str>,
     ) -> Result<()> {
-        let rt = self.local(account_id)?;
-        rt.db.move_feed(feed_id, folder_id)?;
-        self.feeds_changed(&rt);
-        Ok(())
+        self.edit_local(account_id, |db| db.move_feed(feed_id, folder_id))
     }
 
     /// The local account's folder with this title, ignoring case, or else a new one.
@@ -117,10 +96,7 @@ impl App {
     /// As [`App::rename_feed`].
     pub fn create_folder(&self, account_id: &str, title: &str) -> Result<String> {
         let title = non_empty(title)?;
-        let rt = self.local(account_id)?;
-        let id = rt.db.create_folder(title)?;
-        self.feeds_changed(&rt);
-        Ok(id)
+        self.edit_local(account_id, |db| db.create_folder(title))
     }
 
     /// Renames a folder of the local account. The title is trimmed.
@@ -130,10 +106,7 @@ impl App {
     /// As [`App::rename_feed`].
     pub fn rename_folder(&self, account_id: &str, folder_id: &str, title: &str) -> Result<()> {
         let title = non_empty(title)?;
-        let rt = self.local(account_id)?;
-        rt.db.rename_folder(folder_id, title)?;
-        self.feeds_changed(&rt);
-        Ok(())
+        self.edit_local(account_id, |db| db.rename_folder(folder_id, title))
     }
 
     /// Removes a folder of the local account. Its feeds stay, in no folder.
@@ -142,10 +115,7 @@ impl App {
     ///
     /// As [`App::rename_feed`].
     pub fn delete_folder(&self, account_id: &str, folder_id: &str) -> Result<()> {
-        let rt = self.local(account_id)?;
-        rt.db.delete_folder(folder_id)?;
-        self.feeds_changed(&rt);
-        Ok(())
+        self.edit_local(account_id, |db| db.delete_folder(folder_id))
     }
 
     /// The account's runtime, if it is the local account.
@@ -155,6 +125,19 @@ impl App {
             return Err(Error::NotLocal);
         }
         self.runtime(account_id)
+    }
+
+    /// Runs `edit` on the local account's cache, then backs up the subscriptions and
+    /// tells every window.
+    fn edit_local<T>(
+        &self,
+        account_id: &str,
+        edit: impl FnOnce(&Db) -> skvaller_core::Result<T>,
+    ) -> Result<T> {
+        let rt = self.local(account_id)?;
+        let done = edit(&rt.db)?;
+        self.feeds_changed(&rt);
+        Ok(done)
     }
 
     /// Backs up the changed subscriptions and tells every window.
