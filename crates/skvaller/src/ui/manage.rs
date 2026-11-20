@@ -446,14 +446,29 @@ pub(super) fn AddFeed() -> Element {
         if *reading.overlay.peek() != adding {
             return;
         }
-        let address = url.peek().trim().to_owned();
-        if address.is_empty() {
+        if !ready(&url.peek(), &folder.peek(), &new_folder.peek()) {
             return;
         }
+        let address = url.peek().trim().to_owned();
         let chosen = folder.peek().clone();
+        // A folder made for this feed goes again if adding it fails. One with the same
+        // title, ignoring case as the cache does, is the user's, and stays.
+        let mut made = None;
         let folder_id = if chosen == NEW_FOLDER {
-            match app.create_folder(&account, &new_folder.peek()) {
-                Ok(id) => Some(id),
+            let title = new_folder.peek().trim().to_owned();
+            let existed = reading
+                .library
+                .peek()
+                .folders
+                .iter()
+                .any(|f| f.title.eq_ignore_ascii_case(&title));
+            match app.create_folder(&account, &title) {
+                Ok(id) => {
+                    if !existed {
+                        made = Some(id.clone());
+                    }
+                    Some(id)
+                }
                 Err(e) => {
                     error.set(Some(sentence(&e.to_string())));
                     return;
@@ -481,7 +496,14 @@ pub(super) fn AddFeed() -> Element {
                         reading.select_scope(Scope::Feed { id });
                     }
                 }
-                Err(e) => error.set(Some(add_error(&e))),
+                Err(e) => {
+                    if let Some(made) = made
+                        && let Err(e) = app.delete_folder(&account, &made)
+                    {
+                        tracing::warn!("removing the folder made for a feed failed: {e}");
+                    }
+                    error.set(Some(add_error(&e)));
+                }
             }
         });
     };
@@ -575,7 +597,7 @@ pub(super) fn AddFeed() -> Element {
                         button { class: "button", onclick: move |_| reading.close_overlay(), {t("common.cancel")} }
                         button {
                             class: "button primary",
-                            disabled: busy || url().trim().is_empty() || (folder() == NEW_FOLDER && new_folder().trim().is_empty()),
+                            disabled: busy || !ready(&url(), &folder(), &new_folder()),
                             onclick: move |_| submit(Arc::clone(&submit_app)),
                             if busy { {t("common.adding")} } else { {t("addFeed.add")} }
                         }
@@ -584,6 +606,11 @@ pub(super) fn AddFeed() -> Element {
             }
         }
     }
+}
+
+/// Whether the form can be sent: an address, and a name for a new folder.
+fn ready(url: &str, folder: &str, new_folder: &str) -> bool {
+    !url.trim().is_empty() && (folder != NEW_FOLDER || !new_folder.trim().is_empty())
 }
 
 /// Why adding a feed failed, as the user is told.
