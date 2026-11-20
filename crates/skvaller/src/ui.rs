@@ -39,7 +39,7 @@ use crate::overscroll::{Edges, HOLD, Out, Overscroll, SPRING_EASE, Shown, WHEEL_
 use crate::place::{Keeper, ListView, Place, differs, reveal, reveal_row};
 use crate::scale;
 use crate::settings::SettingsWindow;
-use crate::shortcuts::{ACCOUNT_MODIFIER, Action, COMMAND_MODIFIER, field_key};
+use crate::shortcuts::{ACCOUNT_MODIFIER, Action, COMMAND_MODIFIER, chord_label, field_key};
 use crate::spin::Spin;
 use crate::thumbs;
 
@@ -1819,11 +1819,7 @@ fn Sidebar() -> Element {
     let spinning = use_spin(reading.status, reading.syncs_asked);
     let sync_app = Arc::clone(&app);
     let settings_app = Arc::clone(&app);
-    let settings_key = if COMMAND_MODIFIER == Modifiers::META {
-        "⌘,".to_owned()
-    } else {
-        format!("{}+,", t("keys.ctrl"))
-    };
+    let settings_key = chord_label(COMMAND_MODIFIER, ",");
     let status_line = match status {
         // The reason belongs in a hover title, but Blitz shows no titles yet.
         Some(SyncStatus {
@@ -2315,11 +2311,7 @@ fn AccountSwitcher() -> Element {
     let accounts = app.accounts();
     let menu_app = Arc::clone(&app);
     let app_for_add = Arc::clone(&app);
-    let shortcut_key = if ACCOUNT_MODIFIER == Modifiers::META {
-        "⌘".to_owned()
-    } else {
-        format!("{}+", t("keys.alt"))
-    };
+    let shortcut_key = chord_label(ACCOUNT_MODIFIER, "");
 
     rsx! {
         div { class: "switcher",
@@ -2695,11 +2687,7 @@ fn ArticleList() -> Element {
         t("list.showSidebar")
     };
     let searching = reading.search.read().open;
-    let search_key = if COMMAND_MODIFIER == Modifiers::META {
-        "⌘F".to_owned()
-    } else {
-        format!("{}+F", t("keys.ctrl"))
-    };
+    let search_key = chord_label(COMMAND_MODIFIER, "f");
 
     rsx! {
         section {

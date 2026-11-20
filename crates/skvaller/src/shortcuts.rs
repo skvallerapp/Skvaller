@@ -420,6 +420,19 @@ pub fn key_label(name: &str, mac: bool) -> String {
     shown + &label
 }
 
+/// How `key` with `mods` shows on this platform, as [`key_label`] shows a key name:
+/// `⌘F` on macOS, `Ctrl+F` elsewhere. An empty `key` shows the modifiers alone.
+pub fn chord_label(mods: Modifiers, key: &str) -> String {
+    let mut name = String::new();
+    for (modifier, prefix, ..) in MODIFIERS {
+        if mods.contains(modifier) {
+            name.push_str(prefix);
+            name.push('+');
+        }
+    }
+    key_label(&(name + key), MAC)
+}
+
 /// The key's name as a shortcut, with its modifiers in front in the order of
 /// [`MODIFIERS`], or `None` when it can't be one: a modifier on its own, or a dead or
 /// unnamed key.
@@ -593,6 +606,23 @@ mod tests {
         // A stale arrow override counts as the default, and is dropped.
         let (result, _) = rebind(&over(&[("next", Some("ArrowUp"))]), Action::Sync, Some("y"));
         assert_eq!(result, over(&[("sync", Some("y"))]));
+    }
+
+    #[test]
+    fn chords_show_as_the_platform_writes_them() {
+        if MAC {
+            assert_eq!(chord_label(COMMAND_MODIFIER, "f"), "⌘F");
+            assert_eq!(chord_label(ACCOUNT_MODIFIER, ""), "⌘");
+        } else {
+            assert_eq!(
+                chord_label(COMMAND_MODIFIER, ","),
+                format!("{}+,", t("keys.ctrl"))
+            );
+            assert_eq!(
+                chord_label(ACCOUNT_MODIFIER, ""),
+                format!("{}+", t("keys.alt"))
+            );
+        }
     }
 
     #[test]
