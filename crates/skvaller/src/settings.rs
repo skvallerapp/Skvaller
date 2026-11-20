@@ -454,65 +454,46 @@ fn AppearancePane(settings: Settings, feedback: Feedback) -> Element {
         .iter()
         .map(|&s| font_size_name(s).to_owned())
         .collect();
-    let set = move |change: SettingsChange| feedback.report(app.change_settings(change));
+    let set =
+        use_callback(move |change: SettingsChange| feedback.report(app.change_settings(change)));
 
     rsx! {
         section {
             h2 { {t("settings.dateTime")} }
             div { class: "group",
-                Row { label: t("settings.clock"),
-                    Select {
-                        label: t("settings.clock"),
-                        choices: clock_labels,
-                        selected: index(&clocks, &settings.clock),
-                        onchange: {
-                            let set = set.clone();
-                            move |i: usize| set(Box::new(move |s| s.clock = clocks[i]))
-                        },
-                    }
+                SelectRow {
+                    label: t("settings.clock"),
+                    choices: clock_labels,
+                    selected: index(&clocks, &settings.clock),
+                    onchange: move |i: usize| set.call(Box::new(move |s| s.clock = clocks[i])),
                 }
-                Row { label: t("settings.dateFormat"),
-                    Select {
-                        label: t("settings.dateFormat"),
-                        choices: order_labels,
-                        selected: index(&orders, &settings.date_format),
-                        onchange: {
-                            let set = set.clone();
-                            move |i: usize| set(Box::new(move |s| s.date_format = orders[i]))
-                        },
-                    }
+                SelectRow {
+                    label: t("settings.dateFormat"),
+                    choices: order_labels,
+                    selected: index(&orders, &settings.date_format),
+                    onchange: move |i: usize| set.call(Box::new(move |s| s.date_format = orders[i])),
                 }
             }
         }
         section {
             h2 { {t("settings.colors")} }
             div { class: "group",
-                Row { label: t("settings.theme"),
-                    Select {
-                        label: t("settings.theme"),
-                        choices: theme_labels,
-                        selected: index(&themes, &settings.theme),
-                        onchange: {
-                            let set = set.clone();
-                            move |i: usize| set(Box::new(move |s| s.theme = themes[i]))
-                        },
-                    }
+                SelectRow {
+                    label: t("settings.theme"),
+                    choices: theme_labels,
+                    selected: index(&themes, &settings.theme),
+                    onchange: move |i: usize| set.call(Box::new(move |s| s.theme = themes[i])),
                 }
             }
         }
         section {
             h2 { {t("settings.articleList")} }
             div { class: "group",
-                Row { label: t("settings.thumbnails"),
-                    Select {
-                        label: t("settings.thumbnails"),
-                        choices: size_labels,
-                        selected: index(&sizes, &settings.thumbnail_size),
-                        onchange: {
-                            let set = set.clone();
-                            move |i: usize| set(Box::new(move |s| s.thumbnail_size = sizes[i]))
-                        },
-                    }
+                SelectRow {
+                    label: t("settings.thumbnails"),
+                    choices: size_labels,
+                    selected: index(&sizes, &settings.thumbnail_size),
+                    onchange: move |i: usize| set.call(Box::new(move |s| s.thumbnail_size = sizes[i])),
                 }
             }
             p { class: "note", {t("settings.thumbnailsNote")} }
@@ -520,15 +501,10 @@ fn AppearancePane(settings: Settings, feedback: Feedback) -> Element {
         section {
             h2 { {t("settings.motion")} }
             div { class: "group",
-                Row { label: t("settings.animations"),
-                    Switch {
-                        label: t("settings.animations"),
-                        on: settings.animations,
-                        onchange: {
-                            let set = set.clone();
-                            move |on: bool| set(Box::new(move |s| s.animations = on))
-                        },
-                    }
+                SwitchRow {
+                    label: t("settings.animations"),
+                    on: settings.animations,
+                    onchange: move |on: bool| set.call(Box::new(move |s| s.animations = on)),
                 }
             }
             p { class: "note", {t("settings.animationsNote")} }
@@ -536,46 +512,29 @@ fn AppearancePane(settings: Settings, feedback: Feedback) -> Element {
         section {
             h2 { {t("settings.fonts")} }
             div { class: "group",
-                Row { label: t("settings.uiFont"),
-                    Select {
-                        label: t("settings.uiFont"),
-                        choices: font_labels.clone(),
-                        selected: index(&FONTS, &settings.ui_font),
-                        onchange: {
-                            let set = set.clone();
-                            move |i: usize| set(Box::new(move |s| s.ui_font = FONTS[i]))
-                        },
-                    }
+                SelectRow {
+                    label: t("settings.uiFont"),
+                    choices: font_labels.clone(),
+                    selected: index(&FONTS, &settings.ui_font),
+                    onchange: move |i: usize| set.call(Box::new(move |s| s.ui_font = FONTS[i])),
                 }
-                Row { label: t("settings.headlineFont"),
-                    Select {
-                        label: t("settings.headlineFont"),
-                        choices: font_labels.clone(),
-                        selected: index(&FONTS, &settings.headline_font),
-                        onchange: {
-                            let set = set.clone();
-                            move |i: usize| set(Box::new(move |s| s.headline_font = FONTS[i]))
-                        },
-                    }
+                SelectRow {
+                    label: t("settings.headlineFont"),
+                    choices: font_labels.clone(),
+                    selected: index(&FONTS, &settings.headline_font),
+                    onchange: move |i: usize| set.call(Box::new(move |s| s.headline_font = FONTS[i])),
                 }
-                Row { label: t("settings.articleFont"),
-                    Select {
-                        label: t("settings.articleFont"),
-                        choices: font_labels,
-                        selected: index(&FONTS, &settings.article_font),
-                        onchange: {
-                            let set = set.clone();
-                            move |i: usize| set(Box::new(move |s| s.article_font = FONTS[i]))
-                        },
-                    }
+                SelectRow {
+                    label: t("settings.articleFont"),
+                    choices: font_labels,
+                    selected: index(&FONTS, &settings.article_font),
+                    onchange: move |i: usize| set.call(Box::new(move |s| s.article_font = FONTS[i])),
                 }
-                Row { label: t("settings.fontSize"),
-                    Select {
-                        label: t("settings.fontSize"),
-                        choices: font_size_labels,
-                        selected: index(&FontSize::ALL, &settings.font_size),
-                        onchange: move |i: usize| set(Box::new(move |s| s.font_size = FontSize::ALL[i])),
-                    }
+                SelectRow {
+                    label: t("settings.fontSize"),
+                    choices: font_size_labels,
+                    selected: index(&FontSize::ALL, &settings.font_size),
+                    onchange: move |i: usize| set.call(Box::new(move |s| s.font_size = FontSize::ALL[i])),
                 }
             }
         }
@@ -645,60 +604,44 @@ fn ReadingPane(settings: Settings, feedback: Feedback) -> Element {
         t("settings.lineWidths.medium"),
         t("settings.lineWidths.wide"),
     ];
-    let set = move |change: SettingsChange| feedback.report(app.change_settings(change));
+    let set =
+        use_callback(move |change: SettingsChange| feedback.report(app.change_settings(change)));
     rsx! {
         section {
             h2 { {t("settings.subscriptions")} }
             div { class: "group",
-                Row { label: t("settings.sort"),
-                    Select {
-                        label: t("settings.sort"),
-                        choices: order_labels,
-                        selected: index(&orders, &settings.sort_subscriptions),
-                        onchange: {
-                            let set = set.clone();
-                            move |i: usize| set(Box::new(move |s| s.sort_subscriptions = orders[i]))
-                        },
-                    }
+                SelectRow {
+                    label: t("settings.sort"),
+                    choices: order_labels,
+                    selected: index(&orders, &settings.sort_subscriptions),
+                    onchange: move |i: usize| set.call(Box::new(move |s| s.sort_subscriptions = orders[i])),
                 }
             }
         }
         section {
             h2 { {t("settings.markingRead")} }
             div { class: "group",
-                Row { label: t("settings.markReadOn"),
-                    Select {
-                        label: t("settings.markReadOn"),
-                        choices: mode_labels,
-                        selected: index(&modes, &settings.mark_read_on),
-                        onchange: {
-                            let set = set.clone();
-                            move |i: usize| set(Box::new(move |s| s.mark_read_on = modes[i]))
-                        },
-                    }
+                SelectRow {
+                    label: t("settings.markReadOn"),
+                    choices: mode_labels,
+                    selected: index(&modes, &settings.mark_read_on),
+                    onchange: move |i: usize| set.call(Box::new(move |s| s.mark_read_on = modes[i])),
                 }
-                Row { label: t("settings.confirmMarkAll"),
-                    Switch {
-                        label: t("settings.confirmMarkAll"),
-                        on: settings.confirm_mark_all_read,
-                        onchange: {
-                            let set = set.clone();
-                            move |on: bool| set(Box::new(move |s| s.confirm_mark_all_read = on))
-                        },
-                    }
+                SwitchRow {
+                    label: t("settings.confirmMarkAll"),
+                    on: settings.confirm_mark_all_read,
+                    onchange: move |on: bool| set.call(Box::new(move |s| s.confirm_mark_all_read = on)),
                 }
             }
         }
         section {
             h2 { {t("settings.article")} }
             div { class: "group",
-                Row { label: t("settings.lineWidth"),
-                    Select {
-                        label: t("settings.lineWidth"),
-                        choices: width_labels,
-                        selected: index(&LINE_WIDTHS, &settings.line_width),
-                        onchange: move |i: usize| set(Box::new(move |s| s.line_width = LINE_WIDTHS[i])),
-                    }
+                SelectRow {
+                    label: t("settings.lineWidth"),
+                    choices: width_labels,
+                    selected: index(&LINE_WIDTHS, &settings.line_width),
+                    onchange: move |i: usize| set.call(Box::new(move |s| s.line_width = LINE_WIDTHS[i])),
                 }
             }
         }
@@ -1071,61 +1014,53 @@ fn AccountPane(
         section {
             h2 { {t("settings.syncing")} }
             div { class: "group",
-                Row { label: t("settings.syncSchedule"),
-                    Select {
-                        label: t("settings.syncSchedule"),
-                        choices: schedule_labels,
-                        selected: index(&SCHEDULES, &account.sync),
-                        other: schedule_label(account.sync),
-                        onchange: {
-                            let update = update.clone();
-                            move |i: usize| update(AccountChange {
-                                sync: Some(SCHEDULES[i]),
-                                ..AccountChange::default()
-                            })
-                        },
-                    }
+                SelectRow {
+                    label: t("settings.syncSchedule"),
+                    choices: schedule_labels,
+                    selected: index(&SCHEDULES, &account.sync),
+                    other: schedule_label(account.sync),
+                    onchange: {
+                        let update = update.clone();
+                        move |i: usize| update(AccountChange {
+                            sync: Some(SCHEDULES[i]),
+                            ..AccountChange::default()
+                        })
+                    },
                 }
-                Row { label: t("settings.syncOnWake"),
-                    Switch {
-                        label: t("settings.syncOnWake"),
-                        on: account.sync_on_wake,
-                        onchange: {
-                            let update = update.clone();
-                            move |on: bool| update(AccountChange {
-                                sync_on_wake: Some(on),
-                                ..AccountChange::default()
-                            })
-                        },
-                    }
+                SwitchRow {
+                    label: t("settings.syncOnWake"),
+                    on: account.sync_on_wake,
+                    onchange: {
+                        let update = update.clone();
+                        move |on: bool| update(AccountChange {
+                            sync_on_wake: Some(on),
+                            ..AccountChange::default()
+                        })
+                    },
                 }
-                Row { label: t("settings.keepRead"),
-                    Select {
-                        label: t("settings.keepRead"),
-                        choices: read_labels,
-                        selected: index(&KEEP_READ, &account.keep_read_days),
-                        other: period(account.keep_read_days),
-                        onchange: {
-                            let update = update.clone();
-                            move |i: usize| update(AccountChange {
-                                keep_read_days: Some(KEEP_READ[i]),
-                                ..AccountChange::default()
-                            })
-                        },
-                    }
+                SelectRow {
+                    label: t("settings.keepRead"),
+                    choices: read_labels,
+                    selected: index(&KEEP_READ, &account.keep_read_days),
+                    other: period(account.keep_read_days),
+                    onchange: {
+                        let update = update.clone();
+                        move |i: usize| update(AccountChange {
+                            keep_read_days: Some(KEEP_READ[i]),
+                            ..AccountChange::default()
+                        })
+                    },
                 }
                 if local {
-                    Row { label: t("settings.keepUnread"),
-                        Select {
-                            label: t("settings.keepUnread"),
-                            choices: unread_labels,
-                            selected: index(&KEEP_UNREAD, &account.keep_unread_days),
-                            other: period(account.keep_unread_days),
-                            onchange: move |i: usize| update(AccountChange {
-                                keep_unread_days: Some(KEEP_UNREAD[i]),
-                                ..AccountChange::default()
-                            }),
-                        }
+                    SelectRow {
+                        label: t("settings.keepUnread"),
+                        choices: unread_labels,
+                        selected: index(&KEEP_UNREAD, &account.keep_unread_days),
+                        other: period(account.keep_unread_days),
+                        onchange: move |i: usize| update(AccountChange {
+                            keep_unread_days: Some(KEEP_UNREAD[i]),
+                            ..AccountChange::default()
+                        }),
                     }
                 }
             }
@@ -1249,6 +1184,32 @@ fn Row(label: String, children: Element) -> Element {
         div { class: "setting",
             span { "{label}" }
             {children}
+        }
+    }
+}
+
+/// A [`Row`] of a [`Select`], both named `label`.
+#[component]
+fn SelectRow(
+    label: String,
+    choices: Vec<String>,
+    selected: Option<usize>,
+    #[props(default)] other: String,
+    onchange: EventHandler<usize>,
+) -> Element {
+    rsx! {
+        Row { label: label.clone(),
+            Select { label, choices, selected, other, onchange }
+        }
+    }
+}
+
+/// A [`Row`] of a [`Switch`], both named `label`.
+#[component]
+fn SwitchRow(label: String, on: bool, onchange: EventHandler<bool>) -> Element {
+    rsx! {
+        Row { label: label.clone(),
+            Switch { label, on, onchange }
         }
     }
 }
