@@ -800,6 +800,32 @@ fn local_db(dirs: &Dirs) -> Result<Db> {
     Ok(Db::open(db_path(&app.accounts_dir, &id))?)
 }
 
+impl App {
+    /// Starts the account's background task for `slot` on the sync runtime, unless
+    /// `skip` says not to, one still runs, or the account was removed. `skip` is asked
+    /// under the slot's lock, which whatever stops the task takes too.
+    pub(crate) fn spawn_once<F>(
+        &self,
+        rt: &Runtime,
+        slot: &Mutex<Option<tokio::task::AbortHandle>>,
+        skip: impl FnOnce() -> bool,
+        work: impl FnOnce(Arc<Runtime>) -> F,
+    ) where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let mut running = lock(slot);
+        if skip() || running.as_ref().is_some_and(|task| !task.is_finished()) {
+            return;
+        }
+        // Removed meanwhile: its removal takes the slot's lock only after taking the
+        // account from the runtimes, so a task started here is one it aborts.
+        let (Some(runtime), Ok(rt)) = (self.sync_runtime.get(), self.runtime(&rt.id)) else {
+            return;
+        };
+        *running = Some(runtime.spawn(work(rt)).abort_handle());
+    }
+}
+
 /// Aborts the background task in `slot`, if one runs. It stops at its next await, so
 /// no write to the cache is cut short.
 pub(crate) fn stop(slot: &Mutex<Option<tokio::task::AbortHandle>>) {

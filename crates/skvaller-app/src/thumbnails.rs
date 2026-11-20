@@ -8,7 +8,7 @@ use skvaller_core::prefetch_thumbnails;
 use tracing::Level;
 
 use crate::ThumbnailSize;
-use crate::app::{App, Change, Changed, Runtime, lock};
+use crate::app::{App, Change, Changed, Runtime};
 use crate::error::Result;
 
 impl App {
@@ -28,16 +28,9 @@ impl App {
     pub(crate) fn fetch_thumbnails(&self, rt: &Runtime) {
         // The setting is read under the lock that turning thumbnails off takes to stop
         // a run, after saving: either that stops this run or this sees them off.
-        let mut running = lock(&rt.thumbnails);
-        let off = self.settings().thumbnail_size == ThumbnailSize::None;
-        if off || running.as_ref().is_some_and(|task| !task.is_finished()) {
-            return;
-        }
-        let (Some(runtime), Ok(rt)) = (self.sync_runtime.get(), self.runtime(&rt.id)) else {
-            return;
-        };
+        let off = || self.settings().thumbnail_size == ThumbnailSize::None;
         let changes = self.changes.clone();
-        let task = runtime.spawn(async move {
+        self.spawn_once(rt, &rt.thumbnails, off, |rt| async move {
             let stored = || {
                 // No listener yet is fine: a window that opens later loads the list.
                 let _ = changes.send(Change {
@@ -55,6 +48,5 @@ impl App {
                 );
             }
         });
-        *running = Some(task.abort_handle());
     }
 }

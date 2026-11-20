@@ -177,29 +177,34 @@ impl App {
     async fn run_sync(&self, rt: &Runtime) -> Ran {
         let work = async {
             let account = self.account(&rt.id)?;
-            // `None` for the local account, which fetches its feeds itself.
-            let client = match account.kind {
-                AccountKind::Greader { .. } => match self.client(rt).await {
-                    Ok(Some(client)) => Some(client),
-                    Ok(None) => return None,
-                    Err(e) => return Some(self.finish(rt, &Err(e), false)),
-                },
-                AccountKind::Local => None,
+            let syncing = || {
+                self.emit(SyncStatus {
+                    syncing: true,
+                    ..rt.status()
+                });
             };
-            self.emit(SyncStatus {
-                syncing: true,
-                ..rt.status()
-            });
             let (now, keep_read) = (now_secs(), account.keep_read_days.max(1));
-            let synced = if let Some(client) = &client {
-                sync(client, &rt.db, now, keep_read).await
-            } else {
-                let keep_unread = Some(account.keep_unread_days).filter(|&d| d > 0);
-                refresh_local(&rt.db, now, keep_read, keep_unread).await
+            let synced = match account.kind {
+                AccountKind::Greader { .. } => {
+                    let client = match self.client(rt).await {
+                        Ok(Some(client)) => client,
+                        Ok(None) => return None,
+                        Err(e) => return Some(self.finish(rt, &Err(e), false)),
+                    };
+                    syncing();
+                    sync(&client, &rt.db, now, keep_read).await
+                }
+                // The local account fetches its feeds itself.
+                AccountKind::Local => {
+                    syncing();
+                    let keep_unread = Some(account.keep_unread_days).filter(|&d| d > 0);
+                    let refreshed = refresh_local(&rt.db, now, keep_read, keep_unread).await;
+                    if refreshed.is_ok() {
+                        self.back_up_feeds(rt);
+                    }
+                    refreshed
+                }
             };
-            if synced.is_ok() && client.is_none() {
-                self.back_up_feeds(rt);
-            }
             // A sync that failed part way may have stored or pruned articles before.
             let changed = synced
                 .as_ref()
@@ -298,26 +303,17 @@ impl App {
     /// minutes. Skipped while the last sync's prefetch still runs; removing the account
     /// aborts it.
     fn prefetch(&self, rt: &Runtime) {
-        let mut running = lock(&rt.prefetch);
-        // Removed meanwhile: its removal takes this lock only after taking it from
-        // the runtimes, so a prefetch started here is one it aborts.
-        if self.runtime(&rt.id).is_err() || running.as_ref().is_some_and(|task| !task.is_finished())
-        {
-            return;
-        }
-        let (db, id) = (Arc::clone(&rt.db), rt.id.clone());
-        let task = tokio::spawn(async move {
-            if let Err(e) = prefetch_full_text(&db).await {
+        self.spawn_once(rt, &rt.prefetch, || false, |rt| async move {
+            if let Err(e) = prefetch_full_text(&rt.db).await {
                 tracing::event!(
                     name: "full_text.prefetch.failure",
                     Level::WARN,
-                    account.id = %id,
+                    account.id = %rt.id,
                     error.message = %e,
                     "prefetching Reader View for account {{account.id}} failed: {{error.message}}",
                 );
             }
         });
-        *running = Some(task.abort_handle());
     }
 }
 
