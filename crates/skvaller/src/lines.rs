@@ -51,8 +51,8 @@ const CONTEXTUAL: [char; 14] = [
     '-', '<', '>', '=', '*', '+', '|', '~', '/', '\\', '#', '&', '^', '_',
 ];
 
-/// The most entries each cache keeps (headlines, pieces shaped whole, runs and
-/// operators probed): about the rows of a few long lists. Past it, only the current
+/// The most entries each cache keeps (headlines, characters and pairs shaped, pieces
+/// shaped whole, runs and operators probed): about the rows of a few long lists. Past it, only the current
 /// list's headlines are kept, and the other caches start over.
 const KEPT: usize = 20_000;
 
@@ -119,6 +119,12 @@ pub struct Lines {
     stack: String,
     /// The font size in CSS px everything kept is for (`.title` in app.css).
     size: f32,
+    caches: Caches,
+}
+
+/// What [`Lines`] keeps for the font stack and size in use.
+#[derive(Default)]
+struct Caches {
     /// The headlines cut, by their text.
     headlines: HashMap<String, Rc<Headline>>,
     /// Each character's advance in CSS px, shaped on its own.
@@ -137,6 +143,14 @@ pub struct Lines {
     times: Option<f64>,
 }
 
+/// Keeps `value` in `map`, which starts over once it holds [`KEPT`] entries.
+fn keep<K: std::hash::Hash + Eq, V>(map: &mut HashMap<K, V>, key: K, value: V) {
+    if map.len() >= KEPT {
+        map.clear();
+    }
+    map.insert(key, value);
+}
+
 impl Lines {
     /// A counter that shapes in `fonts`, a copy of the app's (`fonts::font_context`).
     pub fn new(fonts: FontContext) -> Self {
@@ -145,13 +159,7 @@ impl Lines {
             layouts: LayoutContext::new(),
             stack: String::new(),
             size: 0.0,
-            headlines: HashMap::new(),
-            advances: HashMap::new(),
-            pairs: HashMap::new(),
-            pieces: HashMap::new(),
-            joined: HashMap::new(),
-            spaced: HashMap::new(),
-            times: None,
+            caches: Caches::default(),
         }
     }
 
@@ -168,8 +176,8 @@ impl Lines {
         self.use_font(stack, size);
         let titles: Vec<&str> = titles.into_iter().collect();
         let list: Rc<[_]> = titles.iter().map(|t| self.kept(t)).collect();
-        if self.headlines.len() > KEPT {
-            self.headlines = titles
+        if self.caches.headlines.len() > KEPT {
+            self.caches.headlines = titles
                 .iter()
                 .zip(list.iter())
                 .map(|(&t, h)| (t.to_owned(), Rc::clone(h)))
@@ -187,11 +195,13 @@ impl Lines {
 
     /// `text` cut where it may wrap, in the stack and size in use, as kept or cut now.
     fn kept(&mut self, text: &str) -> Rc<Headline> {
-        if let Some(headline) = self.headlines.get(text) {
+        if let Some(headline) = self.caches.headlines.get(text) {
             return Rc::clone(headline);
         }
         let headline = Rc::new(self.cut(text));
-        self.headlines.insert(text.to_owned(), Rc::clone(&headline));
+        self.caches
+            .headlines
+            .insert(text.to_owned(), Rc::clone(&headline));
         headline
     }
 
@@ -203,13 +213,7 @@ impl Lines {
         if stack != self.stack || size.to_bits() != self.size.to_bits() {
             stack.clone_into(&mut self.stack);
             self.size = size;
-            self.headlines.clear();
-            self.advances.clear();
-            self.pairs.clear();
-            self.pieces.clear();
-            self.joined.clear();
-            self.spaced.clear();
-            self.times = None;
+            self.caches = Caches::default();
         }
     }
 
@@ -367,17 +371,14 @@ impl Lines {
     fn unbroken(&mut self, text: &str, from: usize, at: usize, next: &str) -> bool {
         let run = text.get(from..at + next.len()).unwrap_or_default();
         let key = (run.to_owned(), at - from);
-        if let Some(&unbroken) = self.joined.get(&key) {
+        if let Some(&unbroken) = self.caches.joined.get(&key) {
             return unbroken;
         }
         let layout = layout(self, run, Some(0.0));
         let unbroken = !layout
             .lines()
             .any(|line| line.text_range().start == at - from);
-        if self.joined.len() >= KEPT {
-            self.joined.clear();
-        }
-        self.joined.insert(key, unbroken);
+        keep(&mut self.caches.joined, key, unbroken);
         unbroken
     }
 
@@ -399,14 +400,11 @@ impl Lines {
             prev = Some(c);
         }
         if piece.contains(CONTEXTUAL) {
-            let whole = if let Some(&whole) = self.pieces.get(piece) {
+            let whole = if let Some(&whole) = self.caches.pieces.get(piece) {
                 whole
             } else {
                 let whole = f64::from(layout(self, piece, None).full_width());
-                if self.pieces.len() >= KEPT {
-                    self.pieces.clear();
-                }
-                self.pieces.insert(piece.to_owned(), whole);
+                keep(&mut self.caches.pieces, piece.to_owned(), whole);
                 whole
             };
             width = width.max(whole);
@@ -417,29 +415,26 @@ impl Lines {
     /// What the `x` between two digits adds to the three shaped apart, as Inter swaps in
     /// a wider glyph there.
     fn times(&mut self) -> f64 {
-        if let Some(times) = self.times {
+        if let Some(times) = self.caches.times {
             return times;
         }
         let together = f64::from(layout(self, "1x1", None).full_width());
         let apart = 2.0 * self.advance('1') + self.advance('x');
         let times = (together - apart).max(0.0);
-        self.times = Some(times);
+        self.caches.times = Some(times);
         times
     }
 
     /// The width operator `op` takes between spaces after `p` and before `n`, shaped
     /// in that context, as Inter swaps in a wider glyph for the `*` of `2 * 3`.
     fn spaced(&mut self, p: char, op: char, n: char) -> f64 {
-        if let Some(&width) = self.spaced.get(&(p, op, n)) {
+        if let Some(&width) = self.caches.spaced.get(&(p, op, n)) {
             return width;
         }
         let mut whole = |text: String| f64::from(layout(self, &text, None).full_width());
         let width =
             whole(format!("{p} {op} {n}")) - whole(format!("{p} ")) - whole(format!(" {n}"));
-        if self.spaced.len() >= KEPT {
-            self.spaced.clear();
-        }
-        self.spaced.insert((p, op, n), width);
+        keep(&mut self.caches.spaced, (p, op, n), width);
         width
     }
 
@@ -451,7 +446,7 @@ impl Lines {
         if cjk(a) || cjk(b) {
             return 0.0;
         }
-        if let Some(&extra) = self.pairs.get(&(a, b)) {
+        if let Some(&extra) = self.caches.pairs.get(&(a, b)) {
             return extra;
         }
         let mut buf = [0; 8];
@@ -460,7 +455,7 @@ impl Lines {
         let text = std::str::from_utf8(&buf[..len]).unwrap_or_default();
         let together = f64::from(layout(self, text, None).full_width());
         let extra = (together - self.advance(a) - self.advance(b)).max(0.0);
-        self.pairs.insert((a, b), extra);
+        keep(&mut self.caches.pairs, (a, b), extra);
         extra
     }
 
@@ -469,14 +464,14 @@ impl Lines {
     /// A soft hyphen is taken as the hyphen it shows as at a break: a row may get a
     /// line too many, never too few.
     fn advance(&mut self, c: char) -> f64 {
-        if let Some(&advance) = self.advances.get(&c) {
+        if let Some(&advance) = self.caches.advances.get(&c) {
             return advance;
         }
         let shown = if c == '\u{ad}' { '-' } else { c };
         let mut buf = [0; 4];
         let layout = layout(self, shown.encode_utf8(&mut buf), None);
         let advance = f64::from(layout.full_width());
-        self.advances.insert(c, advance);
+        keep(&mut self.caches.advances, c, advance);
         advance
     }
 }
