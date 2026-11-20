@@ -1204,24 +1204,17 @@ impl Reading {
     }
 }
 
-/// The window's root component.
-#[component]
-pub fn Root() -> Element {
-    let app = use_context::<Arc<App>>();
-    let account = use_signal(|| app.active());
-    let selection = use_signal(|| Selection {
-        view: View::Unread,
-        scope: Scope::All,
-    });
-    let article = use_signal(|| None::<ArticleSummary>);
-    let mut cache = use_signal(Cached::default);
-    let marks = use_signal(Marks::default);
-    let search = use_signal(Search::default);
-    let mut status = use_signal(|| account.peek().as_deref().and_then(|id| app.status(id).ok()));
-
+/// Follows the shown `account`'s sync reports into `status`, and its cache's changes,
+/// made here, in Settings or by a sync, into `cache`.
+fn use_account_events(
+    app: &Arc<App>,
+    account: Signal<Option<String>>,
+    mut status: Signal<Option<SyncStatus>>,
+    mut cache: Signal<Cached>,
+) {
     // Sync reports, for the sidebar's status.
     use_hook({
-        let app = Arc::clone(&app);
+        let app = Arc::clone(app);
         move || {
             spawn(async move {
                 let mut events = app.subscribe();
@@ -1248,35 +1241,25 @@ pub fn Root() -> Element {
         }
     });
     // The shown account's cache changes, made here, in Settings or by a sync.
-    crate::live::use_cache_changes(&app, move |change| {
+    crate::live::use_cache_changes(app, move |change| {
         let shown = change.is_none_or(|c| Some(&c.account_id) == account.peek().as_ref());
         if shown {
             cache.write().heard(change.map(|c| c.what));
         }
     });
+}
 
-    let live = use_live(&app);
-    let library = use_memo({
-        let app = Arc::clone(&app);
-        move || {
-            cache.read();
-            account()
-                .and_then(|id| app.library(&id).ok())
-                .unwrap_or_default()
-        }
-    });
-    // A feed read to zero keeps its row until the account, view or selection changes
-    // or a sync finishes, so rows don't jump while you read.
-    let pinned_state = use_hook(|| Rc::new(RefCell::new(Pinned::default())));
-    let pinned = use_memo(move || {
-        let selection = selection();
-        let last_sync = status.read().as_ref().and_then(|s| s.last_sync);
-        let lib = library.read();
-        let counts = counts_by_feed(&lib.counts, selection.view);
-        pinned_state
-            .borrow_mut()
-            .update((account(), selection, last_sync), counts)
-    });
+/// The rows of the article list, loaded again as the account, the selection, the search
+/// or the cache changes. A sync's reload keeps the rows read or unstarred here.
+fn use_articles(
+    app: &Arc<App>,
+    account: Signal<Option<String>>,
+    selection: Signal<Selection>,
+    article: Signal<Option<ArticleSummary>>,
+    cache: Signal<Cached>,
+    marks: Signal<Marks>,
+    search: Signal<Search>,
+) -> Memo<Listed> {
     // The last load, what it listed and what it was for: a sync's reload keeps rows.
     let relist = use_hook(|| Rc::new(RefCell::new(Relist::default())));
     // What the list searches for: only a change here loads it again, not opening the
@@ -1292,8 +1275,8 @@ pub fn Root() -> Element {
         let cache = cache.read();
         (cache.list, cache.cleared)
     });
-    let articles = use_memo({
-        let app = Arc::clone(&app);
+    use_memo({
+        let app = Arc::clone(app);
         move || {
             let (selection, account, (_, cleared)) = (selection(), account(), relisted());
             let searched = searched();
@@ -1324,9 +1307,49 @@ pub fn Root() -> Element {
                 fetch,
             )
         }
+    })
+}
+
+/// The main window's state, its signals and what is worked out from them, given to its
+/// parts as context.
+fn use_reading(app: &Arc<App>) -> Reading {
+    let account = use_signal(|| app.active());
+    let selection = use_signal(|| Selection {
+        view: View::Unread,
+        scope: Scope::All,
     });
+    let article = use_signal(|| None::<ArticleSummary>);
+    let cache = use_signal(Cached::default);
+    let marks = use_signal(Marks::default);
+    let search = use_signal(Search::default);
+    let status = use_signal(|| account.peek().as_deref().and_then(|id| app.status(id).ok()));
+
+    use_account_events(app, account, status, cache);
+
+    let library = use_memo({
+        let app = Arc::clone(app);
+        move || {
+            cache.read();
+            account()
+                .and_then(|id| app.library(&id).ok())
+                .unwrap_or_default()
+        }
+    });
+    // A feed read to zero keeps its row until the account, view or selection changes
+    // or a sync finishes, so rows don't jump while you read.
+    let pinned_state = use_hook(|| Rc::new(RefCell::new(Pinned::default())));
+    let pinned = use_memo(move || {
+        let selection = selection();
+        let last_sync = status.read().as_ref().and_then(|s| s.last_sync);
+        let lib = library.read();
+        let counts = counts_by_feed(&lib.counts, selection.view);
+        pinned_state
+            .borrow_mut()
+            .update((account(), selection, last_sync), counts)
+    });
+    let articles = use_articles(app, account, selection, article, cache, marks, search);
     let window = use_window();
-    let mut reading = use_context_provider(|| Reading {
+    use_context_provider(|| Reading {
         account,
         selection,
         article,
@@ -1355,7 +1378,16 @@ pub fn Root() -> Element {
         search,
         search_field: Signal::new(None),
         restore: CopyValue::new(None),
-    });
+    })
+}
+
+/// The window's root component.
+#[component]
+pub fn Root() -> Element {
+    let app = use_context::<Arc<App>>();
+    let live = use_live(&app);
+    let mut reading = use_reading(&app);
+    let window = use_window();
     use_context_provider(|| live);
     let window_state = chrome::use_window_state_provider();
     // The active account, as changed elsewhere: one added or removed in Settings.
