@@ -2,6 +2,31 @@
 //! resizer.
 
 use super::*;
+use crate::dates::Dates;
+
+/// What the sidebar says of the account's sync, and whether it is a failure.
+pub(super) fn status_line(status: Option<&SyncStatus>, dates: &Dates) -> (String, bool) {
+    match status {
+        // The reason belongs in a hover title, but Blitz shows no titles yet.
+        Some(SyncStatus {
+            cache_broken: true,
+            error,
+            ..
+        }) => match error {
+            Some(e) => (format!("{}: {e}", t("sidebar.cacheDamaged")), true),
+            None => (t("sidebar.cacheDamaged"), true),
+        },
+        Some(s) if s.syncing => (t("sidebar.syncing"), false),
+        Some(SyncStatus { error: Some(e), .. }) => {
+            (format!("{}: {e}", t("sidebar.syncFailed")), true)
+        }
+        Some(SyncStatus {
+            last_sync: Some(ms),
+            ..
+        }) => (dates.synced(*ms), false),
+        _ => (t("sidebar.notSynced"), false),
+    }
+}
 
 #[component]
 pub(super) fn Sidebar() -> Element {
@@ -20,26 +45,7 @@ pub(super) fn Sidebar() -> Element {
     let sync_app = Arc::clone(&app);
     let settings_app = Arc::clone(&app);
     let settings_key = chord_label(COMMAND_MODIFIER, ",");
-    let status_line = match status {
-        // The reason belongs in a hover title, but Blitz shows no titles yet.
-        Some(SyncStatus {
-            cache_broken: true,
-            error,
-            ..
-        }) => match error {
-            Some(e) => (format!("{}: {e}", t("sidebar.cacheDamaged")), true),
-            None => (t("sidebar.cacheDamaged"), true),
-        },
-        Some(s) if s.syncing => (t("sidebar.syncing"), false),
-        Some(SyncStatus { error: Some(e), .. }) => {
-            (format!("{}: {e}", t("sidebar.syncFailed")), true)
-        }
-        Some(SyncStatus {
-            last_sync: Some(ms),
-            ..
-        }) => (dates.synced(ms), false),
-        _ => (t("sidebar.notSynced"), false),
-    };
+    let status_line = status_line(status.as_ref(), &dates);
     let class = if (reading.pane)() == Pane::Sidebar {
         "sidebar active"
     } else {
@@ -724,5 +730,40 @@ pub(super) fn ScopeItem(
             }
             if count > 0 { span { class: "count", "{count}" } }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use skvaller_app::{Clock, DateFormat};
+
+    use super::*;
+
+    #[test]
+    fn the_status_line_says_a_damaged_cache_first_then_syncing_then_a_failure() {
+        let dates = Dates::system(Clock::H24, DateFormat::Iso);
+        let status = |s: SyncStatus| status_line(Some(&s), &dates);
+        let failed = SyncStatus {
+            error: Some("timeout".into()),
+            ..SyncStatus::default()
+        };
+        assert_eq!(
+            status(failed.clone()),
+            (format!("{}: timeout", t("sidebar.syncFailed")), true)
+        );
+        let syncing = SyncStatus {
+            syncing: true,
+            ..failed.clone()
+        };
+        assert_eq!(status(syncing.clone()), (t("sidebar.syncing"), false));
+        let broken = SyncStatus {
+            cache_broken: true,
+            ..syncing
+        };
+        assert_eq!(
+            status(broken),
+            (format!("{}: timeout", t("sidebar.cacheDamaged")), true)
+        );
+        assert_eq!(status_line(None, &dates), (t("sidebar.notSynced"), false));
     }
 }
