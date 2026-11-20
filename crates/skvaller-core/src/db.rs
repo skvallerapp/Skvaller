@@ -1022,27 +1022,21 @@ impl Db {
                                                                     WHERE article_id = ?1
                                                                     AND flag = 'starred'))",
             )?;
-            let mut html = tx.prepare(HTML_UPSERT)?;
-            let mut exists = tx.prepare(ARTICLE_EXISTS)?;
-            let mut thumbnail = tx.prepare(THUMBNAIL_SOURCE_INSERT)?;
             for a in articles {
                 feed.execute(params![a.feed_id, a.feed_title])?;
-                let new = !exists.query_row([&a.id], |r| r.get::<_, bool>(0))?;
-                let changed = article.execute(params![
-                    a.id,
-                    a.feed_id,
-                    a.title,
-                    a.author,
-                    a.url,
-                    a.published,
-                    a.read,
-                    a.starred,
-                ])?;
-                if new && changed > 0 {
-                    thumbnail.execute(params![a.id, a.thumbnail])?;
-                }
-                let changed = changed + html.execute(params![a.id, a.html, a.feed_id])?;
-                stored += usize::from(changed > 0);
+                let changed = store_article(&tx, a, &a.feed_id, || {
+                    article.execute(params![
+                        a.id,
+                        a.feed_id,
+                        a.title,
+                        a.author,
+                        a.url,
+                        a.published,
+                        a.read,
+                        a.starred,
+                    ])
+                })?;
+                stored += usize::from(changed);
             }
         }
         tx.commit()?;
@@ -1209,25 +1203,19 @@ impl Db {
                     OR url != excluded.url
                     OR (?7 AND published != excluded.published))",
             )?;
-            let mut html = tx.prepare(HTML_UPSERT)?;
-            let mut exists = tx.prepare(ARTICLE_EXISTS)?;
-            let mut thumbnail = tx.prepare(THUMBNAIL_SOURCE_INSERT)?;
             for (a, dated) in entries {
-                let new = !exists.query_row([&a.id], |r| r.get::<_, bool>(0))?;
-                let changed = article.execute(params![
-                    a.id,
-                    feed_id,
-                    a.title,
-                    a.author,
-                    a.url,
-                    a.published,
-                    dated,
-                ])?;
-                if new && changed > 0 {
-                    thumbnail.execute(params![a.id, a.thumbnail])?;
-                }
-                let changed = changed + html.execute(params![a.id, a.html, feed_id])?;
-                stored += usize::from(changed > 0);
+                let changed = store_article(&tx, a, feed_id, || {
+                    article.execute(params![
+                        a.id,
+                        feed_id,
+                        a.title,
+                        a.author,
+                        a.url,
+                        a.published,
+                        dated,
+                    ])
+                })?;
+                stored += usize::from(changed);
             }
         }
         let ids: Vec<&str> = entries.iter().map(|(a, _)| a.id.as_str()).collect();
@@ -1417,6 +1405,29 @@ impl Db {
 /// A transaction that takes the write lock at its start. A deferred one that reads
 /// first and then writes fails at once, without waiting, if another connection wrote
 /// meanwhile, such as a second copy of the app or a sqlite3 shell.
+/// Stores one article of `feed_id` with `upsert`, which writes its row and says how
+/// many rows changed, then its HTML. A new article wants a thumbnail. Returns whether
+/// anything changed.
+fn store_article(
+    tx: &Connection,
+    a: &ArticleRow,
+    feed_id: &str,
+    upsert: impl FnOnce() -> rusqlite::Result<usize>,
+) -> rusqlite::Result<bool> {
+    let new = !tx
+        .prepare_cached(ARTICLE_EXISTS)?
+        .query_row([&a.id], |r| r.get::<_, bool>(0))?;
+    let changed = upsert()?;
+    if new && changed > 0 {
+        tx.prepare_cached(THUMBNAIL_SOURCE_INSERT)?
+            .execute(params![a.id, a.thumbnail])?;
+    }
+    let html = tx
+        .prepare_cached(HTML_UPSERT)?
+        .execute(params![a.id, a.html, feed_id])?;
+    Ok(changed + html > 0)
+}
+
 fn write(conn: &mut Connection) -> rusqlite::Result<Transaction<'_>> {
     conn.transaction_with_behavior(TransactionBehavior::Immediate)
 }
