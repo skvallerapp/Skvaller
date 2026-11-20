@@ -456,6 +456,9 @@ pub fn Frame() -> Element {
                         if e.trigger_button() != Some(MouseButton::Primary) {
                             return;
                         }
+                        // A resize moves no focus: not off a modal, such as the config
+                        // notice, to the root behind it.
+                        e.prevent_default();
                         if let Err(err) = window.drag_resize_window(direction) {
                             tracing::warn!("resizing the window failed: {err}");
                         }
