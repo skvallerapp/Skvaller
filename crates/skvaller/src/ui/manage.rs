@@ -15,7 +15,7 @@ use super::{Command, Overlay, Reading};
 use crate::dropdown::Dropdown;
 use crate::i18n::{sentence, t, t_with};
 use crate::icons::{CHECK, Icon, PLUS};
-use crate::shortcuts::app_chord;
+use crate::shortcuts::field_key;
 
 /// Heights in a menu, in CSS pixels, as app.css draws it: an item, a line between
 /// groups with its margins, the Move To heading, and the menu's padding and borders.
@@ -386,12 +386,8 @@ pub(super) fn RenameField(target: Target, title: String) -> Element {
             // Keeps the click from selecting the row.
             onclick: move |e| e.stop_propagation(),
             onkeydown: move |e: Event<KeyboardData>| {
-                if app_chord(&e.key(), e.code(), e.modifiers()).is_some() {
-                    return;
-                }
-                // Other keys typed here are the field's, not the window's.
-                e.stop_propagation();
-                match e.key() {
+                let Some(key) = field_key(&e) else { return };
+                match key {
                     Key::Named(NamedKey::Enter) => reading.finish_rename(&app, &target, Some(&draft.peek())),
                     Key::Named(NamedKey::Escape) => reading.finish_rename(&app, &target, None),
                     _ => {}
@@ -500,11 +496,8 @@ pub(super) fn AddFeed() -> Element {
     let on_key = {
         let app = Arc::clone(&app);
         move |e: Event<KeyboardData>| {
-            if app_chord(&e.key(), e.code(), e.modifiers()).is_some() {
-                return;
-            }
-            e.stop_propagation();
-            match e.key() {
+            let Some(key) = field_key(&e) else { return };
+            match key {
                 Key::Named(NamedKey::Enter) => submit(Arc::clone(&app)),
                 Key::Named(NamedKey::Escape) => reading.close_overlay(),
                 _ => {}

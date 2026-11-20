@@ -8,7 +8,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use dioxus_native::prelude::{Code, Key, Modifiers, NamedKey};
+use dioxus_native::prelude::{
+    Code, Event, Key, KeyboardData, Modifiers, ModifiersInteraction, NamedKey,
+};
 
 use crate::chrome::MAC;
 use crate::i18n::t;
@@ -377,6 +379,17 @@ fn is_modifier(key: NamedKey) -> bool {
             | NamedKey::CapsLock
             | NamedKey::Fn
     )
+}
+
+/// A key pressed in a text field: `None` for one of the app's chords, which goes on to
+/// the window; otherwise the key, kept from the window, since it is the field's.
+pub fn field_key(e: &Event<KeyboardData>) -> Option<Key> {
+    let key = e.key();
+    if app_chord(&key, e.code(), e.modifiers()).is_some() {
+        return None;
+    }
+    e.stop_propagation();
+    Some(key)
 }
 
 /// How a key name shows in Settings: `⌃⇧Space` on macOS, `Ctrl+Shift+Space` elsewhere.

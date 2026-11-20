@@ -39,7 +39,7 @@ use crate::overscroll::{Edges, HOLD, Out, Overscroll, SPRING_EASE, Shown, WHEEL_
 use crate::place::{Keeper, ListView, Place, differs, reveal, reveal_row};
 use crate::scale;
 use crate::settings::SettingsWindow;
-use crate::shortcuts::{ACCOUNT_MODIFIER, Action, COMMAND_MODIFIER, app_chord};
+use crate::shortcuts::{ACCOUNT_MODIFIER, Action, COMMAND_MODIFIER, field_key};
 use crate::spin::Spin;
 use crate::thumbs;
 
@@ -189,6 +189,19 @@ impl Search {
     fn active(&self) -> Option<(&str, bool)> {
         let query = self.query.trim();
         (self.open && !query.is_empty()).then_some((query, self.everywhere))
+    }
+}
+
+/// What a search of `selection` looks through: the view's articles in every feed when
+/// `everywhere`, else the selection.
+fn searched_within(selection: &Selection, everywhere: bool) -> Selection {
+    if everywhere {
+        Selection {
+            view: selection.view,
+            scope: Scope::All,
+        }
+    } else {
+        selection.clone()
     }
 }
 
@@ -1271,18 +1284,9 @@ pub fn Root() -> Element {
             let rows = account
                 .as_ref()
                 .and_then(|id| match &searched {
-                    Some((query, everywhere)) => {
-                        let scope = if *everywhere {
-                            Scope::All
-                        } else {
-                            selection.scope.clone()
-                        };
-                        let within = Selection {
-                            view: selection.view,
-                            scope,
-                        };
-                        app.search(id, &within, query).ok()
-                    }
+                    Some((query, everywhere)) => app
+                        .search(id, &searched_within(&selection, *everywhere), query)
+                        .ok(),
                     None => app.articles(id, &selection).ok(),
                 })
                 .unwrap_or_default();
@@ -2655,16 +2659,7 @@ fn ArticleList() -> Element {
         .read()
         .active()
         .map(|(_, everywhere)| everywhere);
-    // A search of every feed lists the view's articles from all of them.
-    let everywhere = searched == Some(true);
-    let listed = if everywhere {
-        Selection {
-            view: selection.view,
-            scope: Scope::All,
-        }
-    } else {
-        selection.clone()
-    };
+    let listed = searched_within(&selection, searched == Some(true));
     let title = list_title(&(reading.library)(), &listed);
     // The results' count, not the feed's unread one, which the title would suggest.
     let unread_label = if searched.is_some() {
@@ -2816,12 +2811,8 @@ fn SearchBar() -> Element {
                 },
                 oninput: move |e| reading.set_query(e.value()),
                 onkeydown: move |e: Event<KeyboardData>| {
-                    if app_chord(&e.key(), e.code(), e.modifiers()).is_some() {
-                        return;
-                    }
-                    // Other keys typed here are the field's, not the window's.
-                    e.stop_propagation();
-                    match e.key() {
+                    let Some(key) = field_key(&e) else { return };
+                    match key {
                         Key::Named(NamedKey::Escape) => reading.close_search(),
                         Key::Named(NamedKey::Enter | NamedKey::ArrowDown) => {
                             e.prevent_default();
