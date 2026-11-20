@@ -163,30 +163,17 @@ pub(crate) struct Out {
     pub spring: Option<(u64, Duration)>,
 }
 
-/// A list's overscroll.
-#[derive(Debug)]
+/// What one gesture has done so far, started afresh as each begins.
+#[derive(Debug, Default)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "a gesture's flags, each independent of the others"
 )]
-pub(crate) struct Overscroll {
-    /// Settings → Animations.
-    pub animate: bool,
-    /// A pull at the top can refresh the list.
-    refreshes: bool,
-    offset: f64,
-    spring: Option<Spring>,
-    springs: u64,
-    refreshing: bool,
+struct Gesture {
+    /// It began at the top, so a pull can refresh.
     from_top: bool,
-    /// The pull so far, before the rubber band.
-    pull: f64,
-    /// With animations off, this gesture already refreshed.
+    /// With animations off, it already refreshed.
     spent: bool,
-    /// When the last wheel event came.
-    wheel_at: Option<Instant>,
-    /// Counts the wheel events, so only the last one's idle timer lets go.
-    wheels: u64,
     /// The size of the last wheel event.
     wheel_size: f64,
     /// How many wheel events in a row shrank smoothly. An equal one doesn't end the run.
@@ -199,6 +186,30 @@ pub(crate) struct Overscroll {
     bounced: bool,
     /// The pull of that run: momentum, once it shows as such.
     coasted: f64,
+}
+
+/// A list's overscroll.
+#[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "settings and states, each independent of the others"
+)]
+pub(crate) struct Overscroll {
+    /// Settings → Animations.
+    pub animate: bool,
+    /// A pull at the top can refresh the list.
+    refreshes: bool,
+    offset: f64,
+    spring: Option<Spring>,
+    springs: u64,
+    refreshing: bool,
+    /// The pull so far, before the rubber band.
+    pull: f64,
+    gesture: Gesture,
+    /// When the last wheel event came.
+    wheel_at: Option<Instant>,
+    /// Counts the wheel events, so only the last one's idle timer lets go.
+    wheels: u64,
     touch_y: Option<f64>,
     /// This touch was kept from scrolling the list, so it scrolls it here instead.
     touch_owned: bool,
@@ -215,17 +226,10 @@ impl Overscroll {
             spring: None,
             springs: 0,
             refreshing: false,
-            from_top: false,
             pull: 0.0,
-            spent: false,
+            gesture: Gesture::default(),
             wheel_at: None,
             wheels: 0,
-            wheel_size: 0.0,
-            shrinking: 0,
-            growing: 0,
-            coasting: false,
-            bounced: false,
-            coasted: 0.0,
             touch_y: None,
             touch_owned: false,
             out: Out::default(),
@@ -315,34 +319,34 @@ impl Overscroll {
         }
         self.left_top(now, edges);
         let size = dy.abs();
-        let shrank = size < self.wheel_size && size >= self.wheel_size * SMOOTH;
+        let shrank = size < self.gesture.wheel_size && size >= self.gesture.wheel_size * SMOOTH;
         // Trackpads repeat a size exactly: an event of the same size goes on a run.
         #[expect(clippy::float_cmp, reason = "the sizes come as they are, not computed")]
-        let same = size == self.wheel_size;
+        let same = size == self.gesture.wheel_size;
         // This event may be momentum's: it goes on a run of smoothly shrinking ones.
-        let momentum = shrank || (same && self.shrinking > 0);
+        let momentum = shrank || (same && self.gesture.shrinking > 0);
         if shrank {
-            self.shrinking += 1;
+            self.gesture.shrinking += 1;
         } else if !same {
-            self.shrinking = 0;
-            self.coasted = 0.0;
+            self.gesture.shrinking = 0;
+            self.gesture.coasted = 0.0;
         }
-        self.growing = if size > self.wheel_size {
-            self.growing + 1
+        self.gesture.growing = if size > self.gesture.wheel_size {
+            self.gesture.growing + 1
         } else {
             0
         };
-        self.wheel_size = size;
-        if self.shrinking >= COASTING && !self.coasting {
-            self.coasting = true;
+        self.gesture.wheel_size = size;
+        if self.gesture.shrinking >= COASTING && !self.gesture.coasting {
+            self.gesture.coasting = true;
             // The momentum before it showed as such doesn't count towards a refresh.
-            self.pull -= self.coasted;
+            self.pull -= self.gesture.coasted;
         }
         // The fingers are back, as a new gesture.
-        if self.coasting && self.growing >= HAND_BACK {
+        if self.gesture.coasting && self.gesture.growing >= HAND_BACK {
             self.began(edges);
         }
-        if self.coasting {
+        if self.gesture.coasting {
             self.coast(now, dy, edges);
             return;
         }
@@ -351,7 +355,7 @@ impl Overscroll {
             return;
         }
         if momentum {
-            self.coasted += pull;
+            self.gesture.coasted += pull;
         }
         self.out.prevent = true;
         self.wheels += 1;
@@ -370,13 +374,13 @@ impl Overscroll {
             // The fingers lifted: a stretched list springs back at once, as it does
             // natively, and the momentum neither stretches it nor scrolls it.
             self.out.prevent = true;
-            self.bounced = true;
+            self.gesture.bounced = true;
             if self.spring.is_none() {
                 self.release(now, edges);
             }
-        } else if !self.bounced && edges.at(dy) && self.animate {
+        } else if !self.gesture.bounced && edges.at(dy) && self.animate {
             // Momentum reached an edge: it bounces the list off it.
-            self.bounced = true;
+            self.gesture.bounced = true;
             self.out.prevent = true;
             let out = dy.signum() * dy.abs().min(BOUNCE_MAX);
             self.settle(now, out, BOUNCE, Then::SpringBack);
@@ -430,7 +434,7 @@ impl Overscroll {
 
     /// The system took the touch over, as for a gesture of its own: no refresh.
     pub fn touch_cancel(&mut self, now: Instant, left: usize, edges: Edges) -> Out {
-        self.from_top = false;
+        self.gesture.from_top = false;
         self.touch_end(now, left, edges)
     }
 
@@ -480,12 +484,12 @@ impl Overscroll {
         };
         if self.animate {
             self.offset = stretch(self.pull, d);
-        } else if stretch(self.pull - self.coasted, d) >= TRIGGER
+        } else if stretch(self.pull - self.gesture.coasted, d) >= TRIGGER
             && self.can_refresh()
-            && !self.spent
+            && !self.gesture.spent
         {
             // Momentum before it shows as such doesn't count, as when the list stretches.
-            self.spent = true;
+            self.gesture.spent = true;
             self.start(now);
         }
         true
@@ -545,19 +549,15 @@ impl Overscroll {
 
     /// A pull far enough in this gesture runs the refresh.
     fn can_refresh(&self) -> bool {
-        self.refreshes && self.from_top
+        self.refreshes && self.gesture.from_top
     }
 
     /// A gesture begins: a touch, or the wheel after a pause or with the fingers back.
     fn began(&mut self, edges: Edges) {
-        self.from_top = edges.top;
-        self.spent = false;
-        self.wheel_size = 0.0;
-        self.shrinking = 0;
-        self.growing = 0;
-        self.coasting = false;
-        self.bounced = false;
-        self.coasted = 0.0;
+        self.gesture = Gesture {
+            from_top: edges.top,
+            ..Gesture::default()
+        };
     }
 
     /// A gesture that scrolled the list away from the top can't refresh. Scrolled away
@@ -567,7 +567,7 @@ impl Overscroll {
         if edges.top {
             return;
         }
-        self.from_top = false;
+        self.gesture.from_top = false;
         if self.refreshing && self.offset != 0.0 {
             self.settle(now, 0.0, SETTLE, Then::Rest);
         }
