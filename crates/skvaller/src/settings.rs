@@ -155,19 +155,6 @@ fn SettingsRoot() -> Element {
             }
         }
     });
-    // The shown Reader View page's feeds changed, here, in the main window or by a sync.
-    let mut feeds_changed = use_signal(|| 0_u64);
-    crate::live::use_cache_changes(&app, move |change| {
-        let shown = match &*pane.peek() {
-            Pane::ReaderView(id) => change.is_none_or(|c| {
-                &c.account_id == id && matches!(c.what, Changed::Feeds | Changed::Articles)
-            }),
-            _ => false,
-        };
-        if shown {
-            feeds_changed += 1;
-        }
-    });
     // Back from an account's Reader View page: its row takes the focus again.
     let returned = use_signal(|| false);
     let feedback = Feedback {
@@ -196,20 +183,6 @@ fn SettingsRoot() -> Element {
     let username = match (&current, account.as_ref().map(|a| &a.kind)) {
         (Pane::Account(_), Some(AccountKind::Greader { username, .. })) => Some(username.clone()),
         _ => None,
-    };
-    // The account's subscribed feeds, for its Reader View page, read again as they change.
-    feeds_changed();
-    let feeds = match &current {
-        Pane::ReaderView(id) => app
-            .library(id)
-            .map(|lib| {
-                lib.feeds
-                    .into_iter()
-                    .filter(|f| f.subscribed)
-                    .collect::<Vec<_>>()
-            })
-            .map_err(|e| sentence(&e.to_string())),
-        _ => Ok(Vec::new()),
     };
     let root_style = chrome::root_style(&fonts::stack(settings.ui_font), (live.frame)());
     let framed = (window_state.framed)();
@@ -312,7 +285,7 @@ fn SettingsRoot() -> Element {
                                 }
                             }
                             (Pane::ReaderView(_), Some(account)) => rsx! {
-                                ReaderViewPane { account_id: account.id, feeds: feeds.clone(), feedback }
+                                ReaderViewPane { key: "{account.id}", account_id: account.id, feedback }
                             },
                             (Pane::Account(_) | Pane::ReaderView(_), None) => rsx! {},
                             (Pane::AddAccount, _) => rsx! {
@@ -788,12 +761,31 @@ fn ShortcutsPane(overrides: shortcuts::Overrides, feedback: Feedback) -> Element
 
 /// The account's feeds, each with a switch to open its articles in Reader View.
 #[component]
-fn ReaderViewPane(
-    account_id: String,
-    feeds: Result<Vec<skvaller_core::Feed>, String>,
-    feedback: Feedback,
-) -> Element {
+fn ReaderViewPane(account_id: String, feedback: Feedback) -> Element {
     let app = use_context::<Arc<App>>();
+    // Its feeds changed, here, in the main window or by a sync.
+    let mut changed = use_signal(|| 0_u64);
+    crate::live::use_cache_changes(&app, {
+        let account_id = account_id.clone();
+        move |change| {
+            if change.is_none_or(|c| {
+                c.account_id == account_id && matches!(c.what, Changed::Feeds | Changed::Articles)
+            }) {
+                changed += 1;
+            }
+        }
+    });
+    // The account's subscribed feeds, read again as they change.
+    changed();
+    let feeds = app
+        .library(&account_id)
+        .map(|lib| {
+            lib.feeds
+                .into_iter()
+                .filter(|f| f.subscribed)
+                .collect::<Vec<_>>()
+        })
+        .map_err(|e| sentence(&e.to_string()));
     rsx! {
         section {
             match feeds {
