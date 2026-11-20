@@ -9,6 +9,7 @@ use reqwest::{RequestBuilder, StatusCode, Url};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
+use crate::net::web_url;
 use crate::{Error, Result};
 
 pub const READING_LIST: &str = "user/-/state/com.google/reading-list";
@@ -63,12 +64,13 @@ impl Client {
     pub async fn login(base: &str, username: &str, password: &str) -> Result<Self> {
         let base = base.trim_end_matches('/');
         let redirect = match Self::login_at(base, username, password).await? {
-            Ok(client) => return Ok(client),
-            Err(redirect) => redirect,
+            Attempt::SignedIn(client) => return Ok(client),
+            Attempt::NoApi { redirect } => redirect,
         };
         if !base.ends_with(FRESHRSS_PATH) {
             let freshrss = format!("{base}{FRESHRSS_PATH}");
-            if let Ok(client) = Self::login_at(&freshrss, username, password).await? {
+            if let Attempt::SignedIn(client) = Self::login_at(&freshrss, username, password).await?
+            {
                 return Ok(client);
             }
         }
@@ -79,14 +81,10 @@ impl Client {
         }))
     }
 
-    /// `Err` if there is no API at `base`: a redirect (with where to, if given), Not
-    /// Found, or a page without a token, such as a web site's own. Other errors are the
+    /// Signs in at `base`. `Attempt::NoApi` if there is no API there: a redirect, Not
+    /// Found, or a page without a token, such as a web site's own. Errors are the
     /// server's answer.
-    async fn login_at(
-        base: &str,
-        username: &str,
-        password: &str,
-    ) -> Result<Result<Self, Option<String>>> {
+    async fn login_at(base: &str, username: &str, password: &str) -> Result<Attempt> {
         let mut client = Self::new(base, "")?;
         let res = client
             .http
@@ -104,13 +102,15 @@ impl Client {
         let status = res.status();
         if status.is_redirection() {
             let to = res.headers().get(LOCATION).and_then(|v| v.to_str().ok());
-            return Ok(Err(to.map(|to| to.chars().take(200).collect())));
+            return Ok(Attempt::NoApi {
+                redirect: to.map(|to| to.chars().take(200).collect()),
+            });
         }
         if matches!(
             status,
             StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
         ) {
-            return Ok(Err(None));
+            return Ok(Attempt::NoApi { redirect: None });
         }
         // ClientLogin answers wrong credentials with 403. Elsewhere a 403 more likely
         // comes from a proxy or rate limit, so `check` doesn't treat it as signed out.
@@ -124,10 +124,10 @@ impl Client {
             .find_map(|line| line.strip_prefix("Auth="))
             .filter(|token| !token.is_empty())
         else {
-            return Ok(Err(None));
+            return Ok(Attempt::NoApi { redirect: None });
         };
         token.clone_into(&mut client.token);
-        Ok(Ok(client))
+        Ok(Attempt::SignedIn(client))
     }
 
     /// Builds a client from a token saved by an earlier [`Client::login`].
@@ -240,10 +240,7 @@ impl Client {
             #[serde(default)]
             items: Vec<serde_json::Value>,
         }
-        let form: Vec<_> = ids
-            .iter()
-            .filter_map(|id| Some(("i", long_item_id(id)?)))
-            .collect();
+        let form = id_form(ids);
         if form.is_empty() {
             return Ok(Vec::new());
         }
@@ -271,10 +268,7 @@ impl Client {
         tag: &str,
         add: bool,
     ) -> Result<()> {
-        let mut form: Vec<_> = ids
-            .iter()
-            .filter_map(|id| Some(("i", long_item_id(id)?)))
-            .collect();
+        let mut form = id_form(ids);
         if form.is_empty() {
             return Ok(());
         }
@@ -290,8 +284,9 @@ impl Client {
         Ok(())
     }
 
-    /// The server's address, which the user chose.
-    pub(crate) fn base_url(&self) -> Option<Url> {
+    /// The API's URL: the address the user chose, maybe with FreshRSS's API path that
+    /// [`Client::login`] found. Its host is the server's.
+    pub(crate) fn api_url(&self) -> Option<Url> {
         Url::parse(&self.base).ok()
     }
 
@@ -301,7 +296,7 @@ impl Client {
             .ok()?
             .join(url)
             .ok()
-            .filter(|u| matches!(u.scheme(), "http" | "https"))
+            .and_then(web_url)
     }
 
     fn get(&self, path: &str) -> RequestBuilder {
@@ -331,6 +326,22 @@ impl Client {
     }
 }
 
+/// How signing in at one address went, short of an error.
+enum Attempt {
+    SignedIn(Client),
+    /// No Google Reader API there; `redirect` is where the server pointed, if it did.
+    NoApi {
+        redirect: Option<String>,
+    },
+}
+
+/// The `i` form fields naming `ids`, in the long form. IDs that have none are left out.
+fn id_form(ids: &[String]) -> Vec<(&'static str, String)> {
+    ids.iter()
+        .filter_map(|id| Some(("i", long_item_id(id)?)))
+        .collect()
+}
+
 fn check(status: StatusCode) -> Result<()> {
     match status {
         StatusCode::UNAUTHORIZED => Err(Error::Unauthorized),
@@ -341,7 +352,7 @@ fn check(status: StatusCode) -> Result<()> {
 
 /// The continuation for the next page, or `None` at the end. A server that repeats the
 /// same continuation would otherwise loop forever.
-pub(crate) fn next_page(next: Option<String>, current: Option<&String>) -> Option<String> {
+fn next_page(next: Option<String>, current: Option<&String>) -> Option<String> {
     next.filter(|c| !c.is_empty() && Some(c) != current)
 }
 
@@ -503,6 +514,142 @@ impl Item {
 
 #[cfg(test)]
 mod tests {
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use super::*;
+
+    const API: &str = "/api/greader.php";
+
+    #[tokio::test]
+    async fn login_reads_the_auth_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!("{API}/accounts/ClientLogin")))
+            .and(body_string_contains("Email=carl"))
+            .and(body_string_contains("Passwd=s3cret"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("SID=carl/abc\nLSID=null\nAuth=carl/abc\n"),
+            )
+            .mount(&server)
+            .await;
+        let client = Client::login(&format!("{}{API}/", server.uri()), "carl", "s3cret")
+            .await
+            .unwrap();
+        assert_eq!(client.token(), "carl/abc");
+    }
+
+    #[tokio::test]
+    async fn login_with_a_wrong_password_is_unauthorized() {
+        for status in [401, 403] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status).set_body_string("Unauthorized!"))
+                .mount(&server)
+                .await;
+            let err = Client::login(&format!("{}{API}", server.uri()), "carl", "nope").await;
+            assert!(matches!(err, Err(Error::Unauthorized)), "HTTP {status}");
+        }
+    }
+
+    #[tokio::test]
+    async fn login_tries_the_address_as_typed_first() {
+        // Miniflux and The Old Reader: the API is at the server's root.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/accounts/ClientLogin"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("Auth=root\n"))
+            .mount(&server)
+            .await;
+        let client = Client::login(&format!("{}/", server.uri()), "carl", "pw")
+            .await
+            .unwrap();
+        assert_eq!(
+            (client.base(), client.token()),
+            (server.uri().as_str(), "root")
+        );
+    }
+
+    #[tokio::test]
+    async fn login_falls_back_to_the_freshrss_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!("{API}/accounts/ClientLogin")))
+            .respond_with(ResponseTemplate::new(200).set_body_string("Auth=frss\n"))
+            .mount(&server)
+            .await;
+        // FreshRSS's own page, not the API.
+        Mock::given(method("POST"))
+            .and(path("/accounts/ClientLogin"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html>"))
+            .mount(&server)
+            .await;
+        let client = Client::login(&server.uri(), "carl", "pw").await.unwrap();
+        assert_eq!(client.base(), format!("{}{API}", server.uri()));
+        assert_eq!(client.token(), "frss");
+    }
+
+    #[tokio::test]
+    async fn login_rejected_at_the_address_as_typed_tries_nothing_else() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/accounts/ClientLogin"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("{API}/accounts/ClientLogin")))
+            .respond_with(ResponseTemplate::new(200).set_body_string("Auth=x\n"))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let err = Client::login(&server.uri(), "carl", "nope").await;
+        assert!(matches!(err, Err(Error::Unauthorized)));
+    }
+
+    #[tokio::test]
+    async fn login_failing_at_the_address_as_typed_says_why() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/accounts/ClientLogin"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("{API}/accounts/ClientLogin")))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let err = Client::login(&server.uri(), "carl", "pw").await;
+        assert!(matches!(err, Err(Error::Protocol(m)) if m.contains("503")));
+    }
+
+    #[tokio::test]
+    async fn login_without_an_api_at_either_address_says_so() {
+        let server = MockServer::start().await;
+        let err = Client::login(&server.uri(), "carl", "pw").await;
+        assert!(
+            matches!(err, Err(Error::Protocol(m)) if m == "no Google Reader API at this address")
+        );
+    }
+
+    #[tokio::test]
+    async fn login_names_where_the_server_redirects() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(301).insert_header("location", "https://rss.example.com/"),
+            )
+            .mount(&server)
+            .await;
+        let err = Client::login(&server.uri(), "carl", "pw").await;
+        assert!(
+            matches!(err, Err(Error::Protocol(m)) if m.ends_with("it redirects to https://rss.example.com/"))
+        );
+    }
+
     #[test]
     fn debug_output_leaves_out_the_token() {
         let client = super::Client {
@@ -514,8 +661,6 @@ mod tests {
         assert!(shown.contains("rss.example.com"));
         assert!(!shown.contains("secret-token-123"));
     }
-
-    use super::*;
 
     fn parsed(id: &str) -> Option<String> {
         parse_item_id(id)

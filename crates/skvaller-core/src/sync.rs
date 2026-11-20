@@ -102,7 +102,7 @@ pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Re
     // again. The server's own retention limits them.
     let pruned = db.prune(prune_before, i64::MIN)?;
     db.optimize()?;
-    let server: Vec<_> = client.base_url().into_iter().collect();
+    let server: Vec<_> = client.api_url().into_iter().collect();
     icons::fetch(db, |url| client.resolve(url), &server, None).await?;
     let pushed = pushed?;
     db.set_last_sync(now * 1000)?;
