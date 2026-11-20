@@ -2,6 +2,12 @@
   "common.cancel": "Cancel",
   "common.adding": "Adding…",
   "common.twoSentences": "{first} {second}",
+  "common.ok": "OK",
+
+  "configNotice.resetTitle": "Settings Reset",
+  "configNotice.reset": "Skvaller couldn’t read its settings file, so your accounts and settings were reset, and you’ll need to add your accounts again. The old file was kept as {path}.",
+  "configNotice.leftOutTitle": "Accounts Left Out",
+  "configNotice.leftOut": "Skvaller couldn’t read some accounts in its settings file, perhaps because a newer version saved them, so it left them out. The old file was kept as {path}.",
 
   "format.today": "Today at {time}",
   "format.yesterday": "Yesterday at {time}",

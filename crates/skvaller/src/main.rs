@@ -81,10 +81,8 @@ fn run() -> Result<(), String> {
         }
     }
 
+    // A notice about config.json, logged already, shows in the main window.
     let app = Arc::new(App::load(&dirs).map_err(|e| e.to_string())?);
-    if let Some(notice) = app.notice() {
-        eprintln!("{}: {}", notice.title, notice.message);
-    }
 
     // The syncs' own runtime, apart from the one Dioxus Native runs for loading images.
     let runtime = tokio::runtime::Runtime::new()

@@ -63,13 +63,15 @@ impl Dirs {
     }
 }
 
-/// What the user is told about a `config.json` that couldn't be fully read.
+/// What the user is told about a `config.json` that couldn't be fully read. The window
+/// words it; `backup` is where the old file is kept.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Notice {
-    /// The dialog's title.
-    pub title: &'static str,
-    /// The dialog's text.
-    pub message: String,
+pub enum Notice {
+    /// The file couldn't be read: the accounts and settings were reset.
+    SettingsReset { backup: PathBuf },
+    /// Some accounts in it couldn't be read, perhaps saved by a newer version, and were
+    /// left out.
+    AccountsLeftOut { backup: PathBuf },
 }
 
 /// Folders, feeds and unread and starred counts, for the sidebar.
@@ -259,15 +261,7 @@ impl App {
                     "reading {{file.path}} failed, so it was kept as {{backup.path}} and \
                      the settings reset: {{error.message}}",
                 );
-                notice = Some(Notice {
-                    title: "Settings Reset",
-                    message: format!(
-                        "Skvaller couldn't read its settings file, so your accounts and \
-                         settings were reset, and you'll need to add your accounts again. \
-                         The old file is kept at {}.",
-                        backup.display()
-                    ),
-                });
+                notice = Some(Notice::SettingsReset { backup });
                 (Config::default(), None)
             }
         };
@@ -299,15 +293,7 @@ impl App {
                 "some accounts in {{file.path}} can't be read, so they were left out and \
                  the file kept as {{backup.path}}",
             );
-            notice = Some(Notice {
-                title: "Accounts Left Out",
-                message: format!(
-                    "Skvaller couldn't read some accounts in its settings file, perhaps \
-                     because a newer version saved them, so it left them out. The old file \
-                     is kept at {}.",
-                    backup.display()
-                ),
-            });
+            notice = Some(Notice::AccountsLeftOut { backup });
         }
         // Saved only when something changed, so a file that reads back the same stays.
         if serde_json::to_value(&config).ok() != raw {
@@ -1019,8 +1005,13 @@ pub(crate) mod tests {
 
         let app = App::load(&dirs).unwrap();
 
-        assert_eq!(app.notice().unwrap().title, "Settings Reset");
         let backup = dirs.config_file().with_extension("json.bak");
+        assert_eq!(
+            app.notice(),
+            Some(&Notice::SettingsReset {
+                backup: backup.clone()
+            })
+        );
         assert_eq!(std::fs::read(backup).unwrap(), b"{ not json");
     }
 
@@ -1046,7 +1037,12 @@ pub(crate) mod tests {
 
         let app = App::load(&dirs).unwrap();
 
-        assert_eq!(app.notice().unwrap().title, "Accounts Left Out");
+        assert_eq!(
+            app.notice(),
+            Some(&Notice::AccountsLeftOut {
+                backup: dirs.config_file().with_extension("json.bak")
+            })
+        );
         assert_eq!(app.accounts().len(), 1);
         assert_eq!(app.accounts()[0].description, "Local");
         assert_eq!(

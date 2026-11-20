@@ -19,8 +19,8 @@ use dioxus_native::{
     BlitzScrollSource, BlitzWheelPhase, NativeWheelData, use_window, use_window_event, use_windows,
 };
 use skvaller_app::{
-    App, Changed, Error as AppError, FontSize, LIST_WIDTH, Layout, Library, MarkReadOn, PaneWidth,
-    SIDEBAR_WIDTH, SortSubscriptions, SyncStatus, ThumbnailSize,
+    App, Changed, Error as AppError, FontSize, LIST_WIDTH, Layout, Library, MarkReadOn, Notice,
+    PaneWidth, SIDEBAR_WIDTH, SortSubscriptions, SyncStatus, ThumbnailSize,
 };
 use skvaller_core::{ArticleSummary, Counts, Scope, Selection, View};
 use tokio::sync::broadcast::error::RecvError;
@@ -1433,6 +1433,9 @@ pub fn Root() -> Element {
             }
         }
     });
+    // Shown over whatever the window shows until dismissed: after a reset, the
+    // add-account screen.
+    let mut notice = use_signal(|| app.notice().cloned());
     let signed_out = (reading.status)().is_some_and(|s| s.unauthorized);
     let adding = !reading.panes_shown();
     // Each part reads only what it shows, so a drag re-renders only what it resizes.
@@ -1465,8 +1468,9 @@ pub fn Root() -> Element {
             onmounted: move |e: MountedEvent| {
                 // Without focus the app hears no keys, but works otherwise.
                 reading.root.set(Some(e.data()));
-                // The add-account screen focuses its first field instead.
-                if !adding {
+                // The add-account screen focuses its first field instead, and the
+                // config notice its button.
+                if !adding && notice.peek().is_none() {
                     reading.refocus();
                 }
             },
@@ -1506,7 +1510,75 @@ pub fn Root() -> Element {
                 Resizer { edge: Edge::List }
                 Reader {}
             }
+            if let Some(shown) = notice() {
+                ConfigNotice {
+                    notice: shown,
+                    ondismiss: move |()| {
+                        notice.set(None);
+                        // The focused button goes with it. The add-account screen
+                        // is left as a start without the notice leaves it.
+                        if reading.panes_shown() {
+                            reading.refocus();
+                        }
+                    },
+                }
+            }
             Frame {}
+        }
+    }
+}
+
+/// Tells the user that `config.json` couldn't be fully read, and where the old file is
+/// kept, until they dismiss it. It takes the window's keys and clicks meanwhile: a click
+/// in it focuses its backdrop, so keys still come here.
+#[component]
+fn ConfigNotice(notice: Notice, ondismiss: EventHandler<()>) -> Element {
+    let (title, message, backup) = match &notice {
+        Notice::SettingsReset { backup } => {
+            ("configNotice.resetTitle", "configNotice.reset", backup)
+        }
+        Notice::AccountsLeftOut { backup } => {
+            ("configNotice.leftOutTitle", "configNotice.leftOut", backup)
+        }
+    };
+    let path = backup.display().to_string();
+    rsx! {
+        div {
+            class: "notice-backdrop",
+            tabindex: "-1",
+            // Clicks behind it reach nothing, and close no overlay.
+            onclick: move |e| e.stop_propagation(),
+            // No key reaches the window behind it. Tab stays on its one button.
+            onkeydown: move |e: Event<KeyboardData>| {
+                e.stop_propagation();
+                match e.key() {
+                    Key::Named(NamedKey::Enter | NamedKey::Escape) => {
+                        e.prevent_default();
+                        ondismiss.call(());
+                    }
+                    Key::Named(NamedKey::Tab) => e.prevent_default(),
+                    _ => {}
+                }
+            },
+            div {
+                class: "popover config-notice",
+                role: "alertdialog",
+                "aria-modal": "true",
+                "aria-labelledby": "config-notice-title",
+                "aria-describedby": "config-notice-message",
+                p { id: "config-notice-title", class: "title", {t(title)} }
+                p { id: "config-notice-message", class: "message", {t_with(message, &[("path", &path)])} }
+                div { class: "actions",
+                    button {
+                        class: "button primary",
+                        onmounted: move |e: MountedEvent| async move {
+                            focus(&e.data(), "the notice's OK button").await;
+                        },
+                        onclick: move |_| ondismiss.call(()),
+                        {t("common.ok")}
+                    }
+                }
+            }
         }
     }
 }

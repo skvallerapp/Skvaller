@@ -2,6 +2,12 @@
   "common.cancel": "Cancelar",
   "common.adding": "Añadiendo…",
   "common.twoSentences": "{first} {second}",
+  "common.ok": "Aceptar",
+
+  "configNotice.resetTitle": "Ajustes restablecidos",
+  "configNotice.reset": "No se pudo leer el archivo de ajustes de Skvaller, así que tus cuentas y ajustes se restablecieron y tendrás que añadir tus cuentas de nuevo. El archivo anterior se conservó como {path}.",
+  "configNotice.leftOutTitle": "Cuentas omitidas",
+  "configNotice.leftOut": "No se pudieron leer algunas cuentas del archivo de ajustes de Skvaller, quizá porque las guardó una versión más reciente, así que se omitieron. El archivo anterior se conservó como {path}.",
 
   "format.today": "Hoy, {time}",
   "format.yesterday": "Ayer, {time}",

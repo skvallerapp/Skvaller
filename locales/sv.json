@@ -2,6 +2,12 @@
   "common.cancel": "Avbryt",
   "common.adding": "Lägger till…",
   "common.twoSentences": "{first} {second}",
+  "common.ok": "OK",
+
+  "configNotice.resetTitle": "Inställningarna återställdes",
+  "configNotice.reset": "Skvaller kunde inte läsa sin inställningsfil, så dina konton och inställningar återställdes och du behöver lägga till dina konton igen. Den gamla filen finns kvar som {path}.",
+  "configNotice.leftOutTitle": "Vissa konton utelämnades",
+  "configNotice.leftOut": "Skvaller kunde inte läsa vissa konton i sin inställningsfil, kanske för att en nyare version sparade dem, så de utelämnades. Den gamla filen finns kvar som {path}.",
 
   "format.today": "Idag kl. {time}",
   "format.yesterday": "Igår kl. {time}",
