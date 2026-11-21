@@ -301,11 +301,13 @@ button {
    corner, and the edges. */
 
 /* Presses between and around the buttons go through to the drag area under them. Over
-   the config notice's scrim (24), as the resize edges are, so the window can still be
-   minimized or closed while it shows. */
+   the config notice's scrim (24), so the window can still be minimized or closed while
+   it shows, and over the resize edges (25), which Windows' buttons reach, flush with
+   the corner: a press on a button is the button's in every window, but in the top
+   band and corner Windows resizes by (27, below). */
 .window-buttons {
   position: relative;
-  z-index: 25;
+  z-index: 26;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -471,6 +473,13 @@ button {
 .resize-edge.sw { bottom: 0; left: 0; cursor: nesw-resize; }
 .resize-edge.nw { top: 0; left: 0; cursor: nwse-resize; }
 .resize-edge.se { bottom: 0; right: 0; cursor: nwse-resize; }
+
+/* Windows: over the caption buttons flush with the corner, as the system resizes a
+   window from the top band and corner above its own. */
+.windows .resize-edge.n,
+.windows .resize-edge.ne {
+  z-index: 27;
+}
 
 /* Where there is no toolbar: a strip where the title bar was, to drag by. */
 .drag-strip {
@@ -1342,8 +1351,8 @@ input.search-field {
 }
 
 /* Over the whole window, dimming it: nothing behind the config notice takes a click
-   until it is dismissed. Under the resize edges and window buttons (25), which stay
-   usable. */
+   until it is dismissed. Under the resize edges (25) and window buttons (26), which
+   stay usable. */
 .notice-backdrop {
   position: fixed;
   inset: 0;

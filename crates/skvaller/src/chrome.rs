@@ -8,8 +8,9 @@
 //! and rounded corners, read through the portal (`appearance::SystemFrame`), on a
 //! transparent window, so the corners show what's behind it. On Windows the system
 //! still draws the window's shadow, border and rounded corners (Windows 11), and snaps
-//! it. Everywhere the window drags from the toolbars' empty space (app.css, under
-//! `.frameless`).
+//! it by drag and keyboard, though without Snap Layouts on the maximize button, which
+//! take a hit test winit doesn't give. Everywhere the window drags from the toolbars'
+//! empty space (app.css, under `.frameless`).
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -77,7 +78,7 @@ fn frame(attributes: WindowAttributes) -> WindowAttributes {
 
 /// Leaves out the title bar, keeping the system's drop shadow. The window keeps its
 /// caption styles underneath, so Windows 11 still rounds and outlines its corners,
-/// and snapping and the taskbar's minimize still work.
+/// and snapping by drag and keyboard and the taskbar's minimize still work.
 #[cfg(target_os = "windows")]
 fn frame(attributes: WindowAttributes) -> WindowAttributes {
     use dioxus_native::winit::platform::windows::WindowAttributesWindows;
@@ -205,7 +206,10 @@ pub fn WindowButtons(on_close: Option<EventHandler<()>>) -> Element {
                 label: t(zoom_label),
                 glyph: zoom_glyph,
                 style,
-                onclick: move |_| zoom.set_maximized(!maximized),
+                // Asked now, not taken from the render: Windows sends no resize when
+                // a window already the work area's size is maximized or restored, so
+                // `maximized` can be stale, and the press would do nothing.
+                onclick: move |_| zoom.set_maximized(!zoom.is_maximized()),
             }
             WindowButton {
                 label: t("window.close"),

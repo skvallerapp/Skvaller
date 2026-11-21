@@ -133,18 +133,20 @@ The windows, in Dioxus Native (Blitz).
 - `appearance`: the system's dark mode on Linux, which winit doesn't report, read from
   the XDG desktop portal over D-Bus. It makes the System theme Light or Dark. It also
   reads how the system draws a window's frame: on KDE, the outline's color made from
-  `kdeglobals` as Breeze makes it, and Breeze's corner radius.
+  `kdeglobals` as Breeze makes it, and Breeze's corner radius. On Windows the frame is
+  fixed, Windows 11's (`SystemFrame::WINDOWS`), for the window buttons the app draws.
 - `chrome`: the windows' frame. On macOS the title bar is hidden: the window buttons
   sit over the toolbars, which grow to the title bar's 52px. On Linux the window has
   no decorations and a transparent surface: the app draws minimize, maximize and
   close at the window's top right, as the system's frames draw them (Breeze's on KDE,
   GNOME's elsewhere), and a frame with the system's outline and rounded corners, and
   edges to resize by, while not maximized or full screen. On Windows the window has no
-  title bar but keeps the system's shadow, border, rounded corners and snapping: the
-  app draws Windows 11's caption buttons flush with the top right corner, and the edges
-  to resize by. The reader keeps a least width for the buttons (`ui::READER_LEAST`),
-  which the list gives up width to, and the main window's least width follows from it.
-  Everywhere the window drags from the toolbars' empty space.
+  title bar but keeps the system's shadow, border and rounded corners, and snapping by
+  drag and keyboard: the app draws Windows 11's caption buttons flush with the top
+  right corner, and the edges to resize by. Hovering its maximize button shows no Snap
+  Layouts, which take the system's hit test for it, and winit doesn't give one. The
+  reader keeps a least width for the buttons (`ui::READER_LEAST`), which the list
+  gives up width to, and the main window's least width follows from it. Everywhere the window drags from the toolbars' empty space.
 - `shadow`: the window's drop shadow on KDE Plasma, which KWin draws only for windows
   with a decoration. It renders Breeze's shadow as Breeze does and hands it to KWin
   through `org_kde_kwin_shadow` on winit's own Wayland connection, or on X11 through
