@@ -100,7 +100,8 @@ pub const GLOBE: &[&str] = &[
     "M2 12h20",
 ];
 /// The window buttons Skvaller draws on Linux, as GNOME's: Lucide's minus, a smaller
-/// square, and copy. KDE's are in `chrome`, drawn as Breeze draws them.
+/// square, and copy. KDE's and Windows' are in `chrome`, drawn as Breeze and
+/// Windows 11 draw them.
 pub const WINDOW_MINIMIZE: &[&str] = &["M5 12h14"];
 pub const WINDOW_MAXIMIZE: &[&str] =
     &["M7 5h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"];

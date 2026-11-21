@@ -13,10 +13,12 @@
 //! article's document, which loads again at the top. Telling Blitz the scheme would
 //! take a change to the Blitz fork.
 //!
-//! On Linux the app also draws the window's frame itself (`chrome`), and the portal
-//! says how the system draws its own: [`SystemFrame`]. KDE Plasma passes its
-//! `kdeglobals` through the portal, and the outline is made from those colors as
-//! Breeze, Plasma's window decoration, makes its own.
+//! On Linux and Windows the app draws the window buttons itself (`chrome`); on
+//! Windows they always look like Windows 11's (`SystemFrame::WINDOWS`). On Linux the
+//! app also draws the rest of the window's frame, and the portal says how the system
+//! draws its own: [`SystemFrame`]. KDE Plasma passes its `kdeglobals` through the
+//! portal, and the outline is made from those colors as Breeze, Plasma's window
+//! decoration, makes its own.
 
 use skvaller_app::Theme;
 use tokio::sync::watch;
@@ -25,7 +27,8 @@ use tokio::sync::watch;
 /// `prefers-color-scheme` knows (or nothing does).
 pub type SystemDark = Option<bool>;
 
-/// How the system draws a window's frame, on Linux, for the frame the app draws.
+/// How the system draws a window's frame, for the frame the app draws: read on Linux,
+/// fixed on Windows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SystemFrame {
     /// The outline's color, `None` where the system's isn't known: the theme's then.
@@ -38,19 +41,40 @@ pub struct SystemFrame {
 
 /// The window buttons' look, as the system's window frames draw them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only Linux reads Breeze from the system, and Windows shows only its own"
+    )
+)]
 pub enum Buttons {
     /// GNOME's (libadwaita's): a line, a square, two squares for restore.
     Adwaita,
     /// KDE's Breeze: chevrons down and up, a diamond for restore, in a circle on hover.
     Breeze,
+    /// Windows 11's: thin glyphs on wide, square-cornered buttons flush with the
+    /// window's corner, red for close.
+    #[cfg(target_os = "windows")]
+    Windows,
 }
 
 impl SystemFrame {
     /// Where the system isn't known: GNOME's (libadwaita's) corners.
+    #[cfg(not(target_os = "windows"))]
     pub const UNKNOWN: Self = Self {
         outline: None,
         radius: 12.0,
         buttons: Buttons::Adwaita,
+    };
+
+    /// Windows 11's frame. The system draws its outline and corners, so only the
+    /// buttons are used: the radius, Windows 11's, isn't read.
+    #[cfg(target_os = "windows")]
+    pub const WINDOWS: Self = Self {
+        outline: None,
+        radius: 8.0,
+        buttons: Buttons::Windows,
     };
 }
 
@@ -108,10 +132,16 @@ mod imp {
         SENDER.get_or_init(|| watch::channel(None).0)
     }
 
-    /// Always [`SystemFrame::UNKNOWN`]: the system draws the frame here.
+    /// Always the same: `SystemFrame::WINDOWS` on Windows, where the app draws the
+    /// window buttons, and `SystemFrame::UNKNOWN` elsewhere, where the system draws
+    /// them.
     pub fn frame_sender() -> &'static watch::Sender<SystemFrame> {
         static SENDER: OnceLock<watch::Sender<SystemFrame>> = OnceLock::new();
-        SENDER.get_or_init(|| watch::channel(SystemFrame::UNKNOWN).0)
+        #[cfg(target_os = "windows")]
+        let frame = SystemFrame::WINDOWS;
+        #[cfg(not(target_os = "windows"))]
+        let frame = SystemFrame::UNKNOWN;
+        SENDER.get_or_init(|| watch::channel(frame).0)
     }
 }
 

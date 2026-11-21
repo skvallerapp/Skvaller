@@ -27,7 +27,9 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::add_account::AddAccount;
 use crate::article;
-use crate::chrome::{self, DragArea, FRAMELESS, Frame, LINUX, MAC, WindowButtons};
+use crate::chrome::{
+    self, DRAWS_FRAME, DragArea, FRAMELESS, Frame, LINUX, MAC, WINDOWS, WindowButtons,
+};
 use crate::fonts;
 use crate::i18n::{t, t_count, t_with};
 use crate::icons::{
@@ -94,17 +96,26 @@ const THUMB_MARGIN: f64 = 2.0;
 /// What a pane's border takes of the window: 9 px, less 4 px of margin a side
 /// (`.resizer`).
 const RESIZER: f64 = 1.0;
-/// The reader's least width (`.linux .reader`'s `min-width`): on Linux, room for the
-/// window buttons at the end of its toolbar, the wider GNOME ones, with its padding.
-/// The list gives up width before the reader does.
-const READER_LEAST: f64 = if LINUX { 116.0 } else { 0.0 };
-/// The reader's width that holds an open article's buttons too, on Linux: their four
-/// and the window buttons, with the toolbar's gaps. A narrower reader leaves them
-/// out, as they would run under the window buttons: Blitz clips what overflows but
-/// still lets it take presses.
-const READER_WITH_BUTTONS: f64 = 248.0;
-/// The main window's least width: on Linux the widest sidebar, the narrowest list and
-/// the reader's least, so the window buttons always show; never under 640 px.
+/// The reader's least width (`.linux .reader`'s and `.windows .reader`'s `min-width`):
+/// where the app draws the window buttons, room for them at the end of its toolbar,
+/// after its padding: on Linux the wider GNOME ones; on Windows three 46px buttons
+/// flush with the window's edge. The list gives up width before the reader does.
+const READER_LEAST: f64 = if LINUX {
+    116.0
+} else if WINDOWS {
+    156.0
+} else {
+    0.0
+};
+/// The reader's width that holds an open article's buttons too, where the app draws
+/// the window buttons: [`READER_LEAST`] and 132 px more, for their four, 28 px each,
+/// and the toolbar's five 4 px gaps. A narrower reader leaves them out, as they would
+/// run under the window buttons: Blitz clips what overflows but still lets it take
+/// presses.
+const READER_WITH_BUTTONS: f64 = READER_LEAST + 132.0;
+/// The main window's least width: where the app draws the window buttons, the widest
+/// sidebar, the narrowest list and the reader's least, so they always show; never
+/// under 640 px.
 pub const MIN_WINDOW_WIDTH: f64 =
     (SIDEBAR_WIDTH.max + RESIZER + LIST_WIDTH.min + RESIZER + READER_LEAST).max(640.0);
 /// The space above a Large thumbnail (`.text.below .title`).
@@ -1460,6 +1471,7 @@ pub fn Root() -> Element {
             class: if FRAMELESS { "frameless" },
             class: if MAC { "mac" },
             class: if LINUX { "linux" },
+            class: if WINDOWS { "windows" },
             class: if framed { "framed" },
             "data-theme": theme,
             "data-motion": motion,

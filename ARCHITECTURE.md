@@ -139,10 +139,12 @@ The windows, in Dioxus Native (Blitz).
   no decorations and a transparent surface: the app draws minimize, maximize and
   close at the window's top right, as the system's frames draw them (Breeze's on KDE,
   GNOME's elsewhere), and a frame with the system's outline and rounded corners, and
-  edges to resize by, while not maximized or full screen. The reader keeps a least
-  width for the buttons (`ui::READER_LEAST`), which the list gives up width to, and
-  the main window's least width follows from it. On macOS and Linux the window drags
-  from the toolbars' empty space. Windows keeps the system's title bar.
+  edges to resize by, while not maximized or full screen. On Windows the window has no
+  title bar but keeps the system's shadow, border, rounded corners and snapping: the
+  app draws Windows 11's caption buttons flush with the top right corner, and the edges
+  to resize by. The reader keeps a least width for the buttons (`ui::READER_LEAST`),
+  which the list gives up width to, and the main window's least width follows from it.
+  Everywhere the window drags from the toolbars' empty space.
 - `shadow`: the window's drop shadow on KDE Plasma, which KWin draws only for windows
   with a decoration. It renders Breeze's shadow as Breeze does and hands it to KWin
   through `org_kde_kwin_shadow` on winit's own Wayland connection, or on X11 through

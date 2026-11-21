@@ -69,8 +69,9 @@ pub(super) fn Reader() -> Element {
     let sidebar_shown = use_closing(sidebar_open, SIDEBAR_SLIDE);
     // A memo, so a resize re-renders the reader only when this changes.
     let buttons_fit = use_memo(use_reactive!(|sidebar_shown| {
-        // Off Linux they always fit, without following the window's size.
-        if !LINUX {
+        // Where the system draws the window buttons they always fit, without following
+        // the window's size.
+        if !DRAWS_FRAME {
             return true;
         }
         let layout = Layout {

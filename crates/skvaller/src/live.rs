@@ -34,7 +34,7 @@ pub struct Live {
     pub dates: Memo<SharedDates>,
     /// The shortcut keys, by key name.
     pub keys: Memo<Rc<HashMap<String, Action>>>,
-    /// How the system draws a window's frame, for the one the app draws on Linux.
+    /// How the system draws a window's frame, for the one the app draws (`chrome`).
     pub frame: Signal<SystemFrame>,
 }
 

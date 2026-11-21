@@ -296,12 +296,16 @@ button {
   position: relative;
 }
 
-/* Linux: no frame at all (chrome.rs). The app draws the window buttons, at the end of
-   the reader's toolbar, Settings' header or the add-account screen's corner, and the
-   edges. */
+/* Linux and Windows: no decorations (chrome.rs). The app draws the window buttons, at
+   the end of the reader's toolbar, Settings' header or the add-account screen's
+   corner, and the edges. */
 
-/* Presses between and around the buttons go through to the drag area under them. */
+/* Presses between and around the buttons go through to the drag area under them. Over
+   the config notice's scrim (24), as the resize edges are, so the window can still be
+   minimized or closed while it shows. */
 .window-buttons {
+  position: relative;
+  z-index: 25;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -333,7 +337,8 @@ button {
   border-radius: 50%;
 }
 
-.window-buttons.breeze .window-button svg {
+.window-buttons.breeze .window-button svg,
+.window-buttons.windows .window-button svg {
   flex: none;
 }
 
@@ -357,7 +362,37 @@ button {
   color: #ffffff;
 }
 
-/* The height of the toolbars, the buttons centered in it, whichever their size. */
+/* Windows 11's caption buttons: 46px wide, as tall as the toolbar, square-cornered,
+   flush with the window's top right corner (past the toolbar's 10px padding). A faint
+   layer on hover, as on other icon buttons, and red with a white glyph for close. */
+.window-buttons.windows {
+  align-self: stretch;
+  align-items: stretch;
+  gap: 0;
+}
+
+.toolbar > .window-buttons.windows {
+  margin-right: -10px;
+}
+
+.window-buttons.windows .window-button {
+  width: 46px;
+  height: auto;
+  border-radius: 0;
+}
+
+.window-buttons.windows .window-button.close:hover {
+  background: #c42b1c;
+  color: #ffffff;
+}
+
+.window-buttons.windows .window-button.close:active {
+  background: #c83c31;
+  color: #ffffff;
+}
+
+/* The height of the toolbars: the buttons centered in it, whichever their size, or
+   filling it on Windows. */
 .frameless.settings main > header .window-buttons {
   position: absolute;
   top: 0;
@@ -365,14 +400,25 @@ button {
   height: var(--toolbar-height);
 }
 
-/* The frame, but where the window meets the screen's edges (chrome.rs's Frame): the
-   corners rounded as the system's, on a transparent window, and its outline. The
-   radius and the outline's color come from the system (appearance.rs), set on the
-   root; where the system's outline isn't known, the theme's separator stands in. */
-.root.framed {
+/* Windows: flush with the corner, as in the toolbars. */
+.frameless.settings main > header .window-buttons.windows {
+  right: 0;
+}
+
+/* The frame on Linux, but where the window meets the screen's edges (chrome.rs's
+   Frame): the corners rounded as the system's, on a transparent window, and its
+   outline. The radius and the outline's color come from the system (appearance.rs),
+   set on the root; where the system's outline isn't known, the theme's separator
+   stands in. On Windows the system draws them, and Frame only adds the edges. */
+.root.linux.framed {
   position: relative;
   border-radius: var(--frame-radius);
   overflow: hidden;
+}
+
+/* The box the resize edges are placed in. */
+.root.windows {
+  position: relative;
 }
 
 /* Inside the window, over everything, popovers too, as a frame would be. */
@@ -1089,6 +1135,10 @@ input.search-field {
   min-width: 116px;
 }
 
+.windows .reader {
+  min-width: 156px;
+}
+
 .reader iframe {
   flex: 1;
   width: 100%;
@@ -1211,7 +1261,7 @@ input.search-field {
 }
 
 /* Over the add-account screen's top right: the accounts that still work, then the
-   window buttons on Linux. */
+   window buttons on Linux and Windows. */
 .screen-corner {
   position: absolute;
   top: 8px;
@@ -1223,10 +1273,17 @@ input.search-field {
   pointer-events: none;
 }
 
-/* The window buttons centered where the title bar was, whichever their size. */
-.linux .screen-corner {
+/* The window buttons where the title bar was: centered in it, whichever their size,
+   or filling it on Windows. */
+.linux .screen-corner,
+.windows .screen-corner {
   top: 0;
   height: var(--toolbar-height);
+}
+
+/* Windows: flush with the corner, as in the toolbars. */
+.windows .screen-corner {
+  right: 0;
 }
 
 .other-accounts {
@@ -1285,7 +1342,8 @@ input.search-field {
 }
 
 /* Over the whole window, dimming it: nothing behind the config notice takes a click
-   until it is dismissed. Under the resize edges (25), which stay usable. */
+   until it is dismissed. Under the resize edges and window buttons (25), which stay
+   usable. */
 .notice-backdrop {
   position: fixed;
   inset: 0;

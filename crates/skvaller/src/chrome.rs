@@ -1,14 +1,15 @@
-//! The windows' frame: on macOS and Linux, no title bar, the toolbars in its place.
+//! The windows' frame: no title bar, the toolbars in its place.
 //!
 //! macOS draws the window buttons over the top of the window, centered in a unified
 //! title bar 52px tall, and the toolbars grow to that height to hold them (app.css,
-//! under `.mac`). On Linux the window has no decorations at all: the app draws its own
-//! minimize, maximize and close buttons at the top right ([`WindowButtons`]), and its
-//! own [`Frame`]: the system's outline and rounded corners, read through the portal
-//! (`appearance::SystemFrame`), and edges to resize by. The window is transparent
-//! there, so the corners show what's behind it. On both the window drags from the
-//! toolbars' empty space (app.css, under `.frameless`). Windows keeps the system's
-//! title bar.
+//! under `.mac`). On Linux and Windows the window has no decorations: the app draws its
+//! own minimize, maximize and close buttons at the top right ([`WindowButtons`]), and
+//! edges to resize by ([`Frame`]). On Linux the frame also draws the system's outline
+//! and rounded corners, read through the portal (`appearance::SystemFrame`), on a
+//! transparent window, so the corners show what's behind it. On Windows the system
+//! still draws the window's shadow, border and rounded corners (Windows 11), and snaps
+//! it. Everywhere the window drags from the toolbars' empty space (app.css, under
+//! `.frameless`).
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -32,16 +33,24 @@ use crate::live::Live;
 /// Whether the app runs on macOS.
 pub const MAC: bool = cfg!(target_os = "macos");
 
-/// Whether the app runs on Linux, where it draws the window's frame itself.
+/// Whether the app runs on Linux, where it also draws the window's outline and corners.
 pub const LINUX: bool = cfg!(target_os = "linux");
 
+/// Whether the app runs on Windows.
+pub const WINDOWS: bool = cfg!(target_os = "windows");
+
+/// Whether the app draws the window buttons and resize edges itself: on Linux and
+/// Windows.
+pub const DRAWS_FRAME: bool = LINUX || WINDOWS;
+
 /// Whether the window has no title bar, and drags from its toolbars.
-pub const FRAMELESS: bool = MAC || LINUX;
+pub const FRAMELESS: bool = MAC || DRAWS_FRAME;
 
 /// How soon a second press counts as a double-click, which zooms the window as a
-/// double-click on a title bar does by default: macOS's default speed, 500 ms, and
-/// GTK's and KDE's, 400 ms. The user's own speed and title-bar action aren't read.
-const DOUBLE_CLICK: Duration = Duration::from_millis(if MAC { 500 } else { 400 });
+/// double-click on a title bar does by default: macOS's and Windows' default speed,
+/// 500 ms, and GTK's and KDE's, 400 ms. The user's own speed and title-bar action
+/// aren't read.
+const DOUBLE_CLICK: Duration = Duration::from_millis(if LINUX { 400 } else { 500 });
 
 /// Hides the title bar, keeping the window buttons over the window's content.
 #[cfg(target_os = "macos")]
@@ -66,8 +75,21 @@ fn frame(attributes: WindowAttributes) -> WindowAttributes {
     attributes.with_decorations(false).with_transparent(true)
 }
 
+/// Leaves out the title bar, keeping the system's drop shadow. The window keeps its
+/// caption styles underneath, so Windows 11 still rounds and outlines its corners,
+/// and snapping and the taskbar's minimize still work.
+#[cfg(target_os = "windows")]
+fn frame(attributes: WindowAttributes) -> WindowAttributes {
+    use dioxus_native::winit::platform::windows::WindowAttributesWindows;
+
+    let windows = WindowAttributesWindows::default().with_undecorated_shadow(true);
+    attributes
+        .with_decorations(false)
+        .with_platform_attributes(Box::new(windows))
+}
+
 /// Keeps the system's title bar: `attributes` as they are.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn frame(attributes: WindowAttributes) -> WindowAttributes {
     attributes
 }
@@ -95,9 +117,9 @@ pub fn window(config: Config, attributes: WindowAttributes) -> (Config, WindowAt
 /// bar.
 ///
 /// app.css lays it over the whole toolbar and its text, under its buttons, so a press
-/// on a button stays the button's. A double-click zooms the window; on Wayland a
-/// right-click opens the compositor's window menu, as on a title bar (winit doesn't
-/// open one on X11).
+/// on a button stays the button's. A double-click zooms the window; on Windows and
+/// Wayland a right-click opens the system's window menu, as on a title bar (winit
+/// doesn't open one on X11).
 #[component]
 pub fn DragArea() -> Element {
     // A constant, so the hooks below run on every render or on none.
@@ -118,7 +140,7 @@ pub fn DragArea() -> Element {
                 }
                 match e.trigger_button() {
                     Some(MouseButton::Primary) => {}
-                    Some(MouseButton::Secondary) if LINUX => {
+                    Some(MouseButton::Secondary) if DRAWS_FRAME => {
                         let point = e.client_coordinates();
                         window.show_window_menu(LogicalPosition::new(point.x, point.y).into());
                         return;
@@ -141,15 +163,15 @@ pub fn DragArea() -> Element {
 }
 
 /// Minimize, maximize and close, for the window's top right (the reader's toolbar,
-/// Settings' header, the add-account screen's corner), on Linux only, drawn as the
-/// system's window frames draw them ([`Buttons`]).
+/// Settings' header, the add-account screen's corner), on Linux and Windows only,
+/// drawn as the system's window frames draw them ([`Buttons`]).
 ///
 /// `on_close` runs before the window closes, for what the window's own close button
 /// would do through `CloseRequested`, which closing it from here doesn't send. The
 /// maximize button turns to restore while the window is maximized.
 #[component]
 pub fn WindowButtons(on_close: Option<EventHandler<()>>) -> Element {
-    if !LINUX {
+    if !DRAWS_FRAME {
         return rsx! {};
     }
     let window = use_window();
@@ -163,11 +185,16 @@ pub fn WindowButtons(on_close: Option<EventHandler<()>>) -> Element {
     } else {
         ("window.maximize", Glyph::Maximize)
     };
+    let style_class = match style {
+        Buttons::Adwaita => "",
+        Buttons::Breeze => "breeze",
+        #[cfg(target_os = "windows")]
+        Buttons::Windows => "windows",
+    };
 
     rsx! {
         div {
-            class: "window-buttons",
-            class: if style == Buttons::Breeze { "breeze" },
+            class: "window-buttons {style_class}",
             WindowButton {
                 label: t("window.minimize"),
                 glyph: Glyph::Minimize,
@@ -212,6 +239,8 @@ fn WindowButton(
             class: if close { "close" },
             aria_label: label.clone(),
             title: label,
+            // The focus stays where it is, as with the system's buttons.
+            onmousedown: move |e| e.prevent_default(),
             onclick,
             ButtonGlyph { glyph, style }
         }
@@ -232,6 +261,10 @@ enum Glyph {
 /// Breeze's are its own strokes (breezebutton.cpp): drawn in an 18-unit box inset by
 /// one unit in 20, one unit to a pixel at the 20px Breeze buttons have at the usual
 /// font sizes, with a 1.01-unit pen, round caps and mitred joins (round for restore).
+///
+/// Windows' are Windows 11's caption glyphs (Segoe Fluent Icons' `ChromeMinimize` and
+/// the rest): 10px across with a 1px pen, on the half pixel in an even box, so at
+/// 100% and 200% scale they stay sharp centered in the button.
 #[component]
 fn ButtonGlyph(glyph: Glyph, style: Buttons) -> Element {
     match style {
@@ -261,6 +294,31 @@ fn ButtonGlyph(glyph: Glyph, style: Buttons) -> Element {
                     stroke_width: "1.01",
                     stroke_linecap: "round",
                     stroke_linejoin: join,
+                    "aria-hidden": "true",
+                    path { d }
+                }
+            }
+        }
+        #[cfg(target_os = "windows")]
+        Buttons::Windows => {
+            let d = match glyph {
+                Glyph::Minimize => "M0 4.5h10",
+                Glyph::Maximize => {
+                    "M2 .5h6A1.5 1.5 0 0 1 9.5 2v6A1.5 1.5 0 0 1 8 9.5H2A1.5 1.5 0 0 1 .5 8V2A1.5 1.5 0 0 1 2 .5Z"
+                }
+                Glyph::Restore => {
+                    "M2 2.5h4A1.5 1.5 0 0 1 7.5 4v4A1.5 1.5 0 0 1 6 9.5H2A1.5 1.5 0 0 1 .5 8V4A1.5 1.5 0 0 1 2 2.5ZM2 .5h5.5A2 2 0 0 1 9.5 2.5V8"
+                }
+                Glyph::Close => "M.5.5l9 9M9.5.5l-9 9",
+            };
+            rsx! {
+                svg {
+                    width: "10",
+                    height: "10",
+                    view_box: "0 0 10 10",
+                    fill: "none",
+                    stroke: "currentColor",
+                    stroke_width: "1",
                     "aria-hidden": "true",
                     path { d }
                 }
@@ -330,17 +388,17 @@ const EDGES: [(&str, ResizeDirection); 8] = [
 pub struct WindowState {
     /// Whether the window is maximized.
     pub maximized: Signal<bool>,
-    /// Whether the window shows its frame: on Linux, unless maximized or full screen,
-    /// where its edges meet the screen's.
+    /// Whether the window shows its frame: on Linux and Windows, unless maximized or
+    /// full screen, where its edges meet the screen's.
     pub framed: Signal<bool>,
 }
 
 /// Provides the window's [`WindowState`] to the root's children, and returns it. It
-/// asks the window only on Linux, where something shows it: on X11 `is_maximized` is
-/// a round trip to the server.
+/// asks the window only where the app draws the frame, the only place that shows it:
+/// on X11 `is_maximized` is a round trip to the server.
 pub fn use_window_state_provider() -> WindowState {
     // A constant, so the hooks below run on every render or on none.
-    if !LINUX {
+    if !DRAWS_FRAME {
         return use_context_provider(|| WindowState {
             maximized: Signal::new(false),
             framed: Signal::new(false),
@@ -428,13 +486,13 @@ pub fn root_style(stack: &str, frame: SystemFrame) -> String {
     style
 }
 
-/// The window's frame on Linux, in a root whose class has `framed` while
-/// [`WindowState::framed`] says: an outline in the system's color, around corners
-/// rounded as the system's (app.css), and the edges and corners to resize the window
-/// by.
+/// The window's frame on Linux and Windows, while [`WindowState::framed`] says: the
+/// edges and corners to resize the window by. On Linux also an outline in the
+/// system's color, around corners rounded as the system's, in a root whose class has
+/// `framed` (app.css). Windows draws its own.
 #[component]
 pub fn Frame() -> Element {
-    if !LINUX {
+    if !DRAWS_FRAME {
         return rsx! {};
     }
     let window = use_window();
@@ -445,7 +503,9 @@ pub fn Frame() -> Element {
     }
 
     rsx! {
-        div { class: "frame-outline" }
+        if LINUX {
+            div { class: "frame-outline" }
+        }
         for (name, direction) in EDGES {
             div {
                 key: "{name}",

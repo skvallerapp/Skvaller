@@ -93,7 +93,7 @@
 }
 
 /* Where there is no title bar (chrome.rs): below where it was, on macOS, and below
-   the window buttons on Linux. */
+   the window buttons on Linux and Windows. */
 .frameless.settings main > header {
   padding-top: var(--toolbar-height);
 }

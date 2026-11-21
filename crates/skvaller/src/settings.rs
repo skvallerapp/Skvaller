@@ -21,7 +21,7 @@ use tokio::sync::Notify;
 
 use crate::add_account::AddAccount;
 use crate::article;
-use crate::chrome::{self, DragArea, FRAMELESS, Frame, LINUX, MAC, WindowButtons};
+use crate::chrome::{self, DragArea, FRAMELESS, Frame, LINUX, MAC, WINDOWS, WindowButtons};
 use crate::dates::Dates;
 use crate::dropdown::Dropdown;
 use crate::fonts;
@@ -197,6 +197,7 @@ fn SettingsRoot() -> Element {
             class: if FRAMELESS { "frameless" },
             class: if MAC { "mac" },
             class: if LINUX { "linux" },
+            class: if WINDOWS { "windows" },
             class: if framed { "framed" },
             "data-theme": theme,
             "data-motion": motion,
