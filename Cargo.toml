@@ -23,7 +23,7 @@ skvaller-core = { path = "crates/skvaller-core", version = "0.1.0" }
 # on double and triple click in page text, and smaller fixes.
 # The fork pins AnyRender to 814e100d: AnyRender's main renamed anyrender_vello_hybrid
 # to anyrender_vello_gpu and changed its API.
-dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "c4867b72", default-features = false }
+dioxus-native = { git = "https://github.com/SinderC/blitz", rev = "93bff392", default-features = false }
 
 dirs = "7.0.0"
 icu_calendar = { version = "2.4.0", default-features = false }
