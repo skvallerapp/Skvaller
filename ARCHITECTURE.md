@@ -207,6 +207,7 @@ The windows, in Dioxus Native (Blitz).
   - `reader` makes its URLs absolute and https, and holds media until asked for.
   - Every request from any document passes `main`'s request filter: only public
     addresses (`net::ArticleNet`), or `thumb:` URLs carrying a token made at launch.
+    An SVG's own `<image href>` loads only from `data:`; Blitz never reads it as a file.
   - Reader View pages, thumbnails and icons are fetched through `net::Untrusted`, which
     checks the resolved address on every connection and redirect. The sync server and
     subscribed feeds are the user's choice and aren't filtered.
