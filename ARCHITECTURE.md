@@ -208,6 +208,8 @@ The windows, in Dioxus Native (Blitz).
   - Every request from any document passes `main`'s request filter: only public
     addresses (`net::ArticleNet`), or `thumb:` URLs carrying a token made at launch.
     An SVG's own `<image href>` loads only from `data:`; Blitz never reads it as a file.
+    Blitz drops a response body over 32 MiB, and an image over 128 MiB as RGBA,
+    judged from its header before decoding.
   - Reader View pages, thumbnails and icons are fetched through `net::Untrusted`, which
     checks the resolved address on every connection and redirect. The sync server and
     subscribed feeds are the user's choice and aren't filtered.
