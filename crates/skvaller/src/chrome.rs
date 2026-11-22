@@ -284,7 +284,7 @@ fn ButtonGlyph(glyph: Glyph, style: Buttons) -> Element {
                 Glyph::Restore => WINDOW_RESTORE,
                 Glyph::Close => X,
             };
-            rsx! { Icon { size: 16, stroke: "2", paths } }
+            rsx! { Icon { size: 16, stroke: "2.25", paths } }
         }
         Buttons::Breeze => {
             let (d, join) = match glyph {

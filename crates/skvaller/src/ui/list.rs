@@ -79,7 +79,7 @@ pub(super) fn ArticleList() -> Element {
                     title: toggle_label,
                     "aria-pressed": "{sidebar_open}",
                     onclick: move |_| reading.run(&toggle_app, Command::ToggleSidebar),
-                    Icon { size: 18, stroke: "2", paths: PANEL_LEFT }
+                    Icon { size: 18, stroke: "2.25", paths: PANEL_LEFT }
                 }
                 div { class: "list-title",
                     h1 { "{title}" }
@@ -90,7 +90,7 @@ pub(super) fn ArticleList() -> Element {
                     aria_label: t("list.search"),
                     title: t_with("list.searchWithKey", &[("key", search_key.as_str())]),
                     onclick: move |_| reading.run(&search_app, Command::Search),
-                    Icon { size: 18, stroke: "2", paths: SEARCH }
+                    Icon { size: 18, stroke: "2.25", paths: SEARCH }
                 }
                 div { class: "mark-all",
                     // The window closes the question on any click that reaches it.
@@ -103,7 +103,7 @@ pub(super) fn ArticleList() -> Element {
                         "aria-expanded": "{confirming}",
                         disabled: unread == 0,
                         onclick: move |_| reading.run(&app, Action::MarkAllRead.into()),
-                        Icon { size: 18, stroke: "2", paths: CIRCLE_CHECK }
+                        Icon { size: 18, stroke: "2.25", paths: CIRCLE_CHECK }
                     }
                     if confirming {
                         div { class: "confirm popover", role: "dialog", "aria-labelledby": "mark-all-question",
@@ -196,7 +196,7 @@ pub(super) fn SearchBar() -> Element {
                 aria_label: t("list.closeSearch"),
                 title: t("list.closeSearch"),
                 onclick: move |_| reading.close_search(),
-                Icon { size: 16, stroke: "2", paths: X }
+                Icon { size: 16, stroke: "2.25", paths: X }
             }
         }
     }
@@ -462,7 +462,7 @@ pub(super) fn Viewport() -> Element {
                 span {
                     class: "turn",
                     style: if pulled.refreshing { "" } else { "transform: rotate({turn}deg); {spring}" },
-                    Icon { size: 18, stroke: "2", paths: ROTATE_CW }
+                    Icon { size: 18, stroke: "2.25", paths: ROTATE_CW }
                 }
             }
         }

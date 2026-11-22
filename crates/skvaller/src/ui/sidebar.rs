@@ -171,14 +171,14 @@ pub(super) fn Sidebar() -> Element {
                     aria_label: t("sidebar.settings"),
                     title: t_with("sidebar.settingsWithKey", &[("key", settings_key.as_str())]),
                     onclick: move |_| reading.run(&settings_app, Command::Settings),
-                    Icon { size: 18, stroke: "2", paths: SETTINGS }
+                    Icon { size: 18, stroke: "2.25", paths: SETTINGS }
                 }
                 button {
                     class: if spinning { "icon-button sync spinning" } else { "icon-button sync" },
                     aria_label: t("sidebar.sync"),
                     title: t("sidebar.sync"),
                     onclick: move |_| reading.run(&sync_app, Action::Sync.into()),
-                    Icon { size: 18, stroke: "2", paths: ROTATE_CW }
+                    Icon { size: 18, stroke: "2.25", paths: ROTATE_CW }
                 }
             }
             header { class: "account",
@@ -485,16 +485,16 @@ pub(super) fn ViewSwitcher() -> Element {
                     match view {
                         // The unread mark, as on the reader's toolbar.
                         View::Unread => rsx! {
-                            svg { width: "16", height: "16", view_box: "0 0 24 24", fill: "currentColor", stroke: "currentColor", stroke_width: "1.6", "aria-hidden": "true",
+                            svg { width: "16", height: "16", view_box: "0 0 24 24", fill: "currentColor", stroke: "currentColor", stroke_width: "1.85", "aria-hidden": "true",
                                 circle { cx: "12", cy: "12", r: "7.5" }
                             }
                         },
                         View::Starred => rsx! {
-                            svg { width: "16", height: "16", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round", "aria-hidden": "true",
+                            svg { width: "16", height: "16", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2.25", stroke_linecap: "round", stroke_linejoin: "round", "aria-hidden": "true",
                                 path { d: STAR_PATH }
                             }
                         },
-                        View::All => rsx! { Icon { size: 16, stroke: "2", paths: LAYERS } },
+                        View::All => rsx! { Icon { size: 16, stroke: "2.25", paths: LAYERS } },
                     }
                 }
             }
@@ -539,7 +539,7 @@ pub(super) fn AccountSwitcher() -> Element {
                     reading.open_overlay(Overlay::AccountMenu { at: at.unwrap_or(0) });
                 },
                 // Lucide's rss.
-                Icon { size: 18, stroke: "2", paths: RSS }
+                Icon { size: 18, stroke: "2.25", paths: RSS }
             }
             if let Some(at) = menu {
                 div { class: "menu popover sidebar-popover", role: "menu", aria_label: t("accounts.menu"),
@@ -561,7 +561,7 @@ pub(super) fn AccountSwitcher() -> Element {
                                     onclick: move |_| reading.run(&app, Command::Account(id.clone())),
                                     span { class: "check",
                                         if checked {
-                                            Icon { size: 14, stroke: "2.5", paths: CHECK }
+                                            Icon { size: 14, stroke: "2.75", paths: CHECK }
                                         }
                                     }
                                     span { class: "name", "{account.description}" }
@@ -715,7 +715,7 @@ pub(super) fn ScopeItem(
                                 reading.set_collapsed(&id, expanded);
                             },
                             // Turned down by app.css while open.
-                            Icon { size: 16, stroke: "2", paths: CHEVRON_RIGHT }
+                            Icon { size: 16, stroke: "2.25", paths: CHEVRON_RIGHT }
                         }
                     }
                 }

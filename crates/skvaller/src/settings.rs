@@ -253,7 +253,7 @@ fn SettingsRoot() -> Element {
                                     pane.set(Pane::Account(id.clone()));
                                 }
                             },
-                            Icon { size: 16, stroke: "2", paths: CHEVRON_LEFT }
+                            Icon { size: 16, stroke: "2.25", paths: CHEVRON_LEFT }
                             "{a.description}"
                         }
                     }
@@ -319,7 +319,7 @@ fn NavRow(
                 class: if selected { "nav-row selected" } else { "nav-row" },
                 "aria-current": if selected { "page" } else { "false" },
                 onclick: move |_| current.set(pane.clone()),
-                Icon { size: 18, stroke: "2", paths: icon }
+                Icon { size: 18, stroke: "2.25", paths: icon }
                 "{label}"
             }
         }
@@ -343,7 +343,7 @@ fn AccountRow(account: Account, current: Signal<Pane>) -> Element {
                 class: if selected { "nav-row account selected" } else { "nav-row account" },
                 "aria-current": if selected { "page" } else { "false" },
                 onclick: move |_| current.set(pane.clone()),
-                Icon { size: 28, stroke: "1.5", paths: CIRCLE_USER }
+                Icon { size: 28, stroke: "1.75", paths: CIRCLE_USER }
                 span {
                     strong { "{account.description}" }
                     small { "{detail}" }
@@ -1002,7 +1002,7 @@ fn AccountPane(
                     },
                     onclick: move |_| on_reader_view.call(()),
                     span { {t("settings.readerViewRow")} }
-                    Icon { size: 16, stroke: "2", paths: CHEVRON_RIGHT }
+                    Icon { size: 16, stroke: "2.25", paths: CHEVRON_RIGHT }
                 }
             }
         }

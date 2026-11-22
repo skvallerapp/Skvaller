@@ -312,7 +312,7 @@ pub(super) fn ManageMenu() -> Element {
                             onclick: move |_| reading.pick(&app, target.clone(), &item),
                             span { class: "check",
                                 if checked {
-                                    Icon { size: 14, stroke: "2.5", paths: CHECK }
+                                    Icon { size: 14, stroke: "2.75", paths: CHECK }
                                 }
                             }
                             span { class: "name", "{label}" }
@@ -530,7 +530,7 @@ pub(super) fn AddFeed() -> Element {
                         _ => String::new(),
                     });
                 },
-                Icon { size: 18, stroke: "2", paths: PLUS }
+                Icon { size: 18, stroke: "2.25", paths: PLUS }
             }
             if open {
                 div { class: "popover sidebar-popover add-feed-form", role: "dialog", aria_label: t("addFeed.title"),

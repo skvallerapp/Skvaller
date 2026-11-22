@@ -200,12 +200,12 @@ pub fn AddAccount(
                                         Ok(id) => on_added.call(id),
                                         Err(e) => local_error.set(Some(sentence(&e.to_string()))),
                                     },
-                                    Icon { size: 27, stroke: "1.5", paths: LAPTOP }
+                                    Icon { size: 27, stroke: "1.75", paths: LAPTOP }
                                     span { class: "text",
                                         strong { {t("addAccount.local")} }
                                         small { {t("addAccount.localDetail")} }
                                     }
-                                    span { class: "chevron", Icon { size: 16, stroke: "2", paths: CHEVRON_RIGHT } }
+                                    span { class: "chevron", Icon { size: 16, stroke: "2.25", paths: CHEVRON_RIGHT } }
                                 }
                                 if let Some(e) = local_error() {
                                     p { class: "error", role: "alert", "{e}" }
@@ -228,7 +228,7 @@ fn ServiceRow(service: Service, onclick: EventHandler<()>) -> Element {
                 strong { {service.name()} }
                 small { {service.detail()} }
             }
-            span { class: "chevron", Icon { size: 16, stroke: "2", paths: CHEVRON_RIGHT } }
+            span { class: "chevron", Icon { size: 16, stroke: "2.25", paths: CHEVRON_RIGHT } }
         }
     }
 }
@@ -340,7 +340,7 @@ fn SignIn(
                         aria_label: t("signIn.allServices"),
                         disabled: is_busy,
                         onclick: move |_| back.call(()),
-                        Icon { size: 18, stroke: "2", paths: CHEVRON_LEFT }
+                        Icon { size: 18, stroke: "2.25", paths: CHEVRON_LEFT }
                     }
                 }
                 Logo { service, size: if embedded { 24 } else { 28 } }
@@ -427,7 +427,7 @@ fn Logo(service: Service, size: u32) -> Element {
             }
         },
         Service::Other => rsx! {
-            Icon { size: size * 85 / 100, stroke: "2", paths: RSS }
+            Icon { size: size * 85 / 100, stroke: "2.25", paths: RSS }
         },
     }
 }

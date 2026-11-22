@@ -336,7 +336,7 @@ pub(super) fn ReaderButtons(article: ArticleSummary) -> Element {
             title: read_label,
             onclick: move |_| reading.run(&app, Action::ToggleRead.into()),
             // The unread mark: filled while unread, outlined once read.
-            svg { width: "18", height: "18", view_box: "0 0 24 24", fill: if read { "none" } else { "currentColor" }, stroke: "currentColor", stroke_width: "1.6",
+            svg { width: "18", height: "18", view_box: "0 0 24 24", fill: if read { "none" } else { "currentColor" }, stroke: "currentColor", stroke_width: "1.85",
                 circle { cx: "12", cy: "12", r: "7.5" }
             }
         }
@@ -349,7 +349,7 @@ pub(super) fn ReaderButtons(article: ArticleSummary) -> Element {
             aria_label: star_label.clone(),
             title: star_label,
             onclick: move |_| reading.run(&star_app, Action::ToggleStar.into()),
-            svg { width: "18", height: "18", view_box: "0 0 24 24", fill: if starred { "currentColor" } else { "none" }, stroke: "currentColor", stroke_width: "2", stroke_linejoin: "round",
+            svg { width: "18", height: "18", view_box: "0 0 24 24", fill: if starred { "currentColor" } else { "none" }, stroke: "currentColor", stroke_width: "2.25", stroke_linejoin: "round",
                 path { d: STAR_PATH }
             }
         }
@@ -361,7 +361,7 @@ pub(super) fn ReaderButtons(article: ArticleSummary) -> Element {
             "aria-busy": "{rv_loading}",
             disabled: article.url.is_empty(),
             onclick: move |_| reading.run(&reader_app, Action::ToggleReaderView.into()),
-            Icon { size: 18, stroke: "2", paths: SQUARE_TEXT }
+            Icon { size: 18, stroke: "2.25", paths: SQUARE_TEXT }
         }
         button {
             class: "icon-button",
@@ -369,7 +369,7 @@ pub(super) fn ReaderButtons(article: ArticleSummary) -> Element {
             title: t("reader.openInBrowser"),
             disabled: article.url.is_empty(),
             onclick: move |_| reading.run(&browser_app, Action::OpenInBrowser.into()),
-            Icon { size: 18, stroke: "2", paths: GLOBE }
+            Icon { size: 18, stroke: "2.25", paths: GLOBE }
         }
     }
 }

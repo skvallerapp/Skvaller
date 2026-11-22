@@ -195,7 +195,7 @@ pub fn Dropdown(
                     show_on_click();
                 },
                 span { class: "label", "{current}" }
-                Icon { size: 14, stroke: "2", paths: CHEVRONS_UP_DOWN }
+                Icon { size: 14, stroke: "2.25", paths: CHEVRONS_UP_DOWN }
             }
             if let Some(Open { at, place }) = state {
                 // Over the whole window: a click or wheel turn outside the list closes
@@ -279,7 +279,7 @@ pub fn Dropdown(
                                 onclick: move |_| pick(i),
                                 span { class: "check",
                                     if i == selected {
-                                        Icon { size: 14, stroke: "2.5", paths: CHECK }
+                                        Icon { size: 14, stroke: "2.75", paths: CHECK }
                                     }
                                 }
                                 span { class: "name", "{choice}" }
