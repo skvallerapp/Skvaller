@@ -70,6 +70,31 @@ use tree::{
 
 pub(crate) const APP_CSS: &str = include_str!("app.css");
 
+/// The window's background for `theme`: html's, which Blitz paints across the window.
+///
+/// Blitz rounds the root's size to whole CSS pixels, so at some sizes and scales (250%)
+/// the last device pixel at the window's right or bottom edge is past the root, and
+/// would be white. The theme's colors live on the root, where html can't read them, and
+/// Blitz's CSS has no `:has()` to select by the root's theme, so each window adds this
+/// beside app.css. The colors are app.css's `--reader-bg`, the right-hand pane's, and
+/// must stay in step. Empty on Linux while `framed`: the window is transparent there,
+/// so the root's rounded corners show what's behind it.
+pub(crate) fn canvas_css(theme: skvaller_app::Theme, framed: bool) -> &'static str {
+    use skvaller_app::Theme;
+    if chrome::LINUX && framed {
+        return "";
+    }
+    match theme {
+        Theme::Light => "html { background: #fafaf9 }",
+        Theme::Dark => "html { background: #202022 }",
+        Theme::Espresso => "html { background: #2d211e }",
+        Theme::System => {
+            "html { background: #fafaf9 } \
+             @media (prefers-color-scheme: dark) { html { background: #202022 } }"
+        }
+    }
+}
+
 // An article list row's parts, in CSS px, as app.css has them. Rows are placed from
 // these heights and the headline's lines (`lines::Lines`), never by measuring them.
 
@@ -1457,11 +1482,13 @@ pub fn Root() -> Element {
     let root_style = chrome::root_style(&fonts::stack(settings_now.ui_font), (live.frame)())
         + &scale::root_style(settings_now.font_size);
     let framed = (window_state.framed)();
+    let canvas = canvas_css((live.theme)(), framed);
     let motion = motion(settings_now.animations);
     drop(settings_now);
 
     rsx! {
         style { {APP_CSS} }
+        style { {canvas} }
         // Focusable, and focused from the start: a key press goes to the focused element,
         // and a click keeps focus on the nearest focusable ancestor, so every key the
         // window gets passes through here. -1 keeps the root out of the Tab order.

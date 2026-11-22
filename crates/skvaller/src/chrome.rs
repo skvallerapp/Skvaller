@@ -7,10 +7,11 @@
 //! edges to resize by ([`Frame`]). On Linux the frame also draws the system's outline
 //! and rounded corners, read through the portal (`appearance::SystemFrame`), on a
 //! transparent window, so the corners show what's behind it. On Windows the system
-//! still draws the window's shadow, border and rounded corners (Windows 11), and snaps
-//! it by drag and keyboard, though without Snap Layouts on the maximize button, which
-//! take a hit test winit doesn't give. Everywhere the window drags from the toolbars'
-//! empty space (app.css, under `.frameless`).
+//! still draws the window's shadow, border and rounded corners (Windows 11), resizes it
+//! from its own borders outside the window except at the top, and snaps it by drag and
+//! keyboard, though without Snap Layouts on the maximize button, which take a hit test
+//! winit doesn't give. Everywhere the window drags from the toolbars' empty space
+//! (app.css, under `.frameless`).
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -76,14 +77,18 @@ fn frame(attributes: WindowAttributes) -> WindowAttributes {
     attributes.with_decorations(false).with_transparent(true)
 }
 
-/// Leaves out the title bar, keeping the system's drop shadow. The window keeps its
-/// caption styles underneath, so Windows 11 still rounds and outlines its corners,
-/// and snapping by drag and keyboard and the taskbar's minimize still work.
+/// Leaves out the title bar, keeping the system's drop shadow, and its resize borders
+/// outside the window's left, right and bottom edges (the winit fork's
+/// `with_undecorated_resize_borders`). The window keeps its caption styles underneath,
+/// so Windows 11 still rounds and outlines its corners, and snapping by drag and
+/// keyboard and the taskbar's minimize still work.
 #[cfg(target_os = "windows")]
 fn frame(attributes: WindowAttributes) -> WindowAttributes {
     use dioxus_native::winit::platform::windows::WindowAttributesWindows;
 
-    let windows = WindowAttributesWindows::default().with_undecorated_shadow(true);
+    let windows = WindowAttributesWindows::default()
+        .with_undecorated_shadow(true)
+        .with_undecorated_resize_borders(true);
     attributes
         .with_decorations(false)
         .with_platform_attributes(Box::new(windows))
@@ -372,6 +377,57 @@ fn use_kwin_shadow(window: &Arc<dyn Window>) {
     });
 }
 
+/// The top border Windows 10 leaves out (`top_border`), for [`Frame`] to draw.
+#[cfg_attr(
+    not(target_os = "windows"),
+    expect(dead_code, reason = "made only on Windows 10")
+)]
+#[derive(Clone, Debug, PartialEq)]
+struct TopBorder {
+    /// DWM's color for the window's focus.
+    color: String,
+    /// One device pixel in CSS pixels, as DWM draws the other borders. Blitz rounds a
+    /// box's height and its border widths to whole CSS pixels, and draws an SVG at CSS
+    /// pixels before scaling it, which at 175% would make it 1.75 device pixels, so
+    /// the line is a 1px box scaled down to this by a transform, which Blitz applies
+    /// as it paints.
+    height: f64,
+}
+
+/// The top border Windows 10 leaves out (`top_border`), following the window's focus
+/// and scale. `None` on Windows 11, which draws its own.
+#[cfg(target_os = "windows")]
+fn use_top_border(window: &Arc<dyn Window>) -> Option<TopBorder> {
+    use crate::top_border;
+
+    let needed = use_hook(top_border::needed);
+    let border = move |active: bool, scale: f64| {
+        needed.then(|| TopBorder {
+            color: top_border::color(active),
+            height: 1.0 / scale,
+        })
+    };
+    let mut current = use_signal(|| border(window.has_focus(), window.scale_factor()));
+    use_window_event({
+        let window = Arc::clone(window);
+        move |event, _| {
+            // The color is read again on each change of focus, which also catches the
+            // accent setting changed in the system's settings meanwhile.
+            let next = match event {
+                WindowEvent::Focused(active) => border(*active, window.scale_factor()),
+                WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                    border(window.has_focus(), *scale_factor)
+                }
+                _ => return,
+            };
+            if *current.peek() != next {
+                current.set(next);
+            }
+        }
+    });
+    current()
+}
+
 /// [`Frame`]'s edges and corners: their classes in app.css, and which way each
 /// resizes the window.
 const EDGES: [(&str, ResizeDirection); 8] = [
@@ -493,7 +549,9 @@ pub fn root_style(stack: &str, frame: SystemFrame) -> String {
 /// The window's frame on Linux and Windows, while [`WindowState::framed`] says: the
 /// edges and corners to resize the window by. On Linux also an outline in the
 /// system's color, around corners rounded as the system's, in a root whose class has
-/// `framed` (app.css). Windows draws its own.
+/// `framed` (app.css). Windows draws its own, and its own resize borders except at the
+/// top (`frame`), so there only the top edge and its corners are the app's, and on
+/// Windows 10 the top border (`TopBorder`).
 #[component]
 pub fn Frame() -> Element {
     if !DRAWS_FRAME {
@@ -502,15 +560,30 @@ pub fn Frame() -> Element {
     let window = use_window();
     #[cfg(target_os = "linux")]
     use_kwin_shadow(&window);
+    #[cfg(target_os = "windows")]
+    let top_border = use_top_border(&window);
+    #[cfg(not(target_os = "windows"))]
+    let top_border: Option<TopBorder> = None;
     if !(use_context::<WindowState>().framed)() {
         return rsx! {};
     }
+    // On Windows the system resizes from the left, right and bottom borders, outside
+    // the window (`frame`): only the top is the app's.
+    let edges = EDGES
+        .into_iter()
+        .filter(|(name, _)| !WINDOWS || name.starts_with('n'));
 
     rsx! {
         if LINUX {
             div { class: "frame-outline" }
         }
-        for (name, direction) in EDGES {
+        if let Some(TopBorder { color, height }) = top_border {
+            div {
+                class: "top-border",
+                style: "background: {color}; transform: scaleY({height})",
+            }
+        }
+        for (name, direction) in edges {
             div {
                 key: "{name}",
                 class: "resize-edge {name}",

@@ -32,7 +32,7 @@ use crate::icons::{
 use crate::live::use_live;
 use crate::shortcuts::{self, Action, Capture, Refusal};
 use crate::ui::focus;
-use crate::ui::{APP_CSS, Reveal, scroll_into_view};
+use crate::ui::{APP_CSS, Reveal, canvas_css, scroll_into_view};
 
 const SETTINGS_CSS: &str = include_str!("settings.css");
 /// The smallest window in which every pane still lays out.
@@ -186,11 +186,13 @@ fn SettingsRoot() -> Element {
     };
     let root_style = chrome::root_style(&fonts::stack(settings.ui_font), (live.frame)());
     let framed = (window_state.framed)();
+    let canvas = canvas_css((live.theme)(), framed);
     let theme = article::theme_name((live.theme)());
     let motion = crate::ui::motion(settings.animations);
 
     rsx! {
         style { {APP_CSS} }
+        style { {canvas} }
         style { {SETTINGS_CSS} }
         div {
             class: "root settings",

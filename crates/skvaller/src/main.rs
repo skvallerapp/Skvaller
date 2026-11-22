@@ -29,6 +29,8 @@ mod shadow;
 mod shortcuts;
 mod spin;
 mod thumbs;
+#[cfg(target_os = "windows")]
+mod top_border;
 mod ui;
 
 use std::process::ExitCode;

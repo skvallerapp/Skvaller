@@ -1,5 +1,6 @@
 /* The themes' palettes. In the dark themes a black shadow barely shows, so a popover
-   is lighter than what's behind it, as macOS draws them. */
+   is lighter than what's behind it, as macOS draws them. ui.rs's canvas_css repeats
+   each theme's --reader-bg for the window's own background. */
 .root {
   /* ui.rs's TOOLBAR, which sizes the article list's viewport by it. */
   --toolbar-height: 44px;
@@ -411,7 +412,8 @@ button {
    Frame): the corners rounded as the system's, on a transparent window, and its
    outline. The radius and the outline's color come from the system (appearance.rs),
    set on the root; where the system's outline isn't known, the theme's separator
-   stands in. On Windows the system draws them, and Frame only adds the edges. */
+   stands in. On Windows the system draws them and resizes from its own borders, and
+   Frame only adds the top edge and its corners, and on Windows 10 the top border. */
 .root.linux.framed {
   position: relative;
   border-radius: var(--frame-radius);
@@ -430,6 +432,21 @@ button {
   z-index: 41;
   border: 1px solid var(--frame-outline, var(--separator));
   border-radius: var(--frame-radius);
+  pointer-events: none;
+}
+
+/* Windows 10's top border, which it doesn't draw on a window without a title bar
+   (top_border.rs): over everything, as the outline above, and taking no presses, so
+   the top resize edge under it still does. One CSS pixel tall, scaled from its top to
+   one device pixel (chrome.rs's TopBorder). */
+.top-border {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  transform-origin: top;
+  z-index: 41;
   pointer-events: none;
 }
 

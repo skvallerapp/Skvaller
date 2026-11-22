@@ -57,6 +57,9 @@ wayland-client = "0.31.15"
 wayland-protocols-plasma = { version = "0.3.12", features = ["client"] }
 # KDE's window shadows on X11, through a window property: already in the tree through winit.
 x11rb = "0.14.0"
+# The Windows version and accent color, from the registry (top_border.rs): already in the
+# tree through winit.
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Registry"] }
 
 # The guideline set (M-STATIC-VERIFICATION).
 [workspace.lints.rust]
@@ -101,6 +104,25 @@ too_long_first_doc_paragraph = "warn"
 literal_string_with_formatting_args = "allow"
 # Dependencies we don't control pull in several versions of the same crates.
 multiple_crate_versions = "allow"
+
+# winit from a fork, pinned to one commit, in place of the beta.4 that Blitz takes from
+# crates.io. On Windows it adds a precision touchpad read through DirectManipulation, and
+# the system's resize borders on a window without a title bar
+# (`with_undecorated_resize_borders`, chrome.rs). Every crate of the fork, so they don't
+# mix with crates.io's.
+[patch.crates-io]
+dpi = { git = "https://github.com/SinderC/winit", rev = "ddb79aa3" }
+winit = { git = "https://github.com/SinderC/winit", rev = "ddb79aa3" }
+winit-android = { git = "https://github.com/SinderC/winit", rev = "ddb79aa3" }
+winit-appkit = { git = "https://github.com/SinderC/winit", rev = "ddb79aa3" }
+winit-common = { git = "https://github.com/SinderC/winit", rev = "ddb79aa3" }
+winit-core = { git = "https://github.com/SinderC/winit", rev = "ddb79aa3" }
+winit-orbital = { git = "https://github.com/SinderC/winit", rev = "ddb79aa3" }
+winit-uikit = { git = "https://github.com/SinderC/winit", rev = "ddb79aa3" }
+winit-wayland = { git = "https://github.com/SinderC/winit", rev = "ddb79aa3" }
+winit-web = { git = "https://github.com/SinderC/winit", rev = "ddb79aa3" }
+winit-win32 = { git = "https://github.com/SinderC/winit", rev = "ddb79aa3" }
+winit-x11 = { git = "https://github.com/SinderC/winit", rev = "ddb79aa3" }
 
 # Debug builds optimize the dependencies: unoptimized Blitz, Stylo and Vello scroll
 # and lay out too slowly to judge the app by. The workspace's crates stay quick to

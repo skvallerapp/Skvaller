@@ -86,7 +86,9 @@ The windows, in Dioxus Native (Blitz).
 - `ui`: the main window, its state (`Reading`) and layout. It counts the shown
   account's `Change`s in `Cached`: every one reloads the library, every one but a read
   or star change reloads the list, and a mark-all-read also empties Unread of the rows
-  it kept. Its parts:
+  it kept. `canvas_css` gives each window's html the theme's background, except on
+  Linux while framed, where the window is transparent. Blitz paints it where its layout
+  rounding leaves an edge uncovered; it repeats app.css's `--reader-bg`. Its parts:
   - `ui/sidebar`: the view and account switchers, feeds and folders. `ui/tree`: the
     sidebar's rows as a tree and how the selection steps through them, as plain
     functions.
@@ -141,12 +143,22 @@ The windows, in Dioxus Native (Blitz).
   close at the window's top right, as the system's frames draw them (Breeze's on KDE,
   GNOME's elsewhere), and a frame with the system's outline and rounded corners, and
   edges to resize by, while not maximized or full screen. On Windows the window has no
-  title bar but keeps the system's shadow, border and rounded corners, and snapping by
-  drag and keyboard: the app draws Windows 11's caption buttons flush with the top
-  right corner, and the edges to resize by. Hovering its maximize button shows no Snap
-  Layouts, which take the system's hit test for it, and winit doesn't give one. The
-  reader keeps a least width for the buttons (`ui::READER_LEAST`), which the list
-  gives up width to, and the main window's least width follows from it. Everywhere the window drags from the toolbars' empty space.
+  title bar but keeps the system's shadow, border and rounded corners, its resize
+  borders outside the left, right and bottom edges (the winit fork's
+  `with_undecorated_resize_borders`), and snapping by drag and keyboard: the app draws
+  Windows 11's caption buttons flush with the top right corner, the top edge and its
+  corners to resize by, and on Windows 10 the top border (`top_border`). Hovering its
+  maximize button shows no Snap Layouts, which take the system's hit test for it, and
+  winit doesn't give one. The reader keeps a least width for the buttons
+  (`ui::READER_LEAST`), which the list gives up width to, and the main window's least
+  width follows from it. Everywhere the window drags from the toolbars' empty space.
+- `top_border`: the 1px top border Windows 10 doesn't draw on the window without a
+  title bar: any non-client area at the top makes DWM draw a caption above the window,
+  so there is none. `chrome::Frame` draws it, one device pixel tall, in DWM's colors:
+  the accent color while active when the user shows it on window borders, otherwise
+  grays fitted to DWM's. It reads the build from the registry once per window, and
+  the accent again on each change of focus. Windows 11 draws the border over the
+  content itself. Windows only.
 - `shadow`: the window's drop shadow on KDE Plasma, which KWin draws only for windows
   with a decoration. It renders Breeze's shadow as Breeze does and hands it to KWin
   through `org_kde_kwin_shadow` on winit's own Wayland connection, or on X11 through

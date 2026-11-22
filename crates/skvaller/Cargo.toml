@@ -63,5 +63,8 @@ wayland-protocols-plasma.workspace = true
 x11rb.workspace = true
 zbus.workspace = true
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys.workspace = true
+
 [lints]
 workspace = true
