@@ -378,10 +378,6 @@ fn use_kwin_shadow(window: &Arc<dyn Window>) {
 }
 
 /// The top border Windows 10 leaves out (`top_border`), for [`Frame`] to draw.
-#[cfg_attr(
-    not(target_os = "windows"),
-    expect(dead_code, reason = "made only on Windows 10")
-)]
 #[derive(Clone, Debug, PartialEq)]
 struct TopBorder {
     /// DWM's color for the window's focus.
