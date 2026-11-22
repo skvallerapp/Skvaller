@@ -211,8 +211,8 @@ The windows, in Dioxus Native (Blitz).
     Blitz drops an HTTP response body over 32 MiB (`data:` URLs aren't bodies),
     and any image, an SVG's own rasters too, whose header says it takes over
     128 MiB as RGBA or in its decoder's own format, or whose decode needs over
-    256 MiB. A PNG's ICC profile is dropped unread, and a JPEG with over 64
-    extended-XMP segments is refused. Each limit is per body or per image, not per
+    256 MiB. A PNG's ICC profile and a JPEG's extended XMP, which
+    decoders spend memory or time on, are taken out unread. Each limit is per body or per image, not per
     page.
   - Reader View pages, thumbnails and icons are fetched through `net::Untrusted`, which
     checks the resolved address on every connection and redirect. The sync server and
