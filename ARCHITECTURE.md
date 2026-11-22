@@ -210,10 +210,10 @@ The windows, in Dioxus Native (Blitz).
     An SVG's own `<image href>` loads only from `data:`; Blitz never reads it as a file.
     Blitz drops an HTTP response body over 32 MiB (`data:` URLs aren't bodies), and any
     image, an SVG's own rasters too, whose header says it takes over 128 MiB as RGBA or
-    in its decoder's own format, or whose decode needs over 256 MiB. A PNG's ICC profile
-    and text, and a JPEG's ICC profile, extended XMP and gain map, which decoders spend
-    memory or time on, are taken out unread. Each limit is per body or per image, not
-    per page.
+    in its decoder's own format, or whose decode needs over 256 MiB. Decoders spend
+    memory or time on a PNG's ICC profile and text, which are taken out, and on a JPEG's
+    ICC profile, extended XMP and gain map, which are made unrecognisable. Each limit is
+    per body or per image, not per page.
   - Reader View pages, thumbnails and icons are fetched through `net::Untrusted`, which
     checks the resolved address on every connection and redirect. The sync server and
     subscribed feeds are the user's choice and aren't filtered.
