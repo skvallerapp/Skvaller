@@ -94,6 +94,12 @@ pub const SQUARE_TEXT: &[&str] = &[
     "M7 12h10",
     "M7 16h6",
 ];
+/// [`SQUARE_TEXT`] filled, its lines cut out: the square's outline at a stroke of 2.25,
+/// the lines as round-capped holes, for `fill-rule: evenodd`.
+pub const SQUARE_TEXT_FILLED: &str = "M5 1.875h14a3.125 3.125 0 0 1 3.125 3.125v14a3.125 3.125 0 0 1-3.125 3.125H5a3.125 3.125 0 0 1-3.125-3.125V5A3.125 3.125 0 0 1 5 1.875z\
+    M7 6.875h8a1.125 1.125 0 0 1 0 2.25h-8a1.125 1.125 0 0 1 0-2.25z\
+    M7 10.875h10a1.125 1.125 0 0 1 0 2.25h-10a1.125 1.125 0 0 1 0-2.25z\
+    M7 14.875h6a1.125 1.125 0 0 1 0 2.25h-6a1.125 1.125 0 0 1 0-2.25z";
 pub const GLOBE: &[&str] = &[
     "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0",
     "M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20",

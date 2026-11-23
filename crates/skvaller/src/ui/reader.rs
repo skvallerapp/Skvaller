@@ -1,7 +1,7 @@
 //! The reader: the open article in its own document, and its buttons.
 
 use super::*;
-use crate::icons::{GLOBE, SQUARE_TEXT};
+use crate::icons::{GLOBE, SQUARE_TEXT, SQUARE_TEXT_FILLED};
 
 /// Lucide's star.
 pub(super) const STAR_PATH: &str = "M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z";
@@ -14,6 +14,12 @@ pub(super) fn Reader() -> Element {
     // Only what the document shows remakes it: remade, the frame loads again, back at
     // the top, so a new look keeps the article's place (`Remake::keep_place`).
     let look = use_memo(move || article::Look::new(&live.settings.read(), (live.theme)()));
+    // The Reader View text to show, apart: its loading states don't remake the document.
+    let full_text = use_memo(move || {
+        let rv = reading.reader_view.read();
+        let key = Some(((reading.account)()?, (reading.article)()?.id));
+        rv.html.clone().filter(|_| rv.on && rv.article == key)
+    });
     let remake = use_hook(|| Remake {
         look: Signal::new(*look.peek()),
         count: Signal::new(0),
@@ -25,23 +31,22 @@ pub(super) fn Reader() -> Element {
     use_effect(move || {
         let next = look();
         if next != *remake.look.peek() {
-            spawn(remake.keep_place(reading.frame, reading.article, look, next));
+            spawn(remake.keep_place(reading.frame, reading.article, full_text, look, next));
         }
     });
-    // Another article opening forgets the one remade: it fades in, and so does the remade
-    // one opened again.
+    // Another article opening, or its text swapping, forgets the one remade: it fades
+    // in, and so does the remade one shown again.
     use_effect(move || {
         let id = reading.article.read().as_ref().map(|a| a.id.clone());
+        let shown = full_text.read().is_some();
         let mut remade = remake.article;
-        if *remade.peek() != id && remade.peek().is_some() {
+        if remade
+            .peek()
+            .as_ref()
+            .is_some_and(|(r, text)| Some(r) != id.as_ref() || *text != shown)
+        {
             remade.set(None);
         }
-    });
-    // The Reader View text to show, apart: its loading states don't remake the document.
-    let full_text = use_memo(move || {
-        let rv = reading.reader_view.read();
-        let key = Some(((reading.account)()?, (reading.article)()?.id));
-        rv.html.clone().filter(|_| rv.on && rv.article == key)
     });
     let doc = use_memo({
         let app = Arc::clone(&app);
@@ -56,7 +61,10 @@ pub(super) fn Reader() -> Element {
             let feed = lib.feed(&a.feed_id);
             let date = live.dates.read().full(a.published);
             let mut look = (remake.look)();
-            if (remake.article).read().as_ref() == Some(&a.id) {
+            // Remade for a look, it doesn't fade in again; swapped to or from Reader View
+            // it does.
+            let shown = (a.id.clone(), full_text.read().is_some());
+            if (remake.article).read().as_ref() == Some(&shown) {
                 look.animations = false;
             }
             Some(article::document(&a, feed, &html, &date, look))
@@ -140,14 +148,16 @@ pub(super) struct Remake {
     /// The remade frame hides until it is in its place, so it doesn't show the top, nor
     /// its fade in, first.
     pub(super) hidden: Signal<bool>,
-    /// The article the document was last remade for: remade, it doesn't fade in again
-    /// as an article opening does.
-    pub(super) article: Signal<Option<String>>,
+    /// The article the document was last remade for, and whether it showed Reader View's
+    /// text: remade, it doesn't fade in again, as an article opening or its text swapping
+    /// does.
+    pub(super) article: Signal<Option<(String, bool)>>,
 }
 
 impl Remake {
     /// Shows the article in the look `next`, the newest of `look`, at the place it is
-    /// scrolled to now in `frame`, while `article` stays open.
+    /// scrolled to now in `frame`, while `article` stays open; `full_text` says whether
+    /// it shows Reader View's text.
     ///
     /// A new look remakes the reader's document, and the frame loads it from the top. So
     /// the place, as a share of how far the frame scrolls, is read first, and the remade
@@ -158,6 +168,7 @@ impl Remake {
         mut self,
         frame: Signal<Option<Rc<MountedData>>>,
         article: Signal<Option<ArticleSummary>>,
+        full_text: Memo<Option<String>>,
         look: Memo<article::Look>,
         next: article::Look,
     ) {
@@ -188,7 +199,8 @@ impl Remake {
         self.look.set(next);
         self.count += 1;
         if article.peek().as_ref().map(|a| &a.id) == Some(&id) {
-            self.article.set(Some(id.clone()));
+            self.article
+                .set(Some((id.clone(), full_text.peek().is_some())));
         }
         let made = *self.count.peek();
         if let Some(place) = place {
@@ -237,50 +249,86 @@ impl Remake {
     }
 }
 
-/// Which of the reader's toolbar icons pop: the unread mark or the star, when it turns
-/// on for the article shown, not when an article opens with it on.
+/// Which way the reader's toolbar icons pop: the unread mark, the star and Reader View,
+/// when one turns on or off for the article shown, not when an article opens with it on.
 #[derive(Debug, Default)]
 pub(super) struct Pops {
     pub(super) id: String,
     pub(super) unread: Pop,
     pub(super) star: Pop,
+    pub(super) reader_view: Pop,
 }
 
-/// One icon of [`Pops`]: whether it is on, and whether it popped turning on.
+/// How an icon of [`Pops`] last popped.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Motion {
+    #[default]
+    Still,
+    /// Turned on: it pops.
+    On,
+    /// Turned off: it pops too, under another animation name, so the next turn restarts
+    /// it.
+    Off,
+}
+
+impl Motion {
+    /// The class that plays it, after a space.
+    fn class(self) -> &'static str {
+        match self {
+            Self::Still => "",
+            Self::On => " pop",
+            Self::Off => " pop-off",
+        }
+    }
+}
+
+/// One icon of [`Pops`]: whether it is on, and how it popped last.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Pop {
     pub(super) on: bool,
-    pub(super) pops: bool,
+    pub(super) motion: Motion,
 }
 
 impl Pop {
-    /// Takes in `on` for the same article: an icon pops when it turns on, and stays
-    /// popped until it turns off, so a re-render doesn't replay it.
-    pub(super) fn update(&mut self, on: bool) -> bool {
+    /// Takes in `on` for the same article: an icon pops when it turns on or off, and
+    /// keeps that class until it turns again, so a re-render doesn't replay it.
+    pub(super) fn update(&mut self, on: bool) -> Motion {
         if on != self.on {
-            self.pops = on;
+            self.motion = if on { Motion::On } else { Motion::Off };
         }
         self.on = on;
-        self.pops
+        self.motion
+    }
+
+    fn opened(on: bool) -> Self {
+        Self {
+            on,
+            motion: Motion::Still,
+        }
     }
 }
 
 impl Pops {
-    /// Takes in what the toolbar shows now, and returns whether the unread mark and the
-    /// star pop.
-    pub(super) fn update(&mut self, id: &str, read: bool, starred: bool) -> (bool, bool) {
+    /// Takes in what the toolbar shows now, and returns how the unread mark, the star
+    /// and Reader View pop.
+    pub(super) fn update(
+        &mut self,
+        id: &str,
+        read: bool,
+        starred: bool,
+        reader_view: bool,
+    ) -> (Motion, Motion, Motion) {
         if self.id != id {
             id.clone_into(&mut self.id);
-            self.unread = Pop {
-                on: !read,
-                pops: false,
-            };
-            self.star = Pop {
-                on: starred,
-                pops: false,
-            };
+            self.unread = Pop::opened(!read);
+            self.star = Pop::opened(starred);
+            self.reader_view = Pop::opened(reader_view);
         }
-        (self.unread.update(!read), self.star.update(starred))
+        (
+            self.unread.update(!read),
+            self.star.update(starred),
+            self.reader_view.update(reader_view),
+        )
     }
 }
 
@@ -291,8 +339,6 @@ pub(super) fn ReaderButtons(article: ArticleSummary) -> Element {
     let reading = use_context::<Reading>();
     let read = reading.is_read(&article);
     let starred = reading.is_starred(&article);
-    let pops = use_hook(|| Rc::new(RefCell::new(Pops::default())));
-    let (unread_pops, star_pops) = pops.borrow_mut().update(&article.id, read, starred);
     let read_label = if read {
         t("reader.markUnread")
     } else {
@@ -314,11 +360,25 @@ pub(super) fn ReaderButtons(article: ArticleSummary) -> Element {
             rv.fetch == Fetch::Failed,
         )
     };
-    let rv_class = match (rv_on, rv_loading) {
-        (_, true) => "icon-button reader-view loading",
-        (true, false) => "icon-button reader-view",
-        (false, false) => "icon-button",
-    };
+    let pops = use_hook(|| Rc::new(RefCell::new(Pops::default())));
+    let (unread_motion, star_motion, rv_motion) =
+        pops.borrow_mut().update(&article.id, read, starred, rv_on);
+    let unread_class = format!(
+        "icon-button{}{}",
+        if read { "" } else { " unread" },
+        unread_motion.class()
+    );
+    let star_class = format!(
+        "icon-button{}{}",
+        if starred { " starred" } else { "" },
+        star_motion.class()
+    );
+    let rv_class = format!(
+        "icon-button{}{}{}",
+        if rv_on { " reader-view" } else { "" },
+        if rv_loading { " loading" } else { "" },
+        rv_motion.class()
+    );
     rsx! {
         div { class: "spacer",
             // Announced, and shown until the next try or article.
@@ -327,11 +387,7 @@ pub(super) fn ReaderButtons(article: ArticleSummary) -> Element {
             }
         }
         button {
-            class: match (read, unread_pops) {
-                (true, _) => "icon-button",
-                (false, false) => "icon-button unread",
-                (false, true) => "icon-button unread pop",
-            },
+            class: unread_class,
             aria_label: read_label.clone(),
             title: read_label,
             onclick: move |_| reading.run(&app, Action::ToggleRead.into()),
@@ -341,11 +397,7 @@ pub(super) fn ReaderButtons(article: ArticleSummary) -> Element {
             }
         }
         button {
-            class: match (starred, star_pops) {
-                (false, _) => "icon-button",
-                (true, false) => "icon-button starred",
-                (true, true) => "icon-button starred pop",
-            },
+            class: star_class,
             aria_label: star_label.clone(),
             title: star_label,
             onclick: move |_| reading.run(&star_app, Action::ToggleStar.into()),
@@ -361,7 +413,17 @@ pub(super) fn ReaderButtons(article: ArticleSummary) -> Element {
             "aria-busy": "{rv_loading}",
             disabled: article.url.is_empty(),
             onclick: move |_| reading.run(&reader_app, Action::ToggleReaderView.into()),
-            Icon { size: 18, stroke: "2.25", paths: SQUARE_TEXT }
+            // The pulse on its own element: the icon's pop doesn't restart when loading
+            // ends. Filled while on, outlined while off, as the unread mark.
+            span { class: "pulse",
+                if rv_on {
+                    svg { width: "18", height: "18", view_box: "0 0 24 24", fill: "currentColor", fill_rule: "evenodd", "aria-hidden": "true",
+                        path { d: SQUARE_TEXT_FILLED }
+                    }
+                } else {
+                    Icon { size: 18, stroke: "2.25", paths: SQUARE_TEXT }
+                }
+            }
         }
         button {
             class: "icon-button",

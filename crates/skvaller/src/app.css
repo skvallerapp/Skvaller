@@ -36,7 +36,8 @@
      their light text readable. frame.css has the same. */
   --selection: rgb(154 81 54 / 0.2);
   --destructive: #c4352b;
-  --unread: #9a5136;
+  /* A toolbar icon turned on: the unread mark, Reader View. */
+  --icon-on: #9a5136;
   --star: #e0a21b;
   --error: #b52f28;
 }
@@ -61,7 +62,7 @@
     --popover-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
     --accent: #52709c;
     --selection: rgb(82 112 156 / 0.55);
-    --unread: #8aa4c8;
+    --icon-on: #8aa4c8;
     --star: #f0b63a;
     --error: #f0776c;
   }
@@ -86,7 +87,7 @@
   --popover-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
   --accent: #52709c;
   --selection: rgb(82 112 156 / 0.55);
-  --unread: #8aa4c8;
+  --icon-on: #8aa4c8;
   --star: #f0b63a;
   --error: #f0776c;
 }
@@ -110,7 +111,7 @@
   --popover-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
   --accent: #9a6342;
   --selection: rgb(154 99 66 / 0.55);
-  --unread: #cfa080;
+  --icon-on: #cfa080;
   --star: #f0b63a;
   --error: #f4847a;
 }
@@ -180,8 +181,16 @@ body {
   }
 }
 
-/* Marking an article unread or starring it. */
+/* A toolbar icon turning on or off. */
 @keyframes pop {
+  50% {
+    transform: scale(1.25);
+  }
+}
+
+/* The same pop under another name, for turning off: a new name restarts it, so turning
+   an icon off and on again pops each time. */
+@keyframes pop-off {
   50% {
     transform: scale(1.25);
   }
@@ -221,7 +230,7 @@ button {
 }
 
 .icon-button.unread {
-  color: var(--unread);
+  color: var(--icon-on);
 }
 
 .icon-button.starred {
@@ -1240,24 +1249,34 @@ input.search-field {
   animation: spin 0.9s linear infinite;
 }
 
-/* Reader View: on, in the accent; loading, pulsing. */
+/* Reader View: on, filled in the color of an icon turned on; loading, pulsing. */
 .icon-button.reader-view {
-  color: var(--accent);
+  color: var(--icon-on);
 }
 
-.icon-button.loading svg {
+/* Around the icon, so the pulse and the icon's pop are two elements' animations: one
+   list for both would restart the pop as loading ends. */
+.icon-button .pulse {
+  display: flex;
+}
+
+.icon-button.loading .pulse {
   animation: pulse 1s ease-in-out infinite alternate;
 }
 
 /* Without the spin or the pulse, a dimmed icon shows the work. */
 .root[data-motion='off'] .sync.spinning svg,
-.root[data-motion='off'] .icon-button.loading svg {
+.root[data-motion='off'] .icon-button.loading .pulse {
   opacity: 0.5;
 }
 
-/* Marking the open article unread or starring it, not opening one that already is. */
+/* Turning an icon on or off for the open article, not opening one that already is. */
 .icon-button.pop svg {
   animation: pop 220ms ease-out;
+}
+
+.icon-button.pop-off svg {
+  animation: pop-off 220ms ease-out;
 }
 
 /* Why Reader View turned itself off, at the start of the reader's toolbar. */

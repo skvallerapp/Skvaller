@@ -1866,7 +1866,10 @@ fn row_offsets(
 
 #[cfg(test)]
 mod tests {
-    use super::reader::Pops;
+    use super::reader::{
+        Motion::{Off, On, Still},
+        Pops,
+    };
     use super::sidebar::sidebar_place;
     use super::*;
     use crate::place::visible_rows;
@@ -2032,19 +2035,22 @@ mod tests {
     }
 
     #[test]
-    fn icons_pop_when_turned_on_not_when_opened_on() {
+    fn icons_pop_when_turned_not_when_opened() {
         let mut pops = Pops::default();
-        // Opened unread and starred: nothing pops.
-        assert_eq!(pops.update("a", false, true), (false, false));
-        // Marked read, then unread again: the mark pops, and stays popped.
-        assert_eq!(pops.update("a", true, true), (false, false));
-        assert_eq!(pops.update("a", false, true), (true, false));
-        assert_eq!(pops.update("a", false, true), (true, false));
+        // Opened unread, starred, in Reader View: nothing pops.
+        assert_eq!(pops.update("a", false, true, true), (Still, Still, Still));
+        // Marked read, then unread again: each way pops, and a re-render doesn't replay it.
+        assert_eq!(pops.update("a", true, true, true), (Off, Still, Still));
+        assert_eq!(pops.update("a", false, true, true), (On, Still, Still));
+        assert_eq!(pops.update("a", false, true, true), (On, Still, Still));
         // Unstarred, then starred.
-        assert_eq!(pops.update("a", false, false), (true, false));
-        assert_eq!(pops.update("a", false, true), (true, true));
+        assert_eq!(pops.update("a", false, false, true), (On, Off, Still));
+        assert_eq!(pops.update("a", false, true, true), (On, On, Still));
+        // Reader View off, then on from what it loaded before.
+        assert_eq!(pops.update("a", false, true, false), (On, On, Off));
+        assert_eq!(pops.update("a", false, true, true), (On, On, On));
         // Another article opens unread and starred: nothing pops.
-        assert_eq!(pops.update("b", false, true), (false, false));
+        assert_eq!(pops.update("b", false, true, false), (Still, Still, Still));
     }
 
     #[test]
