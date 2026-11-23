@@ -37,6 +37,14 @@ cargo run --release -p skvaller   # run the app
 cargo test --workspace
 ```
 
+Before a release, check the dependencies against the RustSec advisory database. It
+fails on a known vulnerability; an unmaintained crate is only a warning:
+
+```sh
+cargo install cargo-audit --locked   # once
+cargo audit
+```
+
 On macOS, `cargo run` signs the app with your Apple Development certificate if you
 have one (Xcode → Settings → Accounts → Manage Certificates; a free account works).
 The keychain then keeps trusting each new build, and stops asking for your password
