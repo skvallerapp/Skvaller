@@ -486,6 +486,35 @@ async fn repeated_entry_id_keeps_the_first_and_its_reader_view_text() {
 }
 
 #[tokio::test]
+async fn a_youtube_entry_takes_its_media_description() {
+    let server = MockServer::start().await;
+    let feed = r#"<?xml version="1.0"?>
+        <feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+          <title>Channel</title>
+          <entry><id>yt:video:1</id><title>Video</title>
+            <link rel="alternate" href="https://www.youtube.com/watch?v=1"/>
+            <media:group>
+              <media:content url="https://www.youtube.com/v/1" type="application/x-shockwave-flash"/>
+              <media:description>Line one &amp; &lt;b&gt;
+Line two: https://example.com/a?b=1&amp;c=2.</media:description></media:group></entry>
+        </feed>"#;
+    serve(&server, "/feed.xml", xml(feed.to_owned())).await;
+    let db = Db::open_in_memory().unwrap();
+    let feed_id = subscribe(&db, &format!("{}/feed.xml", server.uri()), None, NOW)
+        .await
+        .unwrap();
+
+    let id = article_id(&feed_id, "yt:video:1").to_string();
+    assert_eq!(
+        db.article_html(&id).unwrap().as_deref(),
+        Some(
+            "<p>Line one &amp; &lt;b&gt;<br>Line two: \
+             <a href=\"https://example.com/a?b=1&amp;c=2\">https://example.com/a?b=1&amp;c=2</a>.</p>"
+        )
+    );
+}
+
+#[tokio::test]
 async fn new_entries_want_a_thumbnail_from_their_media_and_only_once() {
     let server = MockServer::start().await;
     let items = r#"
