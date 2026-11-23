@@ -15,7 +15,7 @@ use crate::full_text::MAX_ATTEMPTS;
 use crate::text::{INVISIBLE, plain_text};
 use crate::{Error, Result, api, thumbnail};
 
-const SCHEMA_VERSION: i32 = 9;
+const SCHEMA_VERSION: i32 = 10;
 
 /// The schema as of version 8, the oldest version that is migrated rather than reset.
 /// A change to the schema bumps [`SCHEMA_VERSION`], goes in a new constant like
@@ -115,6 +115,15 @@ CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
     value NOT NULL
 );
+";
+
+/// Version 10: YouTube videos want their thumbnail again, now taken 16:9 without the
+/// black bars (see `thumbnail::candidates`). The old one shows until the new one is in.
+const REFETCH_YOUTUBE_THUMBNAILS: &str = "
+INSERT INTO thumbnail_sources (article_id)
+SELECT id FROM articles
+WHERE url LIKE '%youtube.com/%' OR url LIKE '%youtu.be/%' OR url LIKE '%youtube-nocookie.com/%'
+ON CONFLICT DO NOTHING;
 ";
 
 /// Version 9: full-text search over the articles' titles, authors and text.
@@ -445,6 +454,11 @@ impl Db {
                 "BEGIN IMMEDIATE; {SEARCH}
                  INSERT INTO search (rowid, title, author, body)
                  SELECT article_rowid, title, author, body FROM search_source;
+                 {REFETCH_YOUTUBE_THUMBNAILS}
+                 PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+            ))?,
+            9 => conn.execute_batch(&format!(
+                "BEGIN IMMEDIATE; {REFETCH_YOUTUBE_THUMBNAILS}
                  PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
             ))?,
             v => {
@@ -2223,6 +2237,37 @@ mod tests {
                 .unwrap(),
             SCHEMA_VERSION
         );
+        drop(db);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    #[test]
+    fn version_9_cache_fetches_youtube_thumbnails_again() {
+        let path = std::env::temp_dir().join(format!("skvaller-v9-{}.db", std::process::id()));
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(&format!(
+            "{SCHEMA} {SEARCH}
+             INSERT INTO feeds (id, title, subscribed) VALUES ('feed/1', 'Feed', 1);
+             INSERT INTO articles VALUES
+                 ('1', 'feed/1', 'Video', '', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', 1, 0, 0),
+                 ('2', 'feed/1', 'Post', '', 'https://blog.example/1', 2, 0, 0);
+             INSERT INTO thumbnails VALUES ('1', x'00'), ('2', x'00');
+             PRAGMA user_version = 9;"
+        ))
+        .unwrap();
+        drop(conn);
+
+        let db = Db::open(&path).unwrap();
+
+        let wanted: Vec<String> = db
+            .thumbnails_wanted(10)
+            .unwrap()
+            .into_iter()
+            .map(|w| w.id)
+            .collect();
+        assert_eq!(wanted, ["1"]);
         drop(db);
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));

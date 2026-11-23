@@ -252,8 +252,45 @@ pub async fn prefetch(db: &Db, mut stored: impl FnMut()) -> Result<()> {
     Ok(())
 }
 
-/// The images to try for `article`: the one the feed named, else those in its HTML.
+/// A YouTube video's ID, from its watch, short, live, embed or youtu.be URL, or one of
+/// its stills on ytimg.com.
+pub(crate) fn youtube_video(url: &str) -> Option<String> {
+    let url = Url::parse(url).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    let host = host.strip_prefix("www.").unwrap_or(&host);
+    let host = host.strip_prefix("m.").unwrap_or(host);
+    let mut segments = url.path_segments()?;
+    let id = match (host, segments.next()?) {
+        ("youtu.be", id) => id.to_owned(),
+        ("youtube.com", "watch") => url
+            .query_pairs()
+            .find_map(|(k, v)| (k == "v").then(|| v.into_owned()))?,
+        ("youtube.com" | "youtube-nocookie.com", "shorts" | "live" | "embed") => {
+            segments.next()?.to_owned()
+        }
+        (host, "vi" | "vi_webp") if host.ends_with(".ytimg.com") => segments.next()?.to_owned(),
+        _ => return None,
+    };
+    let valid = id.len() == 11
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    valid.then_some(id)
+}
+
+/// The images to try for `article`: for a YouTube video its 16:9 stills, else the one
+/// the feed named, else those in its HTML.
+///
+/// A feed names the video's `hqdefault.jpg`, 4:3 with black bars above and below, and
+/// The Old Reader none at all. `maxresdefault.jpg` (1280 × 720) exists only for HD
+/// videos; `mqdefault.jpg` (320 × 180) for every video.
 async fn candidates(db: &Db, article: &ThumbnailWanted) -> Result<Vec<String>> {
+    if let Some(id) = youtube_video(&article.url) {
+        return Ok(["maxresdefault", "mqdefault"]
+            .iter()
+            .map(|name| format!("https://i.ytimg.com/vi/{id}/{name}.jpg"))
+            .collect());
+    }
     if let Some(url) = &article.source {
         return Ok(vec![url.clone()]);
     }

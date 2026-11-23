@@ -124,6 +124,28 @@ fn the_first_images_in_the_html_are_picked_without_tiny_ones_or_trackers() {
 }
 
 #[test]
+fn a_youtube_videos_id_comes_from_any_of_its_urls() {
+    for url in [
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://m.youtube.com/watch?feature=x&v=dQw4w9WgXcQ",
+        "https://youtu.be/dQw4w9WgXcQ",
+        "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+        "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
+        "https://i3.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+    ] {
+        assert_eq!(youtube_video(url).as_deref(), Some("dQw4w9WgXcQ"), "{url}");
+    }
+    for url in [
+        "https://www.youtube.com/channel/UC123",
+        "https://www.youtube.com/watch?v=short",
+        "https://notyoutube.com/watch?v=dQw4w9WgXcQ",
+        PAGE,
+    ] {
+        assert_eq!(youtube_video(url), None, "{url}");
+    }
+}
+
+#[test]
 fn a_large_image_shrinks_to_fit_and_a_small_one_stays_its_size() {
     let big = decoded(&shrink(&png(2000, 1000, [10, 120, 200, 255])).unwrap());
     assert_eq!((big.width(), big.height()), (MAX_SIDE, MAX_SIDE / 2));

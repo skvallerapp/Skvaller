@@ -9,6 +9,7 @@ use reqwest::Url;
 
 use crate::html::parse;
 use crate::net::absolute;
+use crate::thumbnail::youtube_video;
 
 /// `html` readied for the reader, with relative URLs resolved against `base`.
 ///
@@ -22,6 +23,10 @@ use crate::net::absolute;
 ///   scripts, controls are the only way to play.
 /// - Forms are unwrapped, their fields kept: sending one would load any page into the
 ///   reader's frame, in place of the article and its header.
+/// - A YouTube embed becomes its video's still, linked to the video: the player needs
+///   scripts. So does a still of the video not already in a link, which FreshRSS puts
+///   in from the feed: it is uncropped. A YouTube video's own article with neither
+///   starts with the still.
 ///
 /// An article nested too deeply to parse safely gives an empty string.
 #[must_use]
@@ -46,6 +51,19 @@ pub fn ready_article(html: &str, base: &str) -> String {
         }
     }
     doc.root().strip_elements(&["form"]);
+    let mut stills = false;
+    for el in doc.select("iframe[src], img[src]").nodes() {
+        let src = el.attr("src").unwrap_or_default();
+        let id = absolute(base.as_ref(), &src).and_then(|url| youtube_video(url.as_str()));
+        // The still is a link, which can't go inside another.
+        let linked = el.ancestors_it(None).any(|a| a.has_name("a"));
+        if let Some(id) = id
+            && !linked
+        {
+            el.replace_with_html(video_still(&id));
+            stills = true;
+        }
+    }
     for media in doc.select("audio, video").nodes() {
         media.remove_attr("autoplay");
         media.set_attr("preload", "none");
@@ -63,7 +81,20 @@ pub fn ready_article(html: &str, base: &str) -> String {
     }
     let head = doc.select("head").inner_html();
     let body = doc.select("body").inner_html();
-    format!("{head}{body}")
+    let lead = match youtube_video(base.as_ref().map_or("", Url::as_str)) {
+        Some(id) if !stills => format!("<p>{}</p>", video_still(&id)),
+        _ => String::new(),
+    };
+    format!("{head}{lead}{body}")
+}
+
+/// A YouTube video's still, linked to the video. `hqdefault.jpg` exists for every
+/// video; it is 4:3 with black bars, which `frame.css` crops off.
+fn video_still(id: &str) -> String {
+    format!(
+        "<a class=\"skvaller-video\" href=\"https://www.youtube.com/watch?v={id}\" target=\"_blank\">\
+         <img src=\"https://i.ytimg.com/vi/{id}/hqdefault.jpg\" alt=\"\"></a>"
+    )
 }
 
 fn leaves_frame(url: &Url) -> bool {
@@ -131,6 +162,45 @@ mod tests {
         );
         assert!(html.contains(r##"<a href="#fn1">1</a>"##), "{html}");
         assert!(html.contains("<a>b</a>"), "{html}");
+    }
+
+    #[test]
+    fn a_youtube_embed_becomes_its_linked_still() {
+        let html = ready_article(
+            r#"<iframe src="//www.youtube-nocookie.com/embed/dQw4w9WgXcQ"></iframe><iframe src="https://other.example/x"></iframe>"#,
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        );
+        assert_eq!(
+            html.matches("i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg")
+                .count(),
+            1,
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"href="https://www.youtube.com/watch?v=dQw4w9WgXcQ""#),
+            "{html}"
+        );
+        assert!(!html.contains("youtube-nocookie"), "{html}");
+        assert!(html.contains("other.example"), "{html}");
+    }
+
+    #[test]
+    fn a_feeds_youtube_still_becomes_the_cropped_linked_one() {
+        let html = ready_article(
+            r#"<figure><p><img src="https://i3.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"></p></figure><a href="/x"><img src="https://i.ytimg.com/vi/dQw4w9WgXcQ/0.jpg"></a>"#,
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        );
+        assert_eq!(html.matches("skvaller-video").count(), 1, "{html}");
+        assert!(!html.contains("i3.ytimg.com"), "{html}");
+        assert!(html.contains("i.ytimg.com/vi/dQw4w9WgXcQ/0.jpg"), "{html}");
+    }
+
+    #[test]
+    fn a_youtube_videos_article_starts_with_its_still() {
+        let html = ready_article("<p>About</p>", "https://youtu.be/dQw4w9WgXcQ");
+        assert!(html.starts_with("<p><a class=\"skvaller-video\""), "{html}");
+        assert!(html.ends_with("<p>About</p>"), "{html}");
+        assert!(!ready_article("<p>About</p>", BASE).contains("skvaller-video"));
     }
 
     #[test]
