@@ -528,12 +528,23 @@ async fn media_descriptions_come_after_content_and_an_empty_one_is_no_error() {
           <entry><id>summary</id><title>C</title><summary>Own text</summary>{}</entry>
           <entry><id>no-summary</id><title>D</title><summary> </summary>{}</entry>
           <entry><id>html</id><title>E</title>{}</entry>
+          <entry><id>title</id><title>F</title>{}</entry>
+          <entry><id>typed</id><title>G</title>{}</entry>
+          <entry><id>cdata</id><title>H</title>{}</entry>
+          <entry><id>blank-first</id><title>I</title>{}{}</entry>
+          <entry><id>text</id><title>J</title><summary type="text">a &lt;b&gt; c
+d</summary></entry>
         </feed>"#,
         media("<media:description/>"),
         media("<media:description> </media:description>"),
         media("<media:description>Media text</media:description>"),
         media("<media:description>Media text</media:description>"),
         media(r#"<media:description type="html">&lt;b&gt;Bold&lt;/b&gt;</media:description>"#),
+        media("<media:title></media:title><media:description>Kept</media:description>"),
+        media(r#"<media:description type="text/html">Odd</media:description>"#),
+        media("<media:description><![CDATA[]]><!-- none --></media:description>"),
+        media("<media:description> </media:description>"),
+        media("<media:description>Second</media:description>"),
     );
     serve(&server, "/feed.xml", xml(feed)).await;
     let db = Db::open_in_memory().unwrap();
@@ -547,9 +558,14 @@ async fn media_descriptions_come_after_content_and_an_empty_one_is_no_error() {
             .unwrap_or_default()
     };
     assert_eq!(html("empty"), "");
-    assert_eq!(html("summary"), "Own text");
+    assert_eq!(html("summary"), "<p>Own text</p>");
     assert_eq!(html("no-summary"), "<p>Media text</p>");
     assert_eq!(html("html"), "<b>Bold</b>");
+    assert_eq!(html("title"), "<p>Kept</p>");
+    assert_eq!(html("typed"), "");
+    assert_eq!(html("cdata"), "");
+    assert_eq!(html("blank-first"), "<p>Second</p>");
+    assert_eq!(html("text"), "<p>a &lt;b&gt; c<br>d</p>");
 }
 
 #[tokio::test]

@@ -29,7 +29,8 @@ use crate::thumbnail::youtube_video;
 /// - A YouTube embed, lazy-loading or not, becomes its video's still, linked to the
 ///   video: the player needs scripts. So does a still of a video, as FreshRSS puts in
 ///   from the feed: it is uncropped. One still per video; a YouTube video's own article
-///   without one starts with it.
+///   without one starts with it. A Short's still is not cropped, and FreshRSS's link to
+///   a shown video's old Flash player goes.
 /// - Other iframes are dropped: they would load a page into the reader, which is
 ///   almost always a player that needs scripts, and its host would see the reader.
 ///
@@ -74,6 +75,10 @@ pub fn ready_article(html: &str, base: &str) -> String {
     }
     doc.root().strip_elements(&["form"]);
     let mut stills: Vec<String> = Vec::new();
+    // A Short's still has no black bars to crop.
+    let short = base
+        .as_ref()
+        .is_some_and(|b| b.path().starts_with("/shorts/"));
     for el in doc.select("iframe, img").nodes() {
         // Lazy-loading pages put a placeholder in `src` (often the page itself) and
         // the embed in `data-src`. An empty or `#` one would resolve to the page.
@@ -91,13 +96,26 @@ pub fn ready_article(html: &str, base: &str) -> String {
         // A link can't go inside another: in one, the still is only the image.
         let linked = el.ancestors_it(None).any(|a| a.has_name("a"));
         el.replace_with_html(if linked {
-            still_image(&id)
+            still_image(&id, short)
         } else {
-            video_still(&id)
+            video_still(&id, short)
         });
         stills.push(id);
     }
     doc.select("iframe").remove();
+    // FreshRSS links each video's old Flash player, as 💾, beside its still.
+    for link in doc.select("a[download]").nodes() {
+        let href = link.attr("href").unwrap_or_default();
+        if youtube_video(&href).is_some_and(|id| stills.contains(&id)) {
+            let parent = link.parent();
+            link.remove_from_parent();
+            if let Some(p) = parent.filter(|p| {
+                p.has_name("p") && p.element_children().is_empty() && p.text().trim().is_empty()
+            }) {
+                p.remove_from_parent();
+            }
+        }
+    }
     for media in doc.select("audio, video").nodes() {
         media.remove_attr("autoplay");
         media.set_attr("preload", "none");
@@ -116,7 +134,7 @@ pub fn ready_article(html: &str, base: &str) -> String {
     let head = doc.select("head").inner_html();
     let body = doc.select("body").inner_html();
     let lead = match youtube_video(base.as_ref().map_or("", Url::as_str)) {
-        Some(id) if !stills.contains(&id) => format!("<p>{}</p>", video_still(&id)),
+        Some(id) if !stills.contains(&id) => format!("<p>{}</p>", video_still(&id, short)),
         _ => String::new(),
     };
     format!("{head}{lead}{body}")
@@ -144,8 +162,8 @@ const UNLINKED: [&str; 16] = [
 ];
 
 /// `text` as HTML with its http and https addresses linked, or `None` if it has none.
-/// An address runs to whitespace, a quote, an angle bracket or CJK text, less what
-/// ends the sentence around it: see [`trim_url`].
+/// An address starts a word and runs as [`url_end`] says, less what ends the sentence
+/// around it: see [`trim_url`].
 fn linked(text: &str) -> Option<String> {
     let mut out = String::new();
     // `text` before `done` is in `out`.
@@ -163,7 +181,15 @@ fn linked(text: &str) -> Option<String> {
         let Some(start) = scheme(5, "https").or_else(|| scheme(4, "http")) else {
             continue;
         };
-        let end = text[from..].find(ends_url).map_or(text.len(), |i| from + i);
+        // Not `xhttps://`: a scheme starts a word, or follows CJK text.
+        if text[..start]
+            .bytes()
+            .next_back()
+            .is_some_and(|b| b.is_ascii_alphanumeric())
+        {
+            continue;
+        }
+        let end = url_end(&text[from..]).map_or(text.len(), |i| from + i);
         let url = trim_url(&text[start..end]);
         if url.len() <= sep + 3 - start {
             continue;
@@ -181,47 +207,65 @@ fn linked(text: &str) -> Option<String> {
     Some(out)
 }
 
-/// Whether `c` can't be in a written-out address. CJK text runs on with no space after
-/// one.
-fn ends_url(c: char) -> bool {
-    c.is_whitespace()
-        || matches!(c, '<' | '>' | '"' | '“' | '”' | '‘' | '’' | '«' | '»')
-        || matches!(c, '\u{2E80}'..='\u{9FFF}' | '\u{AC00}'..='\u{D7AF}' | '\u{F900}'..='\u{FAFF}' | '\u{FF00}'..='\u{FFEF}')
+/// Where a written-out address ends in `rest`, the text after its `://`: at whitespace,
+/// a quote, an angle bracket, an invisible break or CJK text, which runs on with no
+/// space after one. Browsers copy a CJK path percent-encoded, so few addresses are
+/// written with one, and one with a CJK host is not found.
+fn url_end(rest: &str) -> Option<usize> {
+    rest.find(|c: char| {
+        c.is_whitespace()
+            || matches!(c, '<' | '>' | '"' | '“' | '”' | '‘' | '«' | '»')
+            || matches!(c, '\u{AD}' | '\u{200B}' | '\u{2060}' | '\u{FEFF}')
+            || matches!(c, '\u{2E80}'..='\u{9FFF}' | '\u{AC00}'..='\u{D7AF}' | '\u{F900}'..='\u{FAFF}' | '\u{FF00}'..='\u{FFEF}')
+    })
 }
 
 /// `url` less the punctuation after it, which ends the sentence: a closing bracket only
 /// when the address has no opening one for it, as Wikipedia's `…_(film)` does.
-fn trim_url(mut url: &str) -> &str {
-    loop {
-        let unpaired =
-            |open: char, close: char| url.matches(close).count() > url.matches(open).count();
-        let trimmed = match url.chars().last() {
-            Some('.' | ',' | ';' | ':' | '!' | '?' | '\'' | '*' | '}') => true,
-            Some(')') => unpaired('(', ')'),
-            Some(']') => unpaired('[', ']'),
+fn trim_url(url: &str) -> &str {
+    // Counted once: counting on each trim is quadratic in a run of `)`.
+    let count = |c: char| url.matches(c).count();
+    let mut unpaired = [('(', ')'), ('[', ']'), ('{', '}')]
+        .map(|(o, c)| (c, count(c).cast_signed() - count(o).cast_signed()));
+    let mut end = url.len();
+    while let Some(c) = url[..end].chars().next_back() {
+        let trimmed = match c {
+            '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '’' | '*' | '…' | '`' => true,
+            ')' | ']' | '}' => unpaired
+                .iter_mut()
+                .find(|(close, _)| *close == c)
+                .is_some_and(|(_, n)| {
+                    let trim = *n > 0;
+                    *n -= 1;
+                    trim
+                }),
             _ => false,
         };
         if !trimmed {
-            return url;
+            break;
         }
-        url = &url[..url.len() - 1];
+        end -= c.len_utf8();
     }
+    &url[..end]
 }
 
 /// A YouTube video's still, linked to the video.
-fn video_still(id: &str) -> String {
+fn video_still(id: &str, short: bool) -> String {
     format!(
         "<a href=\"https://www.youtube.com/watch?v={id}\" target=\"_blank\">{}</a>",
-        still_image(id)
+        still_image(id, short)
     )
 }
 
 /// A YouTube video's still. `hqdefault.jpg` exists for every video; it is 4:3 with
-/// black bars, which `frame.css` crops off.
-fn still_image(id: &str) -> String {
-    format!(
-        "<img class=\"skvaller-video\" src=\"https://i.ytimg.com/vi/{id}/hqdefault.jpg\" alt=\"\">"
-    )
+/// black bars, which `frame.css` crops off, except for a Short's, which has none.
+fn still_image(id: &str, short: bool) -> String {
+    let class = if short {
+        "skvaller-short"
+    } else {
+        "skvaller-video"
+    };
+    format!("<img class=\"{class}\" src=\"https://i.ytimg.com/vi/{id}/hqdefault.jpg\" alt=\"\">")
 }
 
 fn leaves_frame(url: &Url) -> bool {
@@ -345,6 +389,31 @@ mod tests {
                 ),
             ),
             ("HTTPS://X.COM/A".into(), link("HTTPS://X.COM/A")),
+            ("https://a.com/{x}".into(), link("https://a.com/{x}")),
+            (
+                "see https://a.com/x…".into(),
+                format!("see {}…", link("https://a.com/x")),
+            ),
+            (
+                "`https://a.com/x`".into(),
+                format!("`{}`", link("https://a.com/x")),
+            ),
+            (
+                "https://a.com/don’t’".into(),
+                format!("{}’", link("https://a.com/don’t")),
+            ),
+            (
+                "https://a.com\u{200B}https://b.com".into(),
+                format!("{}\u{200B}{}", link("https://a.com"), link("https://b.com")),
+            ),
+            (
+                "https://a.com에서".into(),
+                format!("{}에서", link("https://a.com")),
+            ),
+            (
+                "xhttps://a.com (https://b.com)".into(),
+                format!("xhttps://a.com ({})", link("https://b.com")),
+            ),
             (
                 "a&b https://x.com/?q=\"c\"".into(),
                 format!("a&amp;b {}&quot;c&quot;", link("https://x.com/?q=")),
@@ -361,6 +430,24 @@ mod tests {
         ] {
             assert_eq!(linked(text), None, "{text}");
         }
+        // Trimming a run of brackets takes linear time.
+        let long = format!("https://a.com/{}", ")".repeat(200_000));
+        assert_eq!(linked(&long).map(|h| h.len()), Some(200_000 + 2 * 14 + 15));
+    }
+
+    #[test]
+    fn freshrss_s_flash_link_beside_a_still_goes_and_a_short_s_still_is_not_cropped() {
+        let html = ready_article(
+            r#"<figure><p><img src="https://i4.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"></p><p class="enclosure-content"><a download href="https://www.youtube.com/v/dQw4w9WgXcQ?version=3">💾</a></p><figcaption>Text</figcaption></figure>"#,
+            "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+        );
+        assert_eq!(
+            html,
+            format!(
+                "<figure><p>{}</p><figcaption>Text</figcaption></figure>",
+                STILL.replace("skvaller-video", "skvaller-short")
+            )
+        );
     }
 
     const STILL: &str = r#"<a href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" target="_blank"><img class="skvaller-video" src="https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg" alt=""></a>"#;

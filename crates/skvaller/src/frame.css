@@ -32,4 +32,7 @@ blockquote { margin: 1.4em 0; padding-left: 1em; border-left: 3px solid var(--ru
 img, video { max-width: 100%; height: auto; }
 /* A YouTube video's 4:3 still, cropped to the video's 16:9 (`ready_article`). */
 img.skvaller-video { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
+img.skvaller-short { display: block; width: 100%; }
+/* Blitz's default 40px side margins would set FreshRSS's videos in from the text. */
+figure { margin: 1.4em 0; }
 pre { overflow-x: auto; }

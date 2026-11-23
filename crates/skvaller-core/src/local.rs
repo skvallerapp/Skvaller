@@ -305,47 +305,94 @@ fn parse(page: &Page) -> Option<model::Feed> {
             .ok()
     };
     parse(&page.body).or_else(|| {
-        // feed-rs fails the whole feed on an empty `media:description`, as YouTube
-        // writes for a video without one.
-        parse(&without_empty_media_descriptions(&page.body)?)
+        // feed-rs fails the whole feed on one media text it can't read, such as the
+        // empty `media:description` YouTube writes for a video without one.
+        parse(&without_bad_media_texts(&page.body)?)
     })
 }
 
-/// `body` without its empty or blank `<media:description>` elements, or `None` if it
-/// has none.
-fn without_empty_media_descriptions(body: &[u8]) -> Option<Vec<u8>> {
-    const OPEN: &[u8] = b"<media:description";
-    const CLOSE: &[u8] = b"</media:description>";
+/// `body` without the `<media:title>` and `<media:description>` elements feed-rs
+/// can't read, or `None` if it has none: those with no text, only blanks, comments or
+/// an empty CDATA, and those of a `type` other than plain or html. Only the `media`
+/// prefix is looked for, as feeds use; a misread one costs no more than the feed's
+/// failing.
+fn without_bad_media_texts(body: &[u8]) -> Option<Vec<u8>> {
+    const OPEN: &[u8] = b"<media:";
     let mut out = Vec::with_capacity(body.len());
     let mut rest = body;
     let mut found = false;
     while let Some(at) = rest.windows(OPEN.len()).position(|w| w == OPEN) {
         let tag = &rest[at..];
-        let Some(gt) = tag.iter().position(|&b| b == b'>') else {
-            break;
-        };
-        let empty = if tag[gt - 1] == b'/' {
-            Some(gt + 1)
-        } else {
-            let inner = &tag[gt + 1..];
-            let blank = inner.iter().take_while(|b| b.is_ascii_whitespace()).count();
-            inner[blank..]
-                .starts_with(CLOSE)
-                .then_some(gt + 1 + blank + CLOSE.len())
-        };
-        // `<media:descriptions…>` is another element.
-        let named = matches!(tag[OPEN.len()], b'>' | b'/') || tag[OPEN.len()].is_ascii_whitespace();
-        if let Some(len) = empty.filter(|_| named) {
+        let name_end = [b"title".as_slice(), b"description"]
+            .iter()
+            .find_map(|name| {
+                let end = OPEN.len() + name.len();
+                (tag[OPEN.len()..].starts_with(name)
+                    && tag
+                        .get(end)
+                        .is_some_and(|&b| b == b'>' || b == b'/' || b.is_ascii_whitespace()))
+                .then_some(end)
+            });
+        if let Some(len) = name_end.and_then(|end| unreadable_len(tag, end)) {
             out.extend_from_slice(&rest[..at]);
             rest = &rest[at + len..];
             found = true;
         } else {
-            out.extend_from_slice(&rest[..=at + gt]);
-            rest = &rest[at + gt + 1..];
+            out.extend_from_slice(&rest[..at + OPEN.len()]);
+            rest = &rest[at + OPEN.len()..];
         }
     }
     out.extend_from_slice(rest);
     found.then_some(out)
+}
+
+/// The length of the element `tag` starts with, its name `tag[1..name_end]`, if
+/// feed-rs can't read its text.
+fn unreadable_len(tag: &[u8], name_end: usize) -> Option<usize> {
+    let gt = name_end + tag[name_end..].iter().position(|&b| b == b'>')?;
+    let attrs = &tag[name_end..gt];
+    if attrs.ends_with(b"/") {
+        return Some(gt + 1);
+    }
+    let close = [b"</", &tag[1..name_end], b">"].concat();
+    let inner = &tag[gt + 1..];
+    let close_at = inner
+        .windows(close.len())
+        .position(|w| w == close.as_slice())?;
+    let len = gt + 1 + close_at + close.len();
+    let typed = ["type=\"", "type='"].iter().find_map(|open| {
+        let start = attrs
+            .windows(open.len())
+            .position(|w| w == open.as_bytes())?
+            + open.len();
+        let quote = open.as_bytes()[open.len() - 1];
+        let value = &attrs[start..];
+        Some(&value[..value.iter().position(|&b| b == quote)?])
+    });
+    let bad_type = typed.is_some_and(|t| t != b"plain" && t != b"html");
+    (bad_type || no_text(&inner[..close_at])).then_some(len)
+}
+
+/// Whether XML `content` holds no text but blanks: only comments and CDATA sections
+/// of blanks besides.
+fn no_text(mut content: &[u8]) -> bool {
+    loop {
+        content = content.trim_ascii_start();
+        let (open, close): (&[u8], &[u8]) = if content.starts_with(b"<!--") {
+            (b"<!--", b"-->")
+        } else if content.starts_with(b"<![CDATA[") {
+            (b"<![CDATA[", b"]]>")
+        } else {
+            return content.is_empty();
+        };
+        let Some(end) = content.windows(close.len()).position(|w| w == close) else {
+            return false;
+        };
+        if open == b"<![CDATA[" && !content[open.len()..end].trim_ascii().is_empty() {
+            return false;
+        }
+        content = &content[end + close.len()..];
+    }
 }
 
 /// What tells an entry without an ID apart: its link and title. Empty if it has
@@ -414,23 +461,28 @@ fn store(db: &Db, feed_id: &str, feed: &model::Feed, page: &Page, now: i64) -> R
         .iter()
         .filter(|entry| !entry.id.is_empty() && ids.insert(entry.id.as_str()))
         .map(|entry| {
-            // An empty or blank body counts as none.
-            let given = |html: &String| !html.trim().is_empty();
-            let html = entry
-                .content
-                .as_ref()
-                .and_then(|c| c.body.clone())
-                .filter(given)
-                .or_else(|| entry.summary.as_ref().map(|s| s.content.clone()))
-                .filter(given)
-                .or_else(|| {
-                    // YouTube's only description is its media's.
-                    entry
-                        .media
-                        .iter()
-                        .find_map(|m| m.description.as_ref().map(html_of))
-                })
-                .unwrap_or_default();
+            // The first body that isn't blank: YouTube's only one is its media's.
+            let content = entry.content.as_ref().and_then(|c| {
+                Some((
+                    c.body.as_deref()?,
+                    c.content_type.to_string().contains("html"),
+                ))
+            });
+            let texts = entry
+                .summary
+                .iter()
+                .chain(entry.media.iter().filter_map(|m| m.description.as_ref()))
+                .map(|t| {
+                    (
+                        t.content.as_str(),
+                        t.content_type.to_string().contains("html"),
+                    )
+                });
+            let html = content
+                .into_iter()
+                .chain(texts)
+                .find(|(body, _)| !body.trim().is_empty())
+                .map_or_default(|(body, is_html)| as_html(body, is_html));
             let date = entry.published.or(entry.updated);
             let row = ArticleRow {
                 id: article_id(feed_id, &entry.id).to_string(),
@@ -481,16 +533,13 @@ fn text(t: &model::Text) -> String {
     }
 }
 
-/// A text as HTML: plain text escaped, with its line breaks kept. The reader links
+/// A body as HTML: plain text escaped, with its line breaks kept. The reader links
 /// its web addresses.
-fn html_of(t: &model::Text) -> String {
-    if t.content_type.to_string().contains("html") {
-        return t.content.clone();
+fn as_html(body: &str, is_html: bool) -> String {
+    if is_html {
+        return body.to_owned();
     }
-    format!(
-        "<p>{}</p>",
-        html::escape(t.content.trim()).replace('\n', "<br>")
-    )
+    format!("<p>{}</p>", html::escape(body.trim()).replace('\n', "<br>"))
 }
 
 /// The web site the feed is for: its alternate link, else its first one that is not
