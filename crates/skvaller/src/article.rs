@@ -63,15 +63,28 @@ pub fn document(
     );
     let date = escape(date);
     let title = linked(&article.title, Some(&article.url));
-    let author = escape(&article.author);
-    let source = feed.map_or_else(String::new, |f| linked(&f.title, f.site_url.as_deref()));
+    let byline = byline(&article.author, feed);
     let body = ready_article(html, &article.url);
     format!(
         "<!doctype html><html data-theme=\"{theme}\" data-motion=\"{motion}\" style=\"{fonts}\"><head><meta charset=\"utf-8\">\
          <style>{FRAME_CSS}</style></head><body><article><header>\
          <div class=\"date\">{date}</div><h1>{title}</h1>\
-         <div class=\"source\">{author}<br>{source}</div></header>{body}</article></body></html>"
+         <div class=\"source\">{byline}</div></header>{body}</article></body></html>"
     )
+}
+
+/// The author over the feed's name, as HTML. Without an author, or one that is the
+/// feed's own name (a YouTube channel's videos have it), only the feed's name.
+fn byline(author: &str, feed: Option<&Feed>) -> String {
+    let author = author.trim();
+    let same = |f: &Feed| f.title.trim().to_lowercase() == author.to_lowercase();
+    let author = (!author.is_empty() && !feed.is_some_and(same)).then(|| escape(author));
+    let source = feed.map(|f| linked(&f.title, f.site_url.as_deref()));
+    author
+        .into_iter()
+        .chain(source)
+        .collect::<Vec<_>>()
+        .join("<br>")
 }
 
 /// The theme's name, as the CSS selects it in `data-theme`.
@@ -144,5 +157,24 @@ mod tests {
         assert!(doc.contains("data-theme=\"dark\""));
         assert!(doc.contains("--article-font: 'Literata'"));
         assert!(doc.contains("--line-width: 38em; --article-scale: 1;"));
+    }
+
+    #[test]
+    fn the_byline_leaves_out_an_author_that_is_the_feed() {
+        let feed = Feed {
+            id: "f".into(),
+            title: "Be Smart".into(),
+            folder_id: None,
+            subscribed: true,
+            icon: None,
+            reader_view: false,
+            url: None,
+            site_url: None,
+            fetch_error: None,
+        };
+        assert_eq!(byline("be smart ", Some(&feed)), "Be Smart");
+        assert_eq!(byline("", Some(&feed)), "Be Smart");
+        assert_eq!(byline("Joe", Some(&feed)), "Joe<br>Be Smart");
+        assert_eq!(byline("Joe", None), "Joe");
     }
 }
