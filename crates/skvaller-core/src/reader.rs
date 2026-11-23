@@ -5,14 +5,17 @@
 //! (the reader document's base is the app's, not the article's), resources are asked
 //! for over https, media waits to be asked for, and forms can't be sent.
 
+use std::fmt::Write;
+
 use reqwest::Url;
 
-use crate::html::parse;
+use crate::html::{escape, parse};
 use crate::net::absolute;
 use crate::thumbnail::youtube_video;
 
 /// `html` readied for the reader, with relative URLs resolved against `base`.
 ///
+/// - Web addresses written out in the text become links, outside links already.
 /// - Links to other pages become absolute and get `target="_blank"`, so they leave the
 ///   reader's frame for the browser; one that can't be made absolute loses its `href`,
 ///   so it can't resolve against the app. Links within the article (`#…`) stay in it.
@@ -37,6 +40,23 @@ pub fn ready_article(html: &str, base: &str) -> String {
         return String::new();
     };
     let base = Url::parse(base).ok();
+    let texts: Vec<_> = doc
+        .root()
+        .descendants_it()
+        .filter(dom_query::NodeRef::is_text)
+        .collect();
+    for node in texts {
+        let in_raw = node.ancestors_it(None).any(|a| {
+            [
+                "a", "script", "style", "textarea", "title", "noscript", "template",
+            ]
+            .iter()
+            .any(|name| a.has_name(name))
+        });
+        if !in_raw && let Some(html) = linked(&node.text()) {
+            node.replace_with_html(html);
+        }
+    }
     for link in doc.select("a[href], area[href]").nodes() {
         let href = link.attr("href").unwrap_or_default();
         let href = href.trim();
@@ -100,6 +120,37 @@ pub fn ready_article(html: &str, base: &str) -> String {
         _ => String::new(),
     };
     format!("{head}{lead}{body}")
+}
+
+/// `text` as HTML with its http and https addresses linked, or `None` if it has none.
+/// An address runs to the next whitespace, less punctuation that ends a sentence.
+fn linked(text: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest
+        .match_indices("http")
+        .map(|(i, _)| i)
+        .find(|&i| rest[i..].starts_with("http://") || rest[i..].starts_with("https://"))
+    {
+        out.push_str(&escape(&rest[..start]));
+        rest = &rest[start..];
+        let end = rest
+            .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"'))
+            .unwrap_or(rest.len());
+        let (url, after) = rest.split_at(
+            rest[..end]
+                .trim_end_matches(['.', ',', ')', ';', ':', '!', '?', '\''])
+                .len(),
+        );
+        let url = escape(url);
+        let _ = write!(out, "<a href=\"{url}\">{url}</a>");
+        rest = after;
+    }
+    if out.is_empty() {
+        return None;
+    }
+    out.push_str(&escape(rest));
+    Some(out)
 }
 
 /// A YouTube video's still, linked to the video.
@@ -183,6 +234,18 @@ mod tests {
         );
         assert!(html.contains(r##"<a href="#fn1">1</a>"##), "{html}");
         assert!(html.contains("<a>b</a>"), "{html}");
+    }
+
+    #[test]
+    fn written_out_addresses_become_links_outside_links() {
+        let html = ready_article(
+            r#"<p>See https://example.com/a?b=1&amp;c=2. Or <a href="/x">http://in.link</a> &lt;b&gt;</p>"#,
+            BASE,
+        );
+        assert_eq!(
+            html,
+            r#"<p>See <a href="https://example.com/a?b=1&amp;c=2" target="_blank">https://example.com/a?b=1&amp;c=2</a>. Or <a href="https://example.com/x" target="_blank">http://in.link</a> &lt;b&gt;</p>"#
+        );
     }
 
     const STILL: &str = r#"<a href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" target="_blank"><img class="skvaller-video" src="https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg" alt=""></a>"#;

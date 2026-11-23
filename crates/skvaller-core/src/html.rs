@@ -32,6 +32,21 @@ const CHUNK_BYTES: usize = 4 * 1024;
 /// real pages repeat them a few times at most.
 const MAX_MERGED_ATTRS: usize = 256;
 
+/// `text` safe in HTML text and in quoted attributes.
+pub(crate) fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// `html` as a document, or `None` if anything in it, template contents too, nests deeper
 /// than `MAX_DEPTH`. Parses as `Document::from` does, with scripting off.
 pub(crate) fn parse(html: &str) -> Option<Document> {

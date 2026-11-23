@@ -432,50 +432,16 @@ fn text(t: &model::Text) -> String {
     }
 }
 
-/// A text as HTML: plain text escaped, with its line breaks kept and its web
-/// addresses linked.
+/// A text as HTML: plain text escaped, with its line breaks kept. The reader links
+/// its web addresses.
 fn html_of(t: &model::Text) -> String {
     if t.content_type.to_string().contains("html") {
         return t.content.clone();
     }
-    let mut out = String::with_capacity(t.content.len());
-    let mut rest = t.content.trim();
-    while let Some(start) = rest
-        .match_indices("http")
-        .map(|(i, _)| i)
-        .find(|&i| rest[i..].starts_with("http://") || rest[i..].starts_with("https://"))
-    {
-        escape_into(&mut out, &rest[..start]);
-        rest = &rest[start..];
-        let end = rest
-            .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"'))
-            .unwrap_or(rest.len());
-        // Punctuation after an address ends the sentence, not the address.
-        let url = rest[..end].trim_end_matches(['.', ',', ')', ';', ':', '!', '?', '\'']);
-        out.push_str("<a href=\"");
-        escape_into(&mut out, url);
-        out.push_str("\">");
-        escape_into(&mut out, url);
-        out.push_str("</a>");
-        rest = &rest[url.len()..];
-    }
-    escape_into(&mut out, rest);
-    format!("<p>{out}</p>")
-}
-
-/// Appends `text` to `out`, safe in HTML text and in quoted attributes, with line
-/// breaks as `<br>`.
-fn escape_into(out: &mut String, text: &str) {
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\n' => out.push_str("<br>"),
-            c => out.push(c),
-        }
-    }
+    format!(
+        "<p>{}</p>",
+        html::escape(t.content.trim()).replace('\n', "<br>")
+    )
 }
 
 /// The web site the feed is for: its alternate link, else its first one that is not

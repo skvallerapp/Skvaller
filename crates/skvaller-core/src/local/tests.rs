@@ -507,10 +507,7 @@ Line two: https://example.com/a?b=1&amp;c=2.</media:description></media:group></
     let id = article_id(&feed_id, "yt:video:1").to_string();
     assert_eq!(
         db.article_html(&id).unwrap().as_deref(),
-        Some(
-            "<p>Line one &amp; &lt;b&gt;<br>Line two: \
-             <a href=\"https://example.com/a?b=1&amp;c=2\">https://example.com/a?b=1&amp;c=2</a>.</p>"
-        )
+        Some("<p>Line one &amp; &lt;b&gt;<br>Line two: https://example.com/a?b=1&amp;c=2.</p>")
     );
 }
 
