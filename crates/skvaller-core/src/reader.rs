@@ -23,10 +23,12 @@ use crate::thumbnail::youtube_video;
 ///   scripts, controls are the only way to play.
 /// - Forms are unwrapped, their fields kept: sending one would load any page into the
 ///   reader's frame, in place of the article and its header.
-/// - A YouTube embed becomes its video's still, linked to the video: the player needs
-///   scripts. So does a still of the video not already in a link, which FreshRSS puts
-///   in from the feed: it is uncropped. A YouTube video's own article with neither
-///   starts with the still.
+/// - A YouTube embed, lazy-loading or not, becomes its video's still, linked to the
+///   video: the player needs scripts. So does a still of a video, as FreshRSS puts in
+///   from the feed: it is uncropped. One still per video; a YouTube video's own article
+///   without one starts with it.
+/// - Other iframes are dropped: they would load a page into the reader, which is
+///   almost always a player that needs scripts, and its host would see the reader.
 ///
 /// An article nested too deeply to parse safely gives an empty string.
 #[must_use]
@@ -51,19 +53,31 @@ pub fn ready_article(html: &str, base: &str) -> String {
         }
     }
     doc.root().strip_elements(&["form"]);
-    let mut stills = false;
-    for el in doc.select("iframe[src], img[src]").nodes() {
-        let src = el.attr("src").unwrap_or_default();
-        let id = absolute(base.as_ref(), &src).and_then(|url| youtube_video(url.as_str()));
-        // The still is a link, which can't go inside another.
-        let linked = el.ancestors_it(None).any(|a| a.has_name("a"));
-        if let Some(id) = id
-            && !linked
-        {
-            el.replace_with_html(video_still(&id));
-            stills = true;
+    let mut stills: Vec<String> = Vec::new();
+    for el in doc.select("iframe, img").nodes() {
+        // Lazy-loading pages put a placeholder in `src` (often the page itself) and
+        // the embed in `data-src`. An empty or `#` one would resolve to the page.
+        let id = ["src", "data-src"]
+            .into_iter()
+            .filter_map(|name| el.attr(name))
+            .filter(|src| !src.trim().is_empty() && !src.trim().starts_with('#'))
+            .find_map(|src| youtube_video(absolute(base.as_ref(), &src)?.as_str()));
+        let Some(id) = id else { continue };
+        // Repeats, such as a lazy embed's copy in `<noscript>`, go.
+        if stills.contains(&id) {
+            el.remove_from_parent();
+            continue;
         }
+        // A link can't go inside another: in one, the still is only the image.
+        let linked = el.ancestors_it(None).any(|a| a.has_name("a"));
+        el.replace_with_html(if linked {
+            still_image(&id)
+        } else {
+            video_still(&id)
+        });
+        stills.push(id);
     }
+    doc.select("iframe").remove();
     for media in doc.select("audio, video").nodes() {
         media.remove_attr("autoplay");
         media.set_attr("preload", "none");
@@ -82,18 +96,25 @@ pub fn ready_article(html: &str, base: &str) -> String {
     let head = doc.select("head").inner_html();
     let body = doc.select("body").inner_html();
     let lead = match youtube_video(base.as_ref().map_or("", Url::as_str)) {
-        Some(id) if !stills => format!("<p>{}</p>", video_still(&id)),
+        Some(id) if !stills.contains(&id) => format!("<p>{}</p>", video_still(&id)),
         _ => String::new(),
     };
     format!("{head}{lead}{body}")
 }
 
-/// A YouTube video's still, linked to the video. `hqdefault.jpg` exists for every
-/// video; it is 4:3 with black bars, which `frame.css` crops off.
+/// A YouTube video's still, linked to the video.
 fn video_still(id: &str) -> String {
     format!(
-        "<a class=\"skvaller-video\" href=\"https://www.youtube.com/watch?v={id}\" target=\"_blank\">\
-         <img src=\"https://i.ytimg.com/vi/{id}/hqdefault.jpg\" alt=\"\"></a>"
+        "<a href=\"https://www.youtube.com/watch?v={id}\" target=\"_blank\">{}</a>",
+        still_image(id)
+    )
+}
+
+/// A YouTube video's still. `hqdefault.jpg` exists for every video; it is 4:3 with
+/// black bars, which `frame.css` crops off.
+fn still_image(id: &str) -> String {
+    format!(
+        "<img class=\"skvaller-video\" src=\"https://i.ytimg.com/vi/{id}/hqdefault.jpg\" alt=\"\">"
     )
 }
 
@@ -164,41 +185,73 @@ mod tests {
         assert!(html.contains("<a>b</a>"), "{html}");
     }
 
+    const STILL: &str = r#"<a href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" target="_blank"><img class="skvaller-video" src="https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg" alt=""></a>"#;
+
     #[test]
-    fn a_youtube_embed_becomes_its_linked_still() {
+    fn a_youtube_embed_becomes_its_linked_still_and_other_iframes_go() {
         let html = ready_article(
-            r#"<iframe src="//www.youtube-nocookie.com/embed/dQw4w9WgXcQ"></iframe><iframe src="https://other.example/x"></iframe>"#,
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            r#"<p>a</p><iframe src="//www.youtube-nocookie.com/embed/dQw4w9WgXcQ"></iframe><iframe src="https://other.example/x"></iframe><p>b</p>"#,
+            BASE,
         );
-        assert_eq!(
-            html.matches("i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg")
-                .count(),
-            1,
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"href="https://www.youtube.com/watch?v=dQw4w9WgXcQ""#),
-            "{html}"
-        );
-        assert!(!html.contains("youtube-nocookie"), "{html}");
-        assert!(html.contains("other.example"), "{html}");
+        assert_eq!(html, format!("<p>a</p>{STILL}<p>b</p>"));
     }
 
     #[test]
-    fn a_feeds_youtube_still_becomes_the_cropped_linked_one() {
+    fn a_lazy_youtube_embed_becomes_one_still() {
         let html = ready_article(
-            r#"<figure><p><img src="https://i3.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"></p></figure><a href="/x"><img src="https://i.ytimg.com/vi/dQw4w9WgXcQ/0.jpg"></a>"#,
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            r#"<iframe src="https://example.com/posts/1" data-src="https://www.youtube.com/embed/dQw4w9WgXcQ?feature=oembed"></iframe><noscript><iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ"></iframe></noscript>"#,
+            BASE,
+        );
+        assert_eq!(html, format!("{STILL}<noscript></noscript>"));
+    }
+
+    #[test]
+    fn a_youtube_still_in_a_link_is_cropped_but_not_linked_again() {
+        let html = ready_article(
+            r#"<a href="/x"><iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ"></iframe></a>"#,
+            BASE,
+        );
+        assert!(
+            html.contains(r#"target="_blank"><img class="skvaller-video" src="https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg" alt=""></a>"#),
+            "{html}"
+        );
+        assert_eq!(html.matches("<a ").count(), 1, "{html}");
+    }
+
+    #[test]
+    fn a_feeds_still_of_the_articles_video_is_its_one_still() {
+        let video = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+        let html = ready_article(
+            r#"<figure><p><img src="https://i3.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"></p></figure>"#,
+            video,
+        );
+        assert_eq!(html, format!("<figure><p>{STILL}</p></figure>"));
+        // Linked, by FreshRSS or anyone: cropped, and still the only one.
+        let html = ready_article(
+            r#"<a href="/x"><img src="https://img.youtube.com/vi/dQw4w9WgXcQ/0.jpg"></a>"#,
+            video,
         );
         assert_eq!(html.matches("skvaller-video").count(), 1, "{html}");
-        assert!(!html.contains("i3.ytimg.com"), "{html}");
-        assert!(html.contains("i.ytimg.com/vi/dQw4w9WgXcQ/0.jpg"), "{html}");
+        // An empty placeholder isn't the page's video.
+        let html = ready_article(r#"<img src="" alt="x">"#, video);
+        assert!(html.ends_with(r#"<img src="" alt="x">"#), "{html}");
+        assert_eq!(html.matches("skvaller-video").count(), 1, "{html}");
+    }
+
+    #[test]
+    fn another_videos_still_leaves_the_articles_own_lead() {
+        let html = ready_article(
+            r#"<iframe src="https://www.youtube.com/embed/AAAAAAAAAAA"></iframe>"#,
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        );
+        assert!(html.starts_with(&format!("<p>{STILL}</p>")), "{html}");
+        assert!(html.contains("vi/AAAAAAAAAAA/"), "{html}");
     }
 
     #[test]
     fn a_youtube_videos_article_starts_with_its_still() {
         let html = ready_article("<p>About</p>", "https://youtu.be/dQw4w9WgXcQ");
-        assert!(html.starts_with("<p><a class=\"skvaller-video\""), "{html}");
+        assert!(html.starts_with(&format!("<p>{STILL}</p>")), "{html}");
         assert!(html.ends_with("<p>About</p>"), "{html}");
         assert!(!ready_article("<p>About</p>", BASE).contains("skvaller-video"));
     }

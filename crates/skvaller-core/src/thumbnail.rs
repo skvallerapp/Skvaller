@@ -253,7 +253,7 @@ pub async fn prefetch(db: &Db, mut stored: impl FnMut()) -> Result<()> {
 }
 
 /// A YouTube video's ID, from its watch, short, live, embed or youtu.be URL, or one of
-/// its stills on ytimg.com.
+/// its stills. Not from a playlist's or channel's embed.
 pub(crate) fn youtube_video(url: &str) -> Option<String> {
     let url = Url::parse(url).ok()?;
     let host = url.host_str()?.to_ascii_lowercase();
@@ -265,13 +265,18 @@ pub(crate) fn youtube_video(url: &str) -> Option<String> {
         ("youtube.com", "watch") => url
             .query_pairs()
             .find_map(|(k, v)| (k == "v").then(|| v.into_owned()))?,
-        ("youtube.com" | "youtube-nocookie.com", "shorts" | "live" | "embed") => {
+        ("youtube.com" | "youtube-nocookie.com", "shorts" | "live" | "embed" | "v") => {
             segments.next()?.to_owned()
         }
-        (host, "vi" | "vi_webp") if host.ends_with(".ytimg.com") => segments.next()?.to_owned(),
+        (host, "vi" | "vi_webp") if host == "img.youtube.com" || host.ends_with(".ytimg.com") => {
+            segments.next()?.to_owned()
+        }
         _ => return None,
     };
-    let valid = id.len() == 11
+    // Eleven characters too, but they name a playlist's or channel's embed.
+    let placeholder = matches!(id.as_str(), "videoseries" | "live_stream");
+    let valid = !placeholder
+        && id.len() == 11
         && id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
@@ -282,14 +287,13 @@ pub(crate) fn youtube_video(url: &str) -> Option<String> {
 /// the feed named, else those in its HTML.
 ///
 /// A feed names the video's `hqdefault.jpg`, 4:3 with black bars above and below, and
-/// The Old Reader none at all. `maxresdefault.jpg` (1280 × 720) exists only for HD
-/// videos; `mqdefault.jpg` (320 × 180) for every video.
+/// The Old Reader none at all. `maxresdefault.jpg` exists only for HD videos and
+/// `hq720.jpg` (both 1280 × 720) for most; `mqdefault.jpg` (320 × 180) for every one.
 async fn candidates(db: &Db, article: &ThumbnailWanted) -> Result<Vec<String>> {
-    if let Some(id) = youtube_video(&article.url) {
-        return Ok(["maxresdefault", "mqdefault"]
-            .iter()
-            .map(|name| format!("https://i.ytimg.com/vi/{id}/{name}.jpg"))
-            .collect());
+    let video =
+        youtube_video(&article.url).or_else(|| article.source.as_deref().and_then(youtube_video));
+    if let Some(id) = video {
+        return Ok(youtube_stills(&id));
     }
     if let Some(url) = &article.source {
         return Ok(vec![url.clone()]);
@@ -302,6 +306,14 @@ async fn candidates(db: &Db, article: &ThumbnailWanted) -> Result<Vec<String>> {
     Ok(tokio::task::spawn_blocking(move || from_html(&html, &base))
         .await
         .unwrap_or_default())
+}
+
+/// A YouTube video's 16:9 stills, largest first.
+fn youtube_stills(id: &str) -> Vec<String> {
+    ["maxresdefault", "hq720", "mqdefault"]
+        .iter()
+        .map(|name| format!("https://i.ytimg.com/vi/{id}/{name}.jpg"))
+        .collect()
 }
 
 /// The first of `candidates` that makes a thumbnail. Stops at the first that may work

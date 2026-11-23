@@ -131,7 +131,12 @@ fn a_youtube_videos_id_comes_from_any_of_its_urls() {
         "https://youtu.be/dQw4w9WgXcQ",
         "https://www.youtube.com/shorts/dQw4w9WgXcQ",
         "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
+        "https://www.youtube.com/live/dQw4w9WgXcQ?si=x",
+        "https://youtu.be/dQw4w9WgXcQ?si=x",
+        "https://www.youtube.com/v/dQw4w9WgXcQ?version=3",
         "https://i3.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+        "https://i.ytimg.com/vi_webp/dQw4w9WgXcQ/hqdefault.webp",
+        "https://img.youtube.com/vi/dQw4w9WgXcQ/0.jpg",
     ] {
         assert_eq!(youtube_video(url).as_deref(), Some("dQw4w9WgXcQ"), "{url}");
     }
@@ -139,6 +144,9 @@ fn a_youtube_videos_id_comes_from_any_of_its_urls() {
         "https://www.youtube.com/channel/UC123",
         "https://www.youtube.com/watch?v=short",
         "https://notyoutube.com/watch?v=dQw4w9WgXcQ",
+        "https://i.ytimg.com.evil.example/vi/dQw4w9WgXcQ/0.jpg",
+        "https://www.youtube.com/embed/videoseries?list=PL123",
+        "https://www.youtube.com/embed/live_stream?channel=UC123",
         PAGE,
     ] {
         assert_eq!(youtube_video(url), None, "{url}");

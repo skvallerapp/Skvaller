@@ -2219,7 +2219,8 @@ mod tests {
         conn.execute_batch(&format!(
             "{SCHEMA}
              INSERT INTO feeds (id, title, subscribed) VALUES ('feed/1', 'Feed', 1);
-             INSERT INTO articles VALUES ('1', 'feed/1', 'Kept', 'Me', '', 1, 0, 1);
+             INSERT INTO articles VALUES ('1', 'feed/1', 'Kept', 'Me', '', 1, 0, 1),
+                 ('2', 'feed/1', 'Video', '', 'https://youtu.be/dQw4w9WgXcQ', 0, 0, 0);
              INSERT INTO article_html VALUES ('1', '<p>backfilled text</p>');
              PRAGMA user_version = 8;"
         ))
@@ -2232,6 +2233,13 @@ mod tests {
             found(&db, View::Starred, Scope::All, "backfilled kept"),
             ["1"]
         );
+        let wanted: Vec<String> = db
+            .thumbnails_wanted(10)
+            .unwrap()
+            .into_iter()
+            .map(|w| w.id)
+            .collect();
+        assert_eq!(wanted, ["2"]);
         assert_eq!(
             db.with_conn(|c| c.pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0)))
                 .unwrap(),
@@ -2268,6 +2276,15 @@ mod tests {
             .map(|w| w.id)
             .collect();
         assert_eq!(wanted, ["1"]);
+        // The old thumbnail shows until the new one is in.
+        assert!(db.with_conn(|c| {
+            c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM thumbnails WHERE article_id = '1')",
+                [],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap()
+        }));
         drop(db);
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));

@@ -31,5 +31,5 @@ header a { color: inherit; }
 blockquote { margin: 1.4em 0; padding-left: 1em; border-left: 3px solid var(--rule); color: var(--text-2); }
 img, video { max-width: 100%; height: auto; }
 /* A YouTube video's 4:3 still, cropped to the video's 16:9 (`ready_article`). */
-.skvaller-video img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
+img.skvaller-video { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
 pre { overflow-x: auto; }
