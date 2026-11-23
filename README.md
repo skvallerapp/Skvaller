@@ -50,6 +50,18 @@ have one (Xcode → Settings → Accounts → Manage Certificates; a free accoun
 The keychain then keeps trusting each new build, and stops asking for your password
 after every rebuild.
 
+To build `Skvaller.app` in `target/release/bundle`, signed the same way (or ad hoc),
+and with `--dmg` a disk image too:
+
+```sh
+scripts/macos-bundle.sh [--dmg]
+```
+
+The app is built for the Mac's own architecture, so the Build workflow's is Apple
+silicon only. It isn't notarized: on another Mac, allow the first launch in System
+Settings → Privacy & Security → Open Anyway. An ad hoc signature changes with every
+build, so the keychain asks for your password again after each update.
+
 ## License
 
 [GPL-3.0](LICENSE)

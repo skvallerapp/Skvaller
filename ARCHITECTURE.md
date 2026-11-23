@@ -167,7 +167,8 @@ The windows, in Dioxus Native (Blitz).
 - `menu`: the macOS menu bar (muda), with Settings…, the Accounts menu and the Window
   menu. Each item is a `ui::Command`, which the main window runs through
   `Reading::run`, as it does its keys. Its account items' keys, ⌘1 to ⌘9, are
-  `shortcuts::ACCOUNT_KEYS`, as the window's are. `build.rs` embeds `Info.plist` so the menu bar names the app Skvaller.
+  `shortcuts::ACCOUNT_KEYS`, as the window's are. `build.rs` embeds `Info.plist` so the menu bar names the app Skvaller;
+  `scripts/macos-bundle.sh` puts the same file in `Skvaller.app`.
   Windows and Linux have no menu bar.
 - `spin`: when the sync icon turns and stops, as plain state.
 - `i18n`, `dates`, `fonts`, `icons`, `shortcuts`: text, date formats, font stacks,

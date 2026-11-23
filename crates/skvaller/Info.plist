@@ -4,5 +4,19 @@
 <dict>
 	<key>CFBundleName</key>
 	<string>Skvaller</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.skvallerapp.Skvaller</string>
+	<key>CFBundleExecutable</key>
+	<string>skvaller</string>
+	<key>CFBundleIconFile</key>
+	<string>Skvaller</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.news</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
 </dict>
 </plist>

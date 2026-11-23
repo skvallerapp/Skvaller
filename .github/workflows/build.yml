@@ -67,10 +67,25 @@ jobs:
         run: cargo test --release --workspace --locked
 
       - name: Build release
+        if: runner.os != 'macOS'
         run: cargo build --release --locked -p skvaller
 
       - uses: actions/upload-artifact@v7
+        if: runner.os != 'macOS'
         with:
           name: skvaller-${{ runner.os }}
           path: target/release/skvaller${{ runner.os == 'Windows' && '.exe' || '' }}
+          if-no-files-found: error
+
+      # Skvaller.app, ad hoc signed, in a disk image, which keeps the bundle's
+      # permissions and signature; the artifact upload's own zip would not.
+      - name: Build Skvaller.dmg
+        if: runner.os == 'macOS'
+        run: scripts/macos-bundle.sh --dmg
+
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'macOS'
+        with:
+          name: skvaller-macOS
+          path: target/release/bundle/*.dmg
           if-no-files-found: error
