@@ -9,6 +9,8 @@ use std::fmt::Write;
 
 use reqwest::Url;
 
+use dom_query::Document;
+
 use crate::html::{escape, parse};
 use crate::net::absolute;
 use crate::thumbnail::youtube_video;
@@ -31,8 +33,10 @@ use crate::thumbnail::youtube_video;
 ///   from the feed: it is uncropped. One still per video; a YouTube video's own article
 ///   without one starts with it. A Short's still is not cropped, and FreshRSS's link to
 ///   a shown video's old Flash player goes.
-/// - Other iframes are dropped: they would load a page into the reader, which is
-///   almost always a player that needs scripts, and its host would see the reader.
+/// - Other iframes become a link to what they embed, named by their title or else its
+///   URL: loaded, they would put a page in the reader, almost always a player that
+///   needs scripts, and its host would see the reader. One that can't be linked, being
+///   in a link already or of another scheme, goes; so does a repeat of one.
 ///
 /// An article nested too deeply to parse safely gives an empty string.
 #[must_use]
@@ -102,7 +106,7 @@ pub fn ready_article(html: &str, base: &str) -> String {
         });
         stills.push(id);
     }
-    doc.select("iframe").remove();
+    link_embeds(&doc, base.as_ref());
     // FreshRSS links each video's old Flash player, as 💾, beside its still.
     for link in doc.select("a[download]").nodes() {
         let href = link.attr("href").unwrap_or_default();
@@ -138,6 +142,39 @@ pub fn ready_article(html: &str, base: &str) -> String {
         _ => String::new(),
     };
     format!("{head}{lead}{body}")
+}
+
+/// Each iframe left as a link to what it embeds: see [`ready_article`].
+fn link_embeds(doc: &Document, base: Option<&Url>) {
+    let mut embeds: Vec<Url> = Vec::new();
+    for el in doc.select("iframe").nodes() {
+        let url = ["src", "data-src"]
+            .into_iter()
+            .filter_map(|name| el.attr(name))
+            .filter(|src| !src.trim().is_empty() && !src.trim().starts_with('#'))
+            // A lazy one's `src` is often `about:blank`.
+            .find_map(|src| {
+                absolute(base, &src).filter(|url| matches!(url.scheme(), "http" | "https"))
+            })
+            .filter(|url| !embeds.contains(url))
+            .filter(|_| !el.ancestors_it(None).any(|a| a.has_name("a")));
+        let Some(url) = url else {
+            el.remove_from_parent();
+            continue;
+        };
+        let title = el.attr("title").unwrap_or_default();
+        let name = if title.trim().is_empty() {
+            url.as_str()
+        } else {
+            title.trim()
+        };
+        el.replace_with_html(format!(
+            "<a href=\"{}\" target=\"_blank\">{}</a>",
+            escape(url.as_str()),
+            escape(name)
+        ));
+        embeds.push(url);
+    }
 }
 
 /// Elements whose text is not linked: links already, text not shown as HTML, and
@@ -453,12 +490,25 @@ mod tests {
     const STILL: &str = r#"<a href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" target="_blank"><img class="skvaller-video" src="https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg" alt=""></a>"#;
 
     #[test]
-    fn a_youtube_embed_becomes_its_linked_still_and_other_iframes_go() {
+    fn a_youtube_embed_becomes_its_linked_still_and_other_iframes_links() {
         let html = ready_article(
             r#"<p>a</p><iframe src="//www.youtube-nocookie.com/embed/dQw4w9WgXcQ"></iframe><iframe src="https://other.example/x"></iframe><p>b</p>"#,
             BASE,
         );
-        assert_eq!(html, format!("<p>a</p>{STILL}<p>b</p>"));
+        assert_eq!(
+            html,
+            format!(
+                r#"<p>a</p>{STILL}<a href="https://other.example/x" target="_blank">https://other.example/x</a><p>b</p>"#
+            )
+        );
+        let html = ready_article(
+            r#"<iframe src="about:blank" data-src="/map?a=1&amp;b=2" title="A &lt;map&gt;"></iframe><noscript><iframe src="/map?a=1&amp;b=2"></iframe></noscript><iframe src="javascript:x"></iframe><a href="/y"><iframe src="/z"></iframe></a>"#,
+            BASE,
+        );
+        assert_eq!(
+            html,
+            r#"<a href="https://example.com/map?a=1&amp;b=2" target="_blank">A &lt;map&gt;</a><noscript></noscript><a href="https://example.com/y" target="_blank"></a>"#
+        );
     }
 
     #[test]
