@@ -295,12 +295,57 @@ fn network_error(e: reqwest::Error) -> FetchError {
 
 /// The page as an RSS, Atom or JSON feed, if it is one.
 fn parse(page: &Page) -> Option<model::Feed> {
-    feed_rs::parser::Builder::new()
-        .base_uri(Some(page.url.as_str()))
-        .id_generator(entry_key)
-        .build()
-        .parse(page.body.as_slice())
-        .ok()
+    // A parser that failed is left mid-entry, and panics if used again.
+    let parse = |body: &[u8]| {
+        feed_rs::parser::Builder::new()
+            .base_uri(Some(page.url.as_str()))
+            .id_generator(entry_key)
+            .build()
+            .parse(body)
+            .ok()
+    };
+    parse(&page.body).or_else(|| {
+        // feed-rs fails the whole feed on an empty `media:description`, as YouTube
+        // writes for a video without one.
+        parse(&without_empty_media_descriptions(&page.body)?)
+    })
+}
+
+/// `body` without its empty or blank `<media:description>` elements, or `None` if it
+/// has none.
+fn without_empty_media_descriptions(body: &[u8]) -> Option<Vec<u8>> {
+    const OPEN: &[u8] = b"<media:description";
+    const CLOSE: &[u8] = b"</media:description>";
+    let mut out = Vec::with_capacity(body.len());
+    let mut rest = body;
+    let mut found = false;
+    while let Some(at) = rest.windows(OPEN.len()).position(|w| w == OPEN) {
+        let tag = &rest[at..];
+        let Some(gt) = tag.iter().position(|&b| b == b'>') else {
+            break;
+        };
+        let empty = if tag[gt - 1] == b'/' {
+            Some(gt + 1)
+        } else {
+            let inner = &tag[gt + 1..];
+            let blank = inner.iter().take_while(|b| b.is_ascii_whitespace()).count();
+            inner[blank..]
+                .starts_with(CLOSE)
+                .then_some(gt + 1 + blank + CLOSE.len())
+        };
+        // `<media:descriptions…>` is another element.
+        let named = matches!(tag[OPEN.len()], b'>' | b'/') || tag[OPEN.len()].is_ascii_whitespace();
+        if let Some(len) = empty.filter(|_| named) {
+            out.extend_from_slice(&rest[..at]);
+            rest = &rest[at + len..];
+            found = true;
+        } else {
+            out.extend_from_slice(&rest[..=at + gt]);
+            rest = &rest[at + gt + 1..];
+        }
+    }
+    out.extend_from_slice(rest);
+    found.then_some(out)
 }
 
 /// What tells an entry without an ID apart: its link and title. Empty if it has
@@ -369,11 +414,15 @@ fn store(db: &Db, feed_id: &str, feed: &model::Feed, page: &Page, now: i64) -> R
         .iter()
         .filter(|entry| !entry.id.is_empty() && ids.insert(entry.id.as_str()))
         .map(|entry| {
+            // An empty or blank body counts as none.
+            let given = |html: &String| !html.trim().is_empty();
             let html = entry
                 .content
                 .as_ref()
                 .and_then(|c| c.body.clone())
+                .filter(given)
                 .or_else(|| entry.summary.as_ref().map(|s| s.content.clone()))
+                .filter(given)
                 .or_else(|| {
                     // YouTube's only description is its media's.
                     entry

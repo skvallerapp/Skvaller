@@ -205,7 +205,8 @@ The windows, in Dioxus Native (Blitz).
 - **Article HTML is untrusted.**
   - It renders in an `<iframe srcdoc>`, so its styles stay out of the app's document.
     Blitz runs no scripts.
-  - `reader` makes its URLs absolute and https, and holds media until asked for.
+  - `reader` makes its URLs absolute and https, links written-out addresses, and holds
+    media until asked for.
   - Every request from any document passes `main`'s request filter: only public
     addresses (`net::ArticleNet`), or `thumb:` URLs carrying a token made at launch.
     An SVG's own `<image href>` loads only from `data:`; Blitz never reads it as a file.

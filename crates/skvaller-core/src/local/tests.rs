@@ -512,6 +512,47 @@ Line two: https://example.com/a?b=1&amp;c=2.</media:description></media:group></
 }
 
 #[tokio::test]
+async fn media_descriptions_come_after_content_and_an_empty_one_is_no_error() {
+    let server = MockServer::start().await;
+    let media = |description: &str| {
+        format!(
+            r#"<media:group><media:content url="https://www.youtube.com/v/1"/>{description}</media:group>"#
+        )
+    };
+    let feed = format!(
+        r#"<?xml version="1.0"?>
+        <feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+          <title>Channel</title>
+          <entry><id>empty</id><title>A</title>{}</entry>
+          <entry><id>blank</id><title>B</title>{}</entry>
+          <entry><id>summary</id><title>C</title><summary>Own text</summary>{}</entry>
+          <entry><id>no-summary</id><title>D</title><summary> </summary>{}</entry>
+          <entry><id>html</id><title>E</title>{}</entry>
+        </feed>"#,
+        media("<media:description/>"),
+        media("<media:description> </media:description>"),
+        media("<media:description>Media text</media:description>"),
+        media("<media:description>Media text</media:description>"),
+        media(r#"<media:description type="html">&lt;b&gt;Bold&lt;/b&gt;</media:description>"#),
+    );
+    serve(&server, "/feed.xml", xml(feed)).await;
+    let db = Db::open_in_memory().unwrap();
+    let feed_id = subscribe(&db, &format!("{}/feed.xml", server.uri()), None, NOW)
+        .await
+        .unwrap();
+
+    let html = |guid: &str| {
+        db.article_html(&article_id(&feed_id, guid).to_string())
+            .unwrap()
+            .unwrap_or_default()
+    };
+    assert_eq!(html("empty"), "");
+    assert_eq!(html("summary"), "Own text");
+    assert_eq!(html("no-summary"), "<p>Media text</p>");
+    assert_eq!(html("html"), "<b>Bold</b>");
+}
+
+#[tokio::test]
 async fn new_entries_want_a_thumbnail_from_their_media_and_only_once() {
     let server = MockServer::start().await;
     let items = r#"

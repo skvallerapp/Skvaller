@@ -46,14 +46,14 @@ pub fn ready_article(html: &str, base: &str) -> String {
         .filter(dom_query::NodeRef::is_text)
         .collect();
     for node in texts {
-        let in_raw = node.ancestors_it(None).any(|a| {
-            [
-                "a", "script", "style", "textarea", "title", "noscript", "template",
-            ]
-            .iter()
-            .any(|name| a.has_name(name))
-        });
-        if !in_raw && let Some(html) = linked(&node.text()) {
+        // Most text has no address: look for one before walking up the tree.
+        let Some(html) = linked(&node.text()) else {
+            continue;
+        };
+        if !node
+            .ancestors_it(None)
+            .any(|a| UNLINKED.iter().any(|name| a.has_name(name)))
+        {
             node.replace_with_html(html);
         }
     }
@@ -122,35 +122,90 @@ pub fn ready_article(html: &str, base: &str) -> String {
     format!("{head}{lead}{body}")
 }
 
+/// Elements whose text is not linked: links already, text not shown as HTML, and
+/// elements a link can't go in or would mean something else in.
+const UNLINKED: [&str; 16] = [
+    "a",
+    "button",
+    "iframe",
+    "math",
+    "noembed",
+    "noframes",
+    "noscript",
+    "plaintext",
+    "script",
+    "select",
+    "style",
+    "svg",
+    "template",
+    "textarea",
+    "title",
+    "xmp",
+];
+
 /// `text` as HTML with its http and https addresses linked, or `None` if it has none.
-/// An address runs to the next whitespace, less punctuation that ends a sentence.
+/// An address runs to whitespace, a quote, an angle bracket or CJK text, less what
+/// ends the sentence around it: see [`trim_url`].
 fn linked(text: &str) -> Option<String> {
     let mut out = String::new();
-    let mut rest = text;
-    while let Some(start) = rest
-        .match_indices("http")
-        .map(|(i, _)| i)
-        .find(|&i| rest[i..].starts_with("http://") || rest[i..].starts_with("https://"))
-    {
-        out.push_str(&escape(&rest[..start]));
-        rest = &rest[start..];
-        let end = rest
-            .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"'))
-            .unwrap_or(rest.len());
-        let (url, after) = rest.split_at(
-            rest[..end]
-                .trim_end_matches(['.', ',', ')', ';', ':', '!', '?', '\''])
-                .len(),
-        );
-        let url = escape(url);
-        let _ = write!(out, "<a href=\"{url}\">{url}</a>");
-        rest = after;
+    // `text` before `done` is in `out`.
+    let mut done = 0;
+    let mut from = 0;
+    while let Some(found) = text[from..].find("://") {
+        let sep = from + found;
+        from = sep + 3;
+        let scheme = |len: usize, name: &str| {
+            let start = sep.checked_sub(len).filter(|&s| s >= done)?;
+            text.get(start..sep)?
+                .eq_ignore_ascii_case(name)
+                .then_some(start)
+        };
+        let Some(start) = scheme(5, "https").or_else(|| scheme(4, "http")) else {
+            continue;
+        };
+        let end = text[from..].find(ends_url).map_or(text.len(), |i| from + i);
+        let url = trim_url(&text[start..end]);
+        if url.len() <= sep + 3 - start {
+            continue;
+        }
+        out.push_str(&escape(&text[done..start]));
+        let shown = escape(url);
+        let _ = write!(out, "<a href=\"{shown}\">{shown}</a>");
+        done = start + url.len();
+        from = done;
     }
-    if out.is_empty() {
+    if done == 0 && out.is_empty() {
         return None;
     }
-    out.push_str(&escape(rest));
+    out.push_str(&escape(&text[done..]));
     Some(out)
+}
+
+/// Whether `c` can't be in a written-out address. CJK text runs on with no space after
+/// one.
+fn ends_url(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(c, '<' | '>' | '"' | '“' | '”' | '‘' | '’' | '«' | '»')
+        || matches!(c, '\u{2E80}'..='\u{9FFF}' | '\u{AC00}'..='\u{D7AF}' | '\u{F900}'..='\u{FAFF}' | '\u{FF00}'..='\u{FFEF}')
+}
+
+/// `url` less the punctuation after it, which ends the sentence: a closing bracket only
+/// when the address has no opening one for it, as Wikipedia's `…_(film)` does.
+fn trim_url(mut url: &str) -> &str {
+    loop {
+        let unpaired =
+            |open: char, close: char| url.matches(close).count() > url.matches(open).count();
+        let trimmed = match url.chars().last() {
+            Some('.' | ',' | ';' | ':' | '!' | '?' | '\'' | '*' | '}') => true,
+            Some(')') => unpaired('(', ')'),
+            Some(']') => unpaired('[', ']'),
+            _ => false,
+        };
+        if !trimmed {
+            return url;
+        }
+        url = &url[..url.len() - 1];
+    }
 }
 
 /// A YouTube video's still, linked to the video.
@@ -246,6 +301,66 @@ mod tests {
             html,
             r#"<p>See <a href="https://example.com/a?b=1&amp;c=2" target="_blank">https://example.com/a?b=1&amp;c=2</a>. Or <a href="https://example.com/x" target="_blank">http://in.link</a> &lt;b&gt;</p>"#
         );
+        for raw in [
+            "<xmp>https://x.com</xmp>",
+            "<svg><text>https://x.com</text></svg>",
+            "<button>https://x.com</button>",
+            "<select><option>https://x.com</option></select>",
+        ] {
+            let html = ready_article(raw, BASE);
+            assert!(!html.contains("<a"), "{html}");
+        }
+        let html = ready_article("<pre>  https://x.com/a\n\tb</pre>", BASE);
+        assert_eq!(
+            html,
+            "<pre>  <a href=\"https://x.com/a\" target=\"_blank\">https://x.com/a</a>\n\tb</pre>"
+        );
+    }
+
+    #[test]
+    fn an_address_ends_where_its_sentence_goes_on() {
+        let link = |url: &str| format!(r#"<a href="{url}">{url}</a>"#);
+        let wiki = "https://en.wikipedia.org/wiki/Rust_(programming_language)";
+        for (text, html) in [
+            (format!("See {wiki} now"), format!("See {} now", link(wiki))),
+            (format!("(see {wiki})."), format!("(see {}).", link(wiki))),
+            (
+                "[https://x.com/a]".into(),
+                format!("[{}]", link("https://x.com/a")),
+            ),
+            (
+                "“https://x.com/b”".into(),
+                format!("“{}”", link("https://x.com/b")),
+            ),
+            (
+                "*https://x.com/c*!".into(),
+                format!("*{}*!", link("https://x.com/c")),
+            ),
+            (
+                "（https://x.jp/a）。詳細はhttps://x.jp/をご覧ください".into(),
+                format!(
+                    "（{}）。詳細は{}をご覧ください",
+                    link("https://x.jp/a"),
+                    link("https://x.jp/")
+                ),
+            ),
+            ("HTTPS://X.COM/A".into(), link("HTTPS://X.COM/A")),
+            (
+                "a&b https://x.com/?q=\"c\"".into(),
+                format!("a&amp;b {}&quot;c&quot;", link("https://x.com/?q=")),
+            ),
+        ] {
+            assert_eq!(linked(&text).as_deref(), Some(html.as_str()), "{text}");
+        }
+        for text in [
+            "https://",
+            "https://...",
+            "see http",
+            "ftp://x.com",
+            "no links",
+        ] {
+            assert_eq!(linked(text), None, "{text}");
+        }
     }
 
     const STILL: &str = r#"<a href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" target="_blank"><img class="skvaller-video" src="https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg" alt=""></a>"#;
