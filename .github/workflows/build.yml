@@ -1,0 +1,76 @@
+# Checks, tests and builds the app on Linux, macOS and Windows. Run by hand from the
+# Actions tab: the repo is private, so every run costs Actions minutes.
+#
+# Actions from outside GitHub are pinned to a commit, with the version as a comment.
+name: Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
+        with:
+          tool: cargo-audit
+      # Fails on a known vulnerability; an unmaintained crate is only a warning.
+      - run: cargo audit
+
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    # A run without a cache builds Blitz, Stylo and Skia from scratch.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      # Fontconfig for the system fonts, libwayland-client for the Wayland window.
+      - name: Install Linux libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libwayland-dev
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # In release, so the build below reuses its dependencies instead of compiling
+      # them all again.
+      - name: Test
+        run: cargo test --release --workspace --locked
+
+      - name: Build release
+        run: cargo build --release --locked -p skvaller
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: skvaller-${{ runner.os }}
+          path: target/release/skvaller${{ runner.os == 'Windows' && '.exe' || '' }}
+          if-no-files-found: error
