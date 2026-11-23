@@ -237,6 +237,97 @@
   transform: translateX(14px);
 }
 
+/* A slider: knob-wide stops, one per step, with bands between, the part before the
+   knob in the accent color; the step's name beside it. settings.rs SLIDER_KNOB is
+   the knob's width. */
+.slider-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.slider {
+  display: flex;
+  align-items: center;
+  /* Narrower in a narrow window, the bands giving way. */
+  flex: 0 1 200px;
+  min-width: 0;
+  height: 24px;
+  /* A finger drags the knob, not the pane. */
+  touch-action: none;
+}
+
+.slider:focus {
+  outline: none;
+}
+
+.slider .band,
+.slider .stop {
+  height: 4px;
+  background: var(--active);
+}
+
+.slider .band {
+  flex: 1;
+}
+
+.slider .stop {
+  position: relative;
+  flex: none;
+  width: 16px;
+}
+
+.slider .stop:first-child {
+  border-radius: 2px 0 0 2px;
+}
+
+.slider .stop:last-child {
+  border-radius: 0 2px 2px 0;
+}
+
+.slider .on {
+  background: var(--accent);
+}
+
+.slider .tick {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  width: 2px;
+  height: 4px;
+  border-radius: 1px;
+  background: var(--text-3);
+}
+
+.slider .knob {
+  position: absolute;
+  top: -6px;
+  left: 0;
+  z-index: 1;
+  width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  background: var(--switch-knob);
+  box-shadow:
+    0 0 0 0.5px var(--thumb-edge),
+    0 1px 2px rgb(0 0 0 / 0.2);
+}
+
+/* Focused, as after a click, the arrow keys step: Blitz has no :focus-visible. */
+.slider:focus .knob {
+  box-shadow:
+    0 0 0 0.5px var(--thumb-edge),
+    0 0 0 3px var(--accent);
+}
+
+.slider-value {
+  /* As wide as the widest name, so the slider doesn't move under a drag. */
+  flex: none;
+  width: 40px;
+  color: var(--text-2);
+}
+
 /* The OPML buttons, and Remove Account: each as wide as a group, otherwise drawn as
    every other button. */
 .settings .buttons {

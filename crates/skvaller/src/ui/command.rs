@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use dioxus_native::Windows;
 use dioxus_native::prelude::*;
-use skvaller_app::{App, FontSize};
+use skvaller_app::App;
 use skvaller_core::Selection;
 
 use super::manage::Manage;
@@ -117,17 +117,6 @@ pub(crate) enum Command {
     /// Return on the open overlay: pick the menu's highlighted item, or answer yes.
     Accept,
     CloseOverlay,
-}
-
-impl FontStep {
-    /// The size after this change of `size`.
-    fn apply(self, size: FontSize) -> FontSize {
-        match self {
-            Self::Larger => size.larger(),
-            Self::Smaller => size.smaller(),
-            Self::Reset => FontSize::M,
-        }
-    }
 }
 
 impl From<Action> for Command {
@@ -537,6 +526,7 @@ mod tests {
     use super::super::manage::Target;
     use super::*;
     use crate::shortcuts::{Overrides, bindings};
+    use skvaller_app::FontSize;
     use skvaller_core::{Scope, View};
 
     fn press(key: Key, code: Code) -> Press {

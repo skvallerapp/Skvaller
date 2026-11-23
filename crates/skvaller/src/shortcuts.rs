@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use dioxus_native::prelude::{
     Code, Event, Key, KeyboardData, Modifiers, ModifiersInteraction, NamedKey,
 };
+use skvaller_app::FontSize;
 
 use crate::chrome::MAC;
 use crate::i18n::t;
@@ -75,6 +76,15 @@ impl FontStep {
             ("-", false) => Some(Self::Smaller),
             ("0", false) => Some(Self::Reset),
             _ => None,
+        }
+    }
+
+    /// The size after this change of `size`.
+    pub fn apply(self, size: FontSize) -> FontSize {
+        match self {
+            Self::Larger => size.larger(),
+            Self::Smaller => size.smaller(),
+            Self::Reset => FontSize::M,
         }
     }
 }

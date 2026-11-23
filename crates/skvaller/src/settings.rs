@@ -5,10 +5,11 @@
 //! A change is saved at once, and every window follows it through the app's config
 //! revision, or for a feed's Reader View, through [`App::changes`].
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Weak};
 
+use dioxus_html::input_data::MouseButton;
 use dioxus_native::prelude::*;
 use dioxus_native::winit::window::Window;
 use dioxus_native::{Config, LogicalSize, WindowAttributes, Windows, use_window};
@@ -30,7 +31,7 @@ use crate::icons::{
     BOOK_OPEN, CHEVRON_LEFT, CHEVRON_RIGHT, CIRCLE_USER, Icon, KEYBOARD, PALETTE, PLUS,
 };
 use crate::live::use_live;
-use crate::shortcuts::{self, Action, Capture, Refusal};
+use crate::shortcuts::{self, Action, Capture, Chord, Refusal};
 use crate::ui::focus;
 use crate::ui::{APP_CSS, Reveal, canvas_css, scroll_into_view};
 
@@ -122,6 +123,8 @@ fn SettingsRoot() -> Element {
     let live = use_live(&app);
     // For the window buttons and the frame's shadow.
     use_context_provider(|| live);
+    // A slider's drag, followed over the whole window.
+    let mut slider_drag: Signal<Option<SliderDrag>> = use_context_provider(|| Signal::new(None));
     let window_state = chrome::use_window_state_provider();
     let mut pane = use_signal(|| slot.pane.borrow_mut().take().unwrap_or(Pane::Appearance));
     // The pane's scrolling content, which a pane scrolls to show what it adds.
@@ -209,11 +212,40 @@ fn SettingsRoot() -> Element {
                 // Without focus the window hears no keys, so Escape wouldn't close it.
                 focus(&e.data(), "the Settings window").await;
             },
-            onkeydown: move |e: Event<KeyboardData>| {
-                if e.key() == Key::Named(NamedKey::Escape) {
-                    windows.close_window(id);
+            onkeydown: {
+                let app = Arc::clone(&app);
+                move |e: Event<KeyboardData>| {
+                    if e.key() == Key::Named(NamedKey::Escape) {
+                        windows.close_window(id);
+                    }
+                    // ⌘+, ⌘− and ⌘0 work here too, moving the font size slider.
+                    if let Some(Chord::FontSize(step)) =
+                        shortcuts::app_chord(&e.key(), e.code(), e.modifiers())
+                    {
+                        e.prevent_default();
+                        let now = app.settings().font_size;
+                        let size = step.apply(now);
+                        if size != now {
+                            feedback.report(app.change_settings(|s| s.font_size = size));
+                        }
+                    }
                 }
             },
+            onpointermove: move |e: Event<PointerData>| {
+                let Some(drag) = *slider_drag.peek() else {
+                    return;
+                };
+                // Released outside the window, where no mouse-up reaches here.
+                if !e.held_buttons().contains(MouseButton::Primary) {
+                    slider_drag.set(None);
+                    return;
+                }
+                if let Some((left, width)) = drag.track {
+                    drag.go.call(step_at(e.client_coordinates().x, left, width, drag.count));
+                }
+            },
+            onpointerup: move |_| slider_drag.set(None),
+            onpointercancel: move |_| slider_drag.set(None),
             Frame {}
             nav { aria_label: t("settings.label"),
                 if MAC {
@@ -506,10 +538,10 @@ fn AppearancePane(settings: Settings, feedback: Feedback) -> Element {
                     selected: index(&FONTS, &settings.article_font),
                     onchange: move |i: usize| set.call(Box::new(move |s| s.article_font = FONTS[i])),
                 }
-                SelectRow {
+                SliderRow {
                     label: t("settings.fontSize"),
-                    choices: font_size_labels,
-                    selected: index(&FontSize::ALL, &settings.font_size),
+                    steps: font_size_labels,
+                    at: index(&FontSize::ALL, &settings.font_size).unwrap_or_default(),
                     onchange: move |i: usize| set.call(Box::new(move |s| s.font_size = FontSize::ALL[i])),
                 }
             }
@@ -965,7 +997,12 @@ fn AccountPane(
                             move |e: Event<KeyboardData>| {
                                 let key = e.key();
                                 // With nothing typed, Escape is the window's: it closes.
-                                if key == Key::Named(NamedKey::Escape) && *name.peek() == current {
+                                // The app's own chords are the window's too.
+                                let shortcut =
+                                    shortcuts::app_chord(&key, e.code(), e.modifiers()).is_some();
+                                if shortcut
+                                    || (key == Key::Named(NamedKey::Escape) && *name.peek() == current)
+                                {
                                     return;
                                 }
                                 // Other keys typed here are the field's, not the window's.
@@ -1239,6 +1276,21 @@ fn Select(
     }
 }
 
+/// A [`Row`] of a [`Slider`], both named `label`.
+#[component]
+fn SliderRow(
+    label: String,
+    steps: Vec<String>,
+    at: usize,
+    onchange: EventHandler<usize>,
+) -> Element {
+    rsx! {
+        Row { label: label.clone(),
+            Slider { label, steps, at, onchange }
+        }
+    }
+}
+
 /// An on/off switch, drawn as a track with a knob.
 #[component]
 fn Switch(label: String, on: bool, onchange: EventHandler<bool>) -> Element {
@@ -1254,9 +1306,166 @@ fn Switch(label: String, on: bool, onchange: EventHandler<bool>) -> Element {
     }
 }
 
+/// A slider that snaps to `steps`, by index, with the name of the one `at` beside it.
+///
+/// `onchange` gets the index of a step moved to other than the current one. Drawn by
+/// hand, as Blitz draws no `<input type="range">`.
+#[component]
+fn Slider(label: String, steps: Vec<String>, at: usize, onchange: EventHandler<usize>) -> Element {
+    let count = steps.len();
+    let last = count.saturating_sub(1);
+    let name = steps.get(at).cloned().unwrap_or_default();
+    let mut track = use_signal(|| None::<Rc<MountedData>>);
+    let mut drag = use_context::<Signal<Option<SliderDrag>>>();
+    // The step shown, and one sent since: until a render shows a change, moves and
+    // keys go on from the sent step, and don't send it again.
+    let pending = use_hook(|| Rc::new(Cell::new((at, None::<usize>))));
+    if pending.get().0 != at {
+        pending.set((at, None));
+    }
+    let current = {
+        let pending = Rc::clone(&pending);
+        move || pending.get().1.unwrap_or(at)
+    };
+    let go = use_callback({
+        let current = current.clone();
+        move |i: usize| {
+            if i != current() {
+                pending.set((at, Some(i)));
+                onchange.call(i);
+            }
+        }
+    });
+    // A drag the window still follows would call `go` once it is gone.
+    use_drop(move || {
+        if drag.peek().is_some_and(|d| d.go == go) {
+            drag.set(None);
+        }
+    });
+
+    rsx! {
+        div { class: "slider-row",
+            div {
+                class: "slider",
+                role: "slider",
+                tabindex: "0",
+                aria_label: label,
+                "aria-valuemin": "0",
+                "aria-valuemax": "{last}",
+                "aria-valuenow": "{at}",
+                "aria-valuetext": "{name}",
+                onmounted: move |e: MountedEvent| track.set(Some(e.data())),
+                onkeydown: move |e: Event<KeyboardData>| {
+                    // Shortcuts such as Cmd+W go on to the window.
+                    if e.modifiers()
+                        .intersects(Modifiers::CONTROL | Modifiers::META | Modifiers::ALT)
+                    {
+                        return;
+                    }
+                    let current = current();
+                    let to = match e.key() {
+                        Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown) => current.saturating_sub(1),
+                        Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp) => (current + 1).min(last),
+                        Key::Named(NamedKey::Home) => 0,
+                        Key::Named(NamedKey::End) => last,
+                        _ => return,
+                    };
+                    e.stop_propagation();
+                    e.prevent_default();
+                    go(to);
+                },
+                onpointerdown: move |e: Event<PointerData>| {
+                    if e.trigger_button() != Some(MouseButton::Primary) {
+                        return;
+                    }
+                    let Some(mounted) = track.peek().clone() else {
+                        return;
+                    };
+                    // Set now, so a mouse-up before the track is measured ends it.
+                    drag.set(Some(SliderDrag { track: None, count, go }));
+                    let x = e.client_coordinates().x;
+                    spawn(async move {
+                        let Ok(rect) = mounted.get_client_rect().await else {
+                            return;
+                        };
+                        let (left, width) = (rect.min_x(), rect.width());
+                        if let Some(d) = drag.write().as_mut() {
+                            d.track = Some((left, width));
+                        }
+                        go(step_at(x, left, width, count));
+                    });
+                },
+                // Only the line and the knob: the step's name is read from beside it.
+                for i in 0..count {
+                    if i > 0 {
+                        span { class: if i <= at { "band on" } else { "band" }, "aria-hidden": "true" }
+                    }
+                    span { class: if i < at { "stop on" } else { "stop" }, "aria-hidden": "true",
+                        if i == at {
+                            span { class: "knob" }
+                        } else {
+                            span { class: "tick" }
+                        }
+                    }
+                }
+            }
+            // Read out too, as Blitz doesn't pass on `aria-valuetext`.
+            span { class: "slider-value", "{name}" }
+        }
+    }
+}
+
+/// A press on a [`Slider`], by mouse, finger or pen, followed by the Settings window
+/// until it is let go.
+#[derive(Clone, Copy)]
+struct SliderDrag {
+    /// The track's left edge and width, once measured.
+    track: Option<(f64, f64)>,
+    count: usize,
+    /// Moves the slider to a step.
+    go: Callback<usize>,
+}
+
+/// The step of `count` nearest to `x` on a slider's track from `left`, `width` wide:
+/// the steps sit at the centres of knob-wide stops at either end and between.
+fn step_at(x: f64, left: f64, width: f64, count: usize) -> usize {
+    let last = count.saturating_sub(1);
+    let span = width - SLIDER_KNOB;
+    if last == 0 || span <= 0.0 {
+        return 0;
+    }
+    let along = ((x - left - SLIDER_KNOB / 2.0) / span).clamp(0.0, 1.0);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "a step of a few, between 0 and `last`"
+    )]
+    let step = (along * last as f64).round() as usize;
+    step
+}
+
+/// A slider's knob's width, as settings.css draws it.
+const SLIDER_KNOB: f64 = 16.0;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_slider_snaps_to_the_nearest_step() {
+        // Nine steps on settings.css's 200-px track from 100: 16-px stops, 23 px apart.
+        let at = |x| step_at(x, 100.0, 200.0, 9);
+        assert_eq!(at(108.0), 0);
+        assert_eq!(at(50.0), 0);
+        assert_eq!(at(119.0), 0);
+        assert_eq!(at(120.0), 1);
+        assert_eq!(at(131.0), 1);
+        assert_eq!(at(200.0), 4);
+        assert_eq!(at(292.0), 8);
+        assert_eq!(at(400.0), 8);
+        assert_eq!(step_at(5.0, 0.0, 10.0, 9), 0);
+    }
 
     #[test]
     fn periods_use_the_largest_unit_that_fits() {
