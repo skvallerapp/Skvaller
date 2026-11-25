@@ -209,11 +209,14 @@ impl Reading {
     /// Saves the new name of the feed or folder being renamed, unless it is empty or
     /// unchanged, and closes the field. Does nothing once it is closed, as on the blur
     /// that follows Enter.
+    ///
+    /// Leaves the focus alone: on a blur it has moved on already, as to the article a
+    /// press went to. Enter and Escape give it back to the window.
     fn finish_rename(self, app: &App, target: &Target, title: Option<&str>) {
         if *self.overlay.peek() != Overlay::Manage(Manage::Rename(target.clone())) {
             return;
         }
-        self.close_overlay();
+        self.open_overlay(Overlay::None);
         let (Some(account), Some(title)) = (self.account.peek().clone(), title.map(str::trim))
         else {
             return;
@@ -386,9 +389,16 @@ pub(super) fn RenameField(target: Target, title: String) -> Element {
             onclick: move |e| e.stop_propagation(),
             onkeydown: move |e: Event<KeyboardData>| {
                 let Some(key) = field_key(&e) else { return };
+                // The field has the focus, and goes.
                 match key {
-                    Key::Named(NamedKey::Enter) => reading.finish_rename(&app, &target, Some(&draft.peek())),
-                    Key::Named(NamedKey::Escape) => reading.finish_rename(&app, &target, None),
+                    Key::Named(NamedKey::Enter) => {
+                        reading.finish_rename(&app, &target, Some(&draft.peek()));
+                        reading.refocus();
+                    }
+                    Key::Named(NamedKey::Escape) => {
+                        reading.finish_rename(&app, &target, None);
+                        reading.refocus();
+                    }
                     _ => {}
                 }
             },
