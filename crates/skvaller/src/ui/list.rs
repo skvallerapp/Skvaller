@@ -89,11 +89,19 @@ pub(super) fn ArticleList() -> Element {
                     class: "icon-button",
                     aria_label: t("list.search"),
                     title: t_with("list.searchWithKey", &[("key", search_key.as_str())]),
-                    onclick: move |_| reading.run(&search_app, Command::Search),
+                    "aria-pressed": "{searching}",
+                    onclick: move |_| {
+                        if searching {
+                            reading.end_search();
+                        } else {
+                            reading.run(&search_app, Command::Search);
+                        }
+                    },
                     Icon { size: 18, stroke: "2.25", paths: SEARCH }
                 }
                 div { class: "mark-all",
-                    // The window closes the question on any click that reaches it.
+                    // The window closes the question on any click that reaches it. The
+                    // button closes the other overlays itself.
                     onclick: move |e| e.stop_propagation(),
                     button {
                         class: "icon-button",
@@ -102,7 +110,14 @@ pub(super) fn ArticleList() -> Element {
                         "aria-haspopup": "dialog",
                         "aria-expanded": "{confirming}",
                         disabled: unread == 0,
-                        onclick: move |_| reading.run(&app, Action::MarkAllRead.into()),
+                        onclick: move |_| {
+                            // Not `CloseOverlay`, which moves the focus off this button.
+                            let overlay = reading.overlay.peek().after_click();
+                            reading.set_overlay(overlay);
+                            if !confirming {
+                                reading.run(&app, Action::MarkAllRead.into());
+                            }
+                        },
                         Icon { size: 18, stroke: "2.25", paths: CIRCLE_CHECK }
                     }
                     if confirming {

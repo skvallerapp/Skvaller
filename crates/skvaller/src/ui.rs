@@ -847,8 +847,8 @@ impl Reading {
         }
     }
 
-    /// Marks all as read, asking first when the settings say so. Not while Add Feed is
-    /// busy, which the question can't replace.
+    /// Marks all as read, asking first when the settings say so. The question doesn't
+    /// open while Add Feed is busy, which it can't replace.
     fn request_mark_all(self, app: &App) {
         if self.unread_count() == 0 {
             return;
@@ -1017,12 +1017,21 @@ impl Reading {
     }
 
     /// Closes the search field and shows the list it searched, where it was.
-    fn close_search(mut self) {
+    fn close_search(self) {
+        if self.end_search() {
+            // The field, or the bar's close button, may have had the focus.
+            self.refocus();
+        }
+    }
+
+    /// Closes the search field, leaving the focus where it is: on the search button
+    /// that closed it. Returns whether it was open.
+    fn end_search(mut self) -> bool {
         if *self.search.peek() == Search::default() {
-            return;
+            return false;
         }
         self.search.set(Search::default());
-        self.refocus();
+        true
     }
 
     /// Moves from the search field to the results, opening the first if none is open.

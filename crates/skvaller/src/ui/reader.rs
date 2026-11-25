@@ -113,6 +113,18 @@ pub(super) fn Reader() -> Element {
                         title: "",
                         style: if (remake.hidden)() { "visibility: hidden" },
                         "srcdoc": doc,
+                        // A click in the article goes to its own document, so the
+                        // window's click, which closes the open overlay, never comes.
+                        // The press still reaches here. Not `close_overlay`: the frame
+                        // takes the focus after this, and its refocus would take it back.
+                        onpointerdown: move |e: PointerEvent| {
+                            // As the window's click: the primary button only.
+                            if e.trigger_button() != Some(MouseButton::Primary) {
+                                return;
+                            }
+                            let overlay = reading.overlay.peek().after_click();
+                            reading.set_overlay(overlay);
+                        },
                         onmounted: {
                             let (made, mut mounted) = (*remake.count.peek(), remake.frame);
                             move |e: MountedEvent| {
