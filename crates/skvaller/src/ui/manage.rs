@@ -422,7 +422,7 @@ pub(super) fn AddFeed() -> Element {
     let mut folder = use_signal(String::new);
     let mut new_folder = use_signal(String::new);
     let mut error = use_signal(|| None::<String>);
-    let folders = (reading.library)().folders;
+    let folders = reading.library.read().folders.clone();
     // The folder dropdown's choices: none, the folders, and a new one.
     let folder_ids: Vec<String> = std::iter::once(String::new())
         .chain(folders.iter().map(|f| f.id.clone()))

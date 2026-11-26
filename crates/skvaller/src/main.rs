@@ -62,6 +62,8 @@ fn run() -> Result<(), String> {
     // Reads the system appearance while the app loads; the window waits for it below.
     appearance::start();
     let dirs = Dirs::system().map_err(|e| e.to_string())?;
+    // Held until the app ends.
+    let _one = only_instance(&dirs)?;
     let mut args = std::env::args().skip(1);
     if let Some(flag) = args.next() {
         if flag == "--seed-test" {
@@ -123,4 +125,30 @@ fn run() -> Result<(), String> {
     );
     drop(runtime);
     Ok(())
+}
+
+/// Locks the data folder for this process. A second copy of the app would keep its own
+/// config in memory and save over the first's changes, and sync the same caches.
+fn only_instance(dirs: &Dirs) -> Result<std::fs::File, String> {
+    std::fs::create_dir_all(&dirs.data)
+        .map_err(|e| format!("creating {} failed: {e}", dirs.data.display()))?;
+    let path = dirs.data.join("skvaller.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("opening {} failed: {e}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err("Skvaller is already running".into()),
+        // A file system without locks, as some network shares: start unguarded.
+        Err(std::fs::TryLockError::Error(e)) => {
+            tracing::warn!(
+                "locking {} failed, so a second copy isn't kept out: {e}",
+                path.display()
+            );
+            Ok(file)
+        }
+    }
 }

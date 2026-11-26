@@ -4,11 +4,13 @@
 //! fetched and stored small, unless thumbnails are off. [`App::changes`] listeners are
 //! told as each batch is stored, so they show up while a long run goes on.
 
+use std::sync::atomic::Ordering;
+
 use skvaller_core::prefetch_thumbnails;
 use tracing::Level;
 
 use crate::ThumbnailSize;
-use crate::app::{App, Change, Changed, Runtime};
+use crate::app::{App, Change, Changed, Runtime, lock};
 use crate::error::Result;
 
 impl App {
@@ -23,29 +25,42 @@ impl App {
     }
 
     /// Fetches thumbnails for the account's new articles on the sync runtime, unless
-    /// they are off or a fetch still runs. Removing the account, or turning thumbnails
-    /// off, aborts it.
+    /// they are off. While a fetch still runs, that one runs again before it ends, for
+    /// the articles stored since it started. Removing the account, or turning
+    /// thumbnails off, aborts it.
     pub(crate) fn fetch_thumbnails(&self, rt: &Runtime) {
+        // Before the slot's lock, which the running fetch takes to see it: either it
+        // sees this and runs again, or it has left the slot empty for a new one.
+        rt.thumbnails_again.store(true, Ordering::SeqCst);
         // The setting is read under the lock that turning thumbnails off takes to stop
         // a run, after saving: either that stops this run or this sees them off.
         let off = || self.settings().thumbnail_size == ThumbnailSize::None;
         let changes = self.changes.clone();
         self.spawn_once(rt, &rt.thumbnails, off, |rt| async move {
-            let stored = || {
-                // No listener yet is fine: a window that opens later loads the list.
-                let _ = changes.send(Change {
-                    account_id: rt.id.clone(),
-                    what: Changed::Articles,
-                });
-            };
-            if let Err(e) = prefetch_thumbnails(&rt.db, stored).await {
-                tracing::event!(
-                    name: "thumbnail.prefetch.failure",
-                    Level::WARN,
-                    account.id = %rt.id,
-                    error.message = %e,
-                    "fetching thumbnails for account {{account.id}} failed: {{error.message}}",
-                );
+            loop {
+                rt.thumbnails_again.store(false, Ordering::SeqCst);
+                let stored = || {
+                    // No listener yet is fine: a window that opens later loads the list.
+                    let _ = changes.send(Change {
+                        account_id: rt.id.clone(),
+                        what: Changed::Articles,
+                    });
+                };
+                if let Err(e) = prefetch_thumbnails(&rt.db, stored).await {
+                    tracing::event!(
+                        name: "thumbnail.prefetch.failure",
+                        Level::WARN,
+                        account.id = %rt.id,
+                        error.message = %e,
+                        "fetching thumbnails for account {{account.id}} failed: {{error.message}}",
+                    );
+                    return;
+                }
+                let mut slot = lock(&rt.thumbnails);
+                if !rt.thumbnails_again.load(Ordering::SeqCst) {
+                    *slot = None;
+                    return;
+                }
             }
         });
     }

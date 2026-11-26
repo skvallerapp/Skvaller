@@ -15,7 +15,7 @@ use crate::full_text::MAX_ATTEMPTS;
 use crate::text::{INVISIBLE, plain_text};
 use crate::{Error, Result, api, thumbnail};
 
-const SCHEMA_VERSION: i32 = 10;
+const SCHEMA_VERSION: i32 = 11;
 
 /// The schema as of version 8, the oldest version that is migrated rather than reset.
 /// A change to the schema bumps [`SCHEMA_VERSION`], goes in a new constant like
@@ -126,6 +126,10 @@ WHERE url LIKE '%youtube.com/%' OR url LIKE '%youtu.be/%' OR url LIKE '%youtube-
 ON CONFLICT DO NOTHING;
 ";
 
+/// Version 11: a new article is indexed once, by its HTML's insert (see [`SEARCH`]).
+/// `IF EXISTS`: a cache made from a version 9 or 10 [`SEARCH`] has it.
+const INDEX_ONCE: &str = "DROP TRIGGER IF EXISTS search_article_insert;";
+
 /// Version 9: full-text search over the articles' titles, authors and text.
 const SEARCH: &str = "
 -- Contentless: only the index is kept, not the text. Keyed by the article's rowid,
@@ -146,11 +150,9 @@ LEFT JOIN full_text f ON f.article_id = a.id;
 -- Each write to `search` deletes the rowid's entry first, as a rowid freed by a delete
 -- may come back. Not INSERT OR REPLACE: in a trigger, FTS5 takes the outer statement's
 -- conflict mode instead, and keeps the old words too.
-CREATE TRIGGER search_article_insert AFTER INSERT ON articles BEGIN
-    DELETE FROM search WHERE rowid = new.rowid;
-    INSERT INTO search (rowid, title, author, body)
-    VALUES (new.rowid, new.title, new.author, '');
-END;
+-- A new article is indexed by `search_html_insert`: every write of an article also
+-- writes its `article_html` row (`store_article`). Indexing it here too would make
+-- FTS5 flush its pending words at that trigger's delete, once per article.
 CREATE TRIGGER search_article_update AFTER UPDATE OF title, author ON articles
 WHEN old.title IS NOT new.title OR old.author IS NOT new.author
 BEGIN
@@ -458,7 +460,11 @@ impl Db {
                  PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
             ))?,
             9 => conn.execute_batch(&format!(
-                "BEGIN IMMEDIATE; {REFETCH_YOUTUBE_THUMBNAILS}
+                "BEGIN IMMEDIATE; {REFETCH_YOUTUBE_THUMBNAILS} {INDEX_ONCE}
+                 PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+            ))?,
+            10 => conn.execute_batch(&format!(
+                "BEGIN IMMEDIATE; {INDEX_ONCE}
                  PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
             ))?,
             v => {
@@ -970,7 +976,8 @@ impl Db {
     /// Stores the icon fetched from `from`, or `None` if there was no usable image.
     pub(crate) fn set_icon(&self, feed_id: &str, from: &str, icon: Option<&str>) -> Result<()> {
         self.lock().execute(
-            "UPDATE feeds SET icon_from = ?2, icon = ?3 WHERE id = ?1",
+            // Only while the feed still points there: a sync may have changed it.
+            "UPDATE feeds SET icon_from = ?2, icon = ?3 WHERE id = ?1 AND icon_url = ?2",
             params![feed_id, from, icon],
         )?;
         Ok(())
@@ -1118,7 +1125,9 @@ impl Db {
             [read_before, unread_before],
         )?;
         if pruned > 0 {
-            conn.execute_batch("PRAGMA incremental_vacuum")?;
+            // Capped, so a large prune doesn't hold the write lock for long: the rest of
+            // the free pages are reused by later writes, or given back at a later prune.
+            conn.execute_batch("PRAGMA incremental_vacuum(2000)")?;
         }
         Ok(pruned)
     }

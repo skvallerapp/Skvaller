@@ -48,6 +48,9 @@ pub struct SettingsWindow {
     pane: Rc<RefCell<Option<Pane>>>,
     /// Tells an open Settings window that a pane was asked for.
     asked: Rc<Notify>,
+    /// A window was asked for and hasn't rendered yet, so `window` is still empty: a
+    /// second press meanwhile, as a held ⌘, or a double click, opens no second one.
+    opening: Rc<Cell<bool>>,
 }
 
 impl SettingsWindow {
@@ -60,6 +63,9 @@ impl SettingsWindow {
         if let Some(window) = self.get() {
             window.set_minimized(false);
             window.focus_window();
+            return;
+        }
+        if self.opening.replace(true) {
             return;
         }
         let (config, attributes) = chrome::window(
@@ -118,7 +124,10 @@ fn SettingsRoot() -> Element {
     let windows = use_context::<Windows>();
     let window = use_window();
     // The main window finds this window through the slot, to focus or close it.
-    use_hook(|| *slot.window.borrow_mut() = Some(Arc::downgrade(&window)));
+    use_hook(|| {
+        *slot.window.borrow_mut() = Some(Arc::downgrade(&window));
+        slot.opening.set(false);
+    });
     let id = window.id();
     let live = use_live(&app);
     // For the window buttons and the frame's shadow.
@@ -921,11 +930,17 @@ fn AccountPane(
                 else {
                     return;
                 };
-                match app.import_opml(&id, file.path()) {
-                    Ok(report) => {
+                // Off the UI thread: thousands of feeds, each written to the cache,
+                // which may wait for a sync's write lock.
+                let path = file.path().to_owned();
+                let imported =
+                    tokio::task::spawn_blocking(move || app.import_opml(&id, &path)).await;
+                match imported {
+                    Ok(Ok(report)) => {
                         note.set(Some(import_note(&report)));
                         feedback.clear();
                     }
+                    Ok(Err(e)) => feedback.fail(&e.to_string()),
                     Err(e) => feedback.fail(&e.to_string()),
                 }
             });

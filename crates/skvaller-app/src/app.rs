@@ -163,6 +163,9 @@ pub(crate) struct Runtime {
     /// The thumbnails' fetch started after the last sync or a new feed, while it may
     /// still run.
     pub(crate) thumbnails: Mutex<Option<tokio::task::AbortHandle>>,
+    /// More articles want thumbnails than the running fetch started with: it runs again
+    /// before it ends.
+    pub(crate) thumbnails_again: AtomicBool,
     /// Held while the local account's feeds are backed up, which the window and the
     /// sync may both start, so one backup doesn't write over the other's.
     pub(crate) backup: Mutex<()>,
@@ -182,6 +185,7 @@ impl Runtime {
             woke: AtomicBool::new(false),
             prefetch: Mutex::new(None),
             thumbnails: Mutex::new(None),
+            thumbnails_again: AtomicBool::new(false),
             backup: Mutex::new(()),
         };
         // A local cache without feeds, as after an old schema made it start over, gets
@@ -214,6 +218,9 @@ pub struct App {
     pub(crate) accounts_dir: PathBuf,
     config_path: PathBuf,
     pub(crate) config: Mutex<Config>,
+    /// Held while `config.json` is saved, so saves take turns and none is lost, while
+    /// `config` stays free for readers, the UI among them.
+    saving: Mutex<()>,
     pub(crate) runtimes: RwLock<HashMap<String, Arc<Runtime>>>,
     /// Accounts whose cache didn't open, and why.
     pub(crate) broken: Mutex<HashMap<String, String>>,
@@ -311,6 +318,7 @@ impl App {
             accounts_dir,
             config_path,
             config: Mutex::new(config),
+            saving: Mutex::new(()),
             runtimes: RwLock::new(runtimes),
             broken: Mutex::new(broken),
             notice,
@@ -465,12 +473,14 @@ impl App {
     /// Changes the config and saves it, giving what `change` gives. The change takes only
     /// once saved, so the app never shows what the file doesn't have.
     pub(crate) fn update_config<T>(&self, change: impl FnOnce(&mut Config) -> T) -> Result<T> {
-        let mut config = lock(&self.config);
-        let mut next = config.clone();
+        // Only writers take `saving`, so the config can't change between the clone and
+        // the assignment, and a reader never waits for the disk.
+        let _saving = lock(&self.saving);
+        let mut next = lock(&self.config).clone();
         let out = change(&mut next);
         next.save(&self.config_path)
             .map_err(io("Saving", &self.config_path))?;
-        *config = next;
+        *lock(&self.config) = next;
         Ok(out)
     }
 

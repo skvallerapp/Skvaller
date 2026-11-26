@@ -35,7 +35,9 @@ pub(super) fn Sidebar() -> Element {
     let live = use_context::<Live>();
     let dates = (live.dates)();
     let reading = use_context::<Reading>();
-    let lib = (reading.library)();
+    // Borrowed, not cloned: the render writes no signal, and the library may hold
+    // hundreds of feeds.
+    let lib = reading.library.read();
     let current = (reading.selection)();
     let counts = counts_by_feed(&lib.counts, current.view);
     let all_label = t(&format!("views.{}.all", view_key(current.view)));
@@ -516,7 +518,7 @@ pub(super) fn AccountSwitcher() -> Element {
     })();
     let active = (reading.account)();
     // The counts change with changes made here and with syncs, as the library does.
-    (reading.library)();
+    reading.library.read();
     let accounts = app.accounts();
     let menu_app = Arc::clone(&app);
     let app_for_add = Arc::clone(&app);

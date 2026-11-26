@@ -12,6 +12,8 @@ const CRAWL_OVERLAP: i64 = 60 * 60;
 pub const DEFAULT_KEEP_READ_DAYS: u32 = 30;
 /// Item IDs per `edit-tag` or `stream/items/contents` request.
 const BATCH: usize = 250;
+/// Articles stored per write transaction.
+const WRITE_BATCH: usize = 50;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SyncReport {
@@ -220,7 +222,13 @@ fn store(db: &Db, items: Vec<Item>, prune_before: i64) -> Result<(usize, Option<
         })
         .filter(|row| !(row.read && !row.starred && row.published < prune_before))
         .collect();
-    Ok((db.upsert_articles(&rows)?, newest))
+    let mut stored = 0;
+    // A few transactions per page, so a read or star change from the UI, which waits
+    // for the write lock, waits for one of these rather than the whole page.
+    for chunk in rows.chunks(WRITE_BATCH) {
+        stored += db.upsert_articles(chunk)?;
+    }
+    Ok((stored, newest))
 }
 
 #[cfg(test)]

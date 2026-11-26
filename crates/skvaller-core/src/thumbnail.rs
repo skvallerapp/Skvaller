@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use feed_rs::model::MediaObject;
 use image::codecs::jpeg::JpegEncoder;
-use image::imageops::FilterType;
 use image::{DynamicImage, ImageDecoder, ImageReader, Limits, RgbImage};
 use reqwest::{StatusCode, Url};
 use tokio::sync::Semaphore;
@@ -395,7 +394,9 @@ fn shrink(bytes: &[u8]) -> Option<Vec<u8>> {
     let orientation = decoder.orientation().ok();
     let image = DynamicImage::from_decoder(decoder).ok()?;
     let mut image = if image.width() > MAX_SIDE || image.height() > MAX_SIDE {
-        image.resize(MAX_SIDE, MAX_SIDE, FilterType::Triangle)
+        // An area average, as `fill`'s: a convolution over a camera-sized original
+        // takes far longer for the same result.
+        image.thumbnail(MAX_SIDE, MAX_SIDE)
     } else {
         image
     };

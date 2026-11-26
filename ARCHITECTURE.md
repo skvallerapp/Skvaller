@@ -188,6 +188,9 @@ The windows, in Dioxus Native (Blitz).
   before loading the app, and the first window waits up to 300 ms for its first
   answers, two local calls, not the network. On KDE under X11, each window's shadow keeps
   a connection of its own to the X server.
+- **One copy of the app at a time.** `main` locks `skvaller.lock` in the data folder
+  before loading: a second copy would save its own config over the first's and sync
+  the same caches. A second launch exits.
 - **One `VirtualDom` per window.** Windows share only the `Arc<App>` they're given.
   Each follows the app through `live::use_live`, `live::use_cache_changes` and its own
   `subscribe()`.

@@ -120,14 +120,16 @@ fn use_followed<T: Copy + PartialEq + 'static>(
 }
 
 /// Calls `heard` with each change to an account's cache, for as long as the component
-/// lives. Calls it with `None` when it starts listening and after missing changes: the
-/// caller should then assume anything may have changed.
+/// lives. Calls it with `None` after missing changes: the caller should then assume
+/// anything may have changed.
+///
+/// Listens from the first render on, before the caller first reads the cache, so it
+/// misses nothing and needn't load it all again once the task starts.
 pub fn use_cache_changes(app: &Arc<App>, mut heard: impl FnMut(Option<&Change>) + 'static) {
     let app = Arc::clone(app);
     use_hook(move || {
+        let mut changes = app.changes();
         spawn(async move {
-            let mut changes = app.changes();
-            heard(None);
             loop {
                 match changes.recv().await {
                     Ok(change) => heard(Some(&change)),

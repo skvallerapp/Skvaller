@@ -872,16 +872,17 @@ impl Reading {
         }
         // The question's focused button goes, or the one that asked keeps the focus.
         self.refocus();
-        // Read, not peek: `is_read` reads the list too, and a recompute under a peek's
-        // guard panics.
-        let ids: Vec<String> = self
-            .articles
-            .read()
-            .rows
-            .iter()
-            .filter(|a| !self.is_read(a))
-            .map(|a| a.id.clone())
-            .collect();
+        // Read, not peek: a recompute under a peek's guard panics. Borrowed once, not
+        // per row, as in `unread_count`; both guards go before `mark` writes the marks.
+        let ids: Vec<String> = {
+            let (marks, articles) = (self.marks.read(), self.articles.read());
+            articles
+                .rows
+                .iter()
+                .filter(|a| !marks.is_read(articles.load, a))
+                .map(|a| a.id.clone())
+                .collect()
+        };
         let Some(account) = self.account.peek().clone() else {
             return;
         };
