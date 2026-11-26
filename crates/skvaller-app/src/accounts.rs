@@ -191,7 +191,16 @@ impl App {
     ///
     /// [`Error::NoAccount`] for an account already gone, and [`Error::Io`] when
     /// config.json can't be saved; the account then stays as it was.
-    pub async fn remove_account(&self, account_id: &str) -> Result<()> {
+    pub async fn remove_account(self: &Arc<Self>, account_id: &str) -> Result<()> {
+        let (app, id) = (Arc::clone(self), account_id.to_owned());
+        // Its own task, which goes on to the end even if the UI stops waiting for it:
+        // stopped part way, the cache would stay behind.
+        tokio::spawn(async move { app.remove_account_now(&id).await })
+            .await
+            .map_err(|e| task_failed(&e))?
+    }
+
+    async fn remove_account_now(&self, account_id: &str) -> Result<()> {
         let account = self.account(account_id).ok_or(Error::NoAccount)?;
         // One whose cache didn't open has no runtime.
         let rt = read(&self.runtimes).get(account_id).cloned();
@@ -221,9 +230,15 @@ impl App {
         }
         drop(rt);
 
-        if let Some(key) = account.kind.keychain_key()
-            && let Err(e) = delete_token(&key)
-        {
+        // The keychain blocks, and may wait for the user to unlock it.
+        let deleted = match account.kind.keychain_key() {
+            Some(key) => tokio::task::spawn_blocking(move || delete_token(&key))
+                .await
+                .map_err(|e| task_failed(&e))
+                .and_then(|r| r.map_err(Error::from)),
+            None => Ok(()),
+        };
+        if let Err(e) = deleted {
             tracing::event!(
                 name: "account.token.remove.failure",
                 Level::WARN,

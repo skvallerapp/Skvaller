@@ -269,7 +269,7 @@ impl App {
     }
 
     /// The account's API client, built from the keychain token on first use. `None`
-    /// without a token, or after the server rejected it.
+    /// after the server rejected the token, and [`CoreError::Unauthorized`] without one.
     async fn client(&self, rt: &Runtime) -> Result<Option<Client>, CoreError> {
         if let Some(client) = lock(&rt.client).clone() {
             return Ok(Some(client));
@@ -291,7 +291,10 @@ impl App {
         let token = tokio::task::spawn_blocking(move || load_token(&key))
             .await
             .expect("reading the keychain doesn't panic")?;
-        let Some(token) = token else { return Ok(None) };
+        // No token saved, as after a keychain reset: signed out, as with a rejected one.
+        let Some(token) = token else {
+            return Err(CoreError::Unauthorized);
+        };
         let client = Client::new(server, &token)?;
         *lock(&rt.client) = Some(client.clone());
         Ok(Some(client))

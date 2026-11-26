@@ -530,11 +530,12 @@ impl Reading {
     }
 
     fn unread_count(&self) -> usize {
-        self.articles
-            .read()
+        // Borrowed once, not per row: the list may hold thousands.
+        let (marks, articles) = (self.marks.read(), self.articles.read());
+        articles
             .rows
             .iter()
-            .filter(|a| !self.is_read(a))
+            .filter(|a| !marks.is_read(articles.load, a))
             .count()
     }
 
@@ -1053,7 +1054,13 @@ impl Reading {
         let Some(a) = self.article.peek().clone() else {
             return;
         };
-        if a.url.is_empty() {
+        // The server's link, which may name any scheme: only a web page opens.
+        let web = ["http://", "https://"].iter().any(|scheme| {
+            a.url
+                .get(..scheme.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(scheme))
+        });
+        if !web {
             return;
         }
         if let Err(e) = webbrowser::open(&a.url) {

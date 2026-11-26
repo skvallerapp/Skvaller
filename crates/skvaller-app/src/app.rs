@@ -163,6 +163,9 @@ pub(crate) struct Runtime {
     /// The thumbnails' fetch started after the last sync or a new feed, while it may
     /// still run.
     pub(crate) thumbnails: Mutex<Option<tokio::task::AbortHandle>>,
+    /// Held while the local account's feeds are backed up, which the window and the
+    /// sync may both start, so one backup doesn't write over the other's.
+    pub(crate) backup: Mutex<()>,
 }
 
 impl Runtime {
@@ -179,6 +182,7 @@ impl Runtime {
             woke: AtomicBool::new(false),
             prefetch: Mutex::new(None),
             thumbnails: Mutex::new(None),
+            backup: Mutex::new(()),
         };
         // A local cache without feeds, as after an old schema made it start over, gets
         // them back from their backup before a sync backs up the empty list.
@@ -684,6 +688,7 @@ impl App {
             return;
         }
         let path = feeds_backup_path(&self.accounts_dir, &rt.id);
+        let _one_backup = lock(&rt.backup);
         let written = export_opml(&rt.db, &account.description)
             .map_err(|e| e.to_string())
             .and_then(|xml| {

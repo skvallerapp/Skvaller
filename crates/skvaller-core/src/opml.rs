@@ -66,11 +66,11 @@ pub fn export(db: &Db, title: &str) -> Result<String> {
         .filter(|f| f.subscribed && f.url.is_some())
         .collect();
     let outline = |f: &crate::Feed| Outline {
-        text: f.title.clone(),
-        title: Some(f.title.clone()),
+        text: xml_text(&f.title),
+        title: Some(xml_text(&f.title)),
         r#type: Some("rss".into()),
-        xml_url: f.url.clone(),
-        html_url: f.site_url.clone(),
+        xml_url: f.url.as_deref().map(xml_text),
+        html_url: f.site_url.as_deref().map(xml_text),
         ..Outline::default()
     };
     let mut outlines: Vec<Outline> = Vec::new();
@@ -82,8 +82,8 @@ pub fn export(db: &Db, title: &str) -> Result<String> {
             .collect();
         if !inside.is_empty() {
             outlines.push(Outline {
-                text: folder.title.clone(),
-                title: Some(folder.title),
+                text: xml_text(&folder.title),
+                title: Some(xml_text(&folder.title)),
                 outlines: inside,
                 ..Outline::default()
             });
@@ -93,7 +93,7 @@ pub fn export(db: &Db, title: &str) -> Result<String> {
     let document = OPML {
         version: "2.0".into(),
         head: Some(Head {
-            title: Some(title.to_owned()),
+            title: Some(xml_text(title)),
             ..Head::default()
         }),
         body: Body { outlines },
@@ -101,6 +101,14 @@ pub fn export(db: &Db, title: &str) -> Result<String> {
     document
         .to_string()
         .map_err(|e| Error::Local(format!("writing OPML failed: {e}")))
+}
+
+/// `text` without the characters XML can't hold, such as control characters a feed's
+/// title may have: written out, they would make the file one that can't be read back.
+fn xml_text(text: &str) -> String {
+    text.chars()
+        .filter(|&c| matches!(c, '\t' | '\n' | '\r' | ' '..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..))
+        .collect()
 }
 
 /// The text of an XML file: decoded by its byte order mark, else by the encoding its
@@ -369,6 +377,19 @@ mod tests {
         };
         assert_eq!(summary(&db), summary(&other));
         assert!(xml.contains("<title>Local</title>"));
+    }
+
+    #[test]
+    fn control_characters_in_titles_are_left_out_of_an_export() {
+        let db = Db::open_in_memory().unwrap();
+        import(&db, DOC.as_bytes()).unwrap();
+        let feed = db.feeds().unwrap().remove(0);
+        db.rename_feed(&feed.id, "Bell\u{7} feed").unwrap();
+
+        let xml = export(&db, "Lo\u{1}cal").unwrap();
+
+        import(&Db::open_in_memory().unwrap(), xml.as_bytes()).unwrap();
+        assert!(xml.contains("Bell feed") && xml.contains("<title>Local</title>"));
     }
 
     #[test]

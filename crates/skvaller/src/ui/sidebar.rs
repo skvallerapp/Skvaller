@@ -52,6 +52,8 @@ pub(super) fn Sidebar() -> Element {
     } else {
         "sidebar"
     };
+    // The account's name and the count of accounts come from config.json.
+    (live.revision)();
     let local = is_local(&app, reading.account.read().as_deref());
     let title = reading
         .account

@@ -641,3 +641,23 @@ fn a_typed_address_gets_https_unless_it_names_a_scheme() {
     );
     assert_eq!(url("ftp://example.com/"), None);
 }
+
+#[test]
+fn unclosed_media_texts_are_looked_past_once_and_empty_ones_still_go() {
+    let text = |body: &str| without_bad_media_texts(body.as_bytes()).map(String::from_utf8);
+    // An unclosed title, then an empty one: only the empty one goes.
+    assert_eq!(
+        text("<media:title>a <media:title/> <media:title>b"),
+        Some(Ok("<media:title>a  <media:title>b".to_owned()))
+    );
+    // A readable one is kept whole, with what is written in it.
+    assert_eq!(
+        text("<media:title>x <media:description/></media:title><media:description/>"),
+        Some(Ok(
+            "<media:title>x <media:description/></media:title>".to_owned()
+        ))
+    );
+    // Many unclosed ones, with no closing tag to find: done in one pass.
+    let many = "<media:title>x".repeat(200_000);
+    assert_eq!(text(&many), None);
+}

@@ -29,25 +29,29 @@ impl App {
     ///
     /// When [`App::start_sync`] hasn't run.
     pub async fn add_feed(
-        &self,
+        self: &Arc<Self>,
         account_id: &str,
         url: &str,
         folder_id: Option<&str>,
     ) -> Result<String> {
         let rt = self.local(account_id)?;
-        let db = Arc::clone(&rt.db);
+        let app = Arc::clone(self);
         let (url, folder_id) = (url.to_owned(), folder_id.map(str::to_owned));
         let now = now_secs();
+        // Its own task, which goes on to the end even if the UI stops waiting for it.
         let added = self
             .sync_runtime
             .get()
             .expect("start_sync runs before subscribing")
-            .spawn(async move { subscribe(&db, &url, folder_id.as_deref(), now).await });
-        let id = added.await.map_err(|e| task_failed(&e))??;
-        self.feeds_changed(&rt);
-        // Its articles are new to the cache: their thumbnails now, not at the next sync.
-        self.fetch_thumbnails(&rt);
-        Ok(id)
+            .spawn(async move {
+                let id = subscribe(&rt.db, &url, folder_id.as_deref(), now).await?;
+                app.feeds_changed(&rt);
+                // Its articles are new to the cache: their thumbnails now, not at the
+                // next sync.
+                app.fetch_thumbnails(&rt);
+                Ok(id)
+            });
+        added.await.map_err(|e| task_failed(&e))?
     }
 
     /// Removes a feed of the local account, with its articles, starred ones too.

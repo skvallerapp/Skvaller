@@ -5,6 +5,7 @@
 //! (the reader document's base is the app's, not the article's), resources are asked
 //! for over https, media waits to be asked for, and forms can't be sent.
 
+use std::collections::HashSet;
 use std::fmt::Write;
 
 use reqwest::Url;
@@ -44,6 +45,7 @@ pub fn ready_article(html: &str, base: &str) -> String {
     let Some(doc) = parse(html) else {
         return String::new();
     };
+    drop_flips(&doc);
     let base = Url::parse(base).ok();
     let texts: Vec<_> = doc
         .root()
@@ -78,7 +80,7 @@ pub fn ready_article(html: &str, base: &str) -> String {
         }
     }
     doc.root().strip_elements(&["form"]);
-    let mut stills: Vec<String> = Vec::new();
+    let mut stills: HashSet<String> = HashSet::new();
     // A Short's still has no black bars to crop.
     let short = base
         .as_ref()
@@ -104,7 +106,7 @@ pub fn ready_article(html: &str, base: &str) -> String {
         } else {
             video_still(&id, short)
         });
-        stills.push(id);
+        stills.insert(id);
     }
     link_embeds(&doc, base.as_ref());
     // FreshRSS links each video's old Flash player, as 💾, beside its still.
@@ -144,9 +146,21 @@ pub fn ready_article(html: &str, base: &str) -> String {
     format!("{head}{lead}{body}")
 }
 
+/// `doc` without the [`FLIPS`] inside `math` and `svg`: what is text in them here
+/// would be markup once the output is parsed again, and get past the other passes.
+fn drop_flips(doc: &Document) {
+    for el in doc.select("math, svg").nodes() {
+        for inner in el.descendants() {
+            if FLIPS.iter().any(|name| inner.has_name(name)) {
+                inner.remove_from_parent();
+            }
+        }
+    }
+}
+
 /// Each iframe left as a link to what it embeds: see [`ready_article`].
 fn link_embeds(doc: &Document, base: Option<&Url>) {
-    let mut embeds: Vec<Url> = Vec::new();
+    let mut embeds: HashSet<Url> = HashSet::new();
     for el in doc.select("iframe").nodes() {
         let url = ["src", "data-src"]
             .into_iter()
@@ -173,9 +187,27 @@ fn link_embeds(doc: &Document, base: Option<&Url>) {
             escape(url.as_str()),
             escape(name)
         ));
-        embeds.push(url);
+        embeds.insert(url);
     }
 }
+
+/// Elements that can parse differently once written out, when inside `math` or `svg`:
+/// those whose contents are raw text in HTML, which is markup there, and the two that
+/// keep math inside the text elements of `math`. An article with them could hide an
+/// element from the reader's passes in text that becomes that element in the frame.
+const FLIPS: [&str; 11] = [
+    "iframe",
+    "malignmark",
+    "mglyph",
+    "noembed",
+    "noframes",
+    "noscript",
+    "plaintext",
+    "script",
+    "style",
+    "textarea",
+    "xmp",
+];
 
 /// Elements whose text is not linked: links already, text not shown as HTML, and
 /// elements a link can't go in or would mean something else in.
@@ -357,6 +389,24 @@ mod tests {
     use super::*;
 
     const BASE: &str = "https://example.com/posts/1";
+
+    #[test]
+    fn markup_hidden_in_math_text_does_not_become_an_iframe_once_parsed_again() {
+        for article in [
+            "<math><mtext><table><mglyph><style><iframe src=https://evil.example/x>",
+            "<form><math><mtext></form><form><mglyph><style></math><iframe src=https://evil.example/x>",
+            "<svg></p><style><iframe src=https://evil.example/x>",
+            "<math><mtext><table><mglyph><xmp><form action=https://evil.example/>",
+        ] {
+            let html = ready_article(article, BASE);
+            let again = parse(&format!("<article>{html}</article>")).unwrap();
+            assert_eq!(
+                again.select("iframe, form").length(),
+                0,
+                "{article}: {html}"
+            );
+        }
+    }
 
     #[test]
     fn links_become_absolute_and_in_article_links_stay() {

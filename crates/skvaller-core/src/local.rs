@@ -318,47 +318,80 @@ fn parse(page: &Page) -> Option<model::Feed> {
 /// failing.
 fn without_bad_media_texts(body: &[u8]) -> Option<Vec<u8>> {
     const OPEN: &[u8] = b"<media:";
+    const NAMES: [&[u8]; 2] = [b"title", b"description"];
     let mut out = Vec::with_capacity(body.len());
     let mut rest = body;
     let mut found = false;
+    // A closing tag not found after one element isn't after a later one either: each
+    // search is done once, so a feed of unclosed ones takes no longer than a good one.
+    let mut unclosed = [false; NAMES.len()];
     while let Some(at) = rest.windows(OPEN.len()).position(|w| w == OPEN) {
         let tag = &rest[at..];
-        let name_end = [b"title".as_slice(), b"description"]
-            .iter()
-            .find_map(|name| {
-                let end = OPEN.len() + name.len();
-                (tag[OPEN.len()..].starts_with(name)
-                    && tag
-                        .get(end)
-                        .is_some_and(|&b| b == b'>' || b == b'/' || b.is_ascii_whitespace()))
-                .then_some(end)
-            });
-        if let Some(len) = name_end.and_then(|end| unreadable_len(tag, end)) {
-            out.extend_from_slice(&rest[..at]);
-            rest = &rest[at + len..];
-            found = true;
-        } else {
-            out.extend_from_slice(&rest[..at + OPEN.len()]);
-            rest = &rest[at + OPEN.len()..];
-        }
+        let name = NAMES.iter().position(|name| {
+            let end = OPEN.len() + name.len();
+            tag[OPEN.len()..].starts_with(name)
+                && tag
+                    .get(end)
+                    .is_some_and(|&b| b == b'>' || b == b'/' || b.is_ascii_whitespace())
+        });
+        let text = name.map(|n| (n, media_text(tag, OPEN.len() + NAMES[n].len(), unclosed[n])));
+        let kept = match text {
+            // No `>` after it: none after a later one either.
+            Some((_, MediaText::Unended)) => break,
+            Some((n, MediaText::Unclosed)) => {
+                unclosed[n] = true;
+                OPEN.len()
+            }
+            Some((_, MediaText::Unreadable(len))) => {
+                out.extend_from_slice(&rest[..at]);
+                rest = &rest[at + len..];
+                found = true;
+                continue;
+            }
+            // Kept whole: what it holds is its text, not more elements.
+            Some((_, MediaText::Readable(len))) => len,
+            None => OPEN.len(),
+        };
+        out.extend_from_slice(&rest[..at + kept]);
+        rest = &rest[at + kept..];
     }
     out.extend_from_slice(rest);
     found.then_some(out)
 }
 
-/// The length of the element `tag` starts with, its name `tag[1..name_end]`, if
-/// feed-rs can't read its text.
-fn unreadable_len(tag: &[u8], name_end: usize) -> Option<usize> {
-    let gt = name_end + tag[name_end..].iter().position(|&b| b == b'>')?;
+/// A media text element, with its length up to the end of its closing tag.
+enum MediaText {
+    /// Its start tag has no `>`.
+    Unended,
+    /// It has no closing tag.
+    Unclosed,
+    Readable(usize),
+    /// One feed-rs can't read.
+    Unreadable(usize),
+}
+
+/// The element `tag` starts with, its name `tag[1..name_end]`, and whether feed-rs
+/// can read its text. `unclosed` when an earlier one found no closing tag.
+fn media_text(tag: &[u8], name_end: usize, unclosed: bool) -> MediaText {
+    let Some(gt) = tag[name_end..].iter().position(|&b| b == b'>') else {
+        return MediaText::Unended;
+    };
+    let gt = name_end + gt;
     let attrs = &tag[name_end..gt];
     if attrs.ends_with(b"/") {
-        return Some(gt + 1);
+        return MediaText::Unreadable(gt + 1);
+    }
+    if unclosed {
+        return MediaText::Unclosed;
     }
     let close = [b"</", &tag[1..name_end], b">"].concat();
     let inner = &tag[gt + 1..];
-    let close_at = inner
+    let Some(close_at) = inner
         .windows(close.len())
-        .position(|w| w == close.as_slice())?;
+        .position(|w| w == close.as_slice())
+    else {
+        return MediaText::Unclosed;
+    };
     let len = gt + 1 + close_at + close.len();
     let typed = ["type=\"", "type='"].iter().find_map(|open| {
         let start = attrs
@@ -370,7 +403,11 @@ fn unreadable_len(tag: &[u8], name_end: usize) -> Option<usize> {
         Some(&value[..value.iter().position(|&b| b == quote)?])
     });
     let bad_type = typed.is_some_and(|t| t != b"plain" && t != b"html");
-    (bad_type || no_text(&inner[..close_at])).then_some(len)
+    if bad_type || no_text(&inner[..close_at]) {
+        MediaText::Unreadable(len)
+    } else {
+        MediaText::Readable(len)
+    }
 }
 
 /// Whether XML `content` holds no text but blanks: only comments and CDATA sections

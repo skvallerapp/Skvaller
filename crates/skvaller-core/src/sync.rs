@@ -96,7 +96,8 @@ pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Re
 
     // Only once every page is stored, so an interrupted first sync starts over.
     if let Some(ms) = newest_crawl {
-        db.bump_newest_crawl(ms)?;
+        // Never past now: a crawl time in the future would skip what comes before it.
+        db.bump_newest_crawl(ms.min(now * 1000))?;
     }
     // Never unread articles: the server lists them, so the next sync would fetch them
     // again. The server's own retention limits them.

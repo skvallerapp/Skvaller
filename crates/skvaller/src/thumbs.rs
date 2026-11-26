@@ -108,6 +108,11 @@ pub fn url(account_id: &str, article_id: &str, fit: Fit) -> String {
     )
 }
 
+/// Thumbnails cropped at once: one per core.
+static CROPS: LazyLock<tokio::sync::Semaphore> = LazyLock::new(|| {
+    tokio::sync::Semaphore::new(std::thread::available_parallelism().map_or(2, usize::from))
+});
+
 /// Answers `thumb:` URLs from the accounts' caches.
 pub struct Thumbnails(pub Arc<App>);
 
@@ -116,17 +121,23 @@ impl NetProvider for Thumbnails {
         let app = Arc::clone(&self.0);
         let url = request.url;
         // A database read, the crop, and then the decode in `bytes`: none on the UI
-        // thread.
-        tokio::task::spawn_blocking(move || {
-            let jpeg = parse(&url).and_then(|(fit, account, article)| {
-                let jpeg = app.thumbnail(&account, &article).ok().flatten()?;
-                let (width, height) = fit.size();
-                fill_thumbnail(&jpeg, width, height)
-            });
-            match jpeg {
-                Some(jpeg) => handler.bytes(url.to_string(), Bytes::from(jpeg)),
-                None => handler.error(url.to_string(), "no thumbnail".into()),
-            }
+        // thread. A few at a time, so a fast scroll doesn't start a thread per row.
+        tokio::spawn(async move {
+            let Ok(_turn) = CROPS.acquire().await else {
+                return;
+            };
+            let _ = tokio::task::spawn_blocking(move || {
+                let jpeg = parse(&url).and_then(|(fit, account, article)| {
+                    let jpeg = app.thumbnail(&account, &article).ok().flatten()?;
+                    let (width, height) = fit.size();
+                    fill_thumbnail(&jpeg, width, height)
+                });
+                match jpeg {
+                    Some(jpeg) => handler.bytes(url.to_string(), Bytes::from(jpeg)),
+                    None => handler.error(url.to_string(), "no thumbnail".into()),
+                }
+            })
+            .await;
         });
     }
 }

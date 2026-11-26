@@ -153,10 +153,11 @@ pub(super) fn step_scope(
 ) -> Option<Scope> {
     let row = row_scope(lib, scope, collapsed);
     let scopes = sidebar_scopes(&sidebar_tree(lib, view, pinned, scope, sort), collapsed);
+    // A feed or folder a sync removed has no row: the arrows start again at the top.
     scopes
         .iter()
         .position(|s| *s == row)
-        .and_then(|i| i.checked_add_signed(delta))
+        .map_or(Some(0), |i| i.checked_add_signed(delta))
         .and_then(|i| scopes.get(i))
         .cloned()
 }
@@ -537,6 +538,8 @@ mod tests {
         // A selected feed shows, so it has a row to step from.
         assert_eq!(step(&none, &feed_scope("x"), 1), Some(feed_scope("y")));
         assert_eq!(step(&none, &feed_scope("b"), -1), Some(feed_scope("a")));
+        // A feed gone from the library has no row: the arrows go to the top.
+        assert_eq!(step(&none, &feed_scope("gone"), 1), Some(Scope::All));
         // Past either end, nothing.
         assert_eq!(step(&none, &Scope::All, -1), None);
         assert_eq!(step(&none, &feed_scope("y"), 1), None);
