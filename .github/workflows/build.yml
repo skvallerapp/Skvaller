@@ -71,10 +71,21 @@ jobs:
         run: cargo build --release --locked -p skvaller
 
       - uses: actions/upload-artifact@v7
-        if: runner.os != 'macOS'
+        if: runner.os == 'Windows'
         with:
-          name: skvaller-${{ runner.os }}
-          path: target/release/skvaller${{ runner.os == 'Windows' && '.exe' || '' }}
+          name: skvaller-Windows
+          path: target/release/skvaller.exe
+          if-no-files-found: error
+
+      # The program with its desktop entry and icon, which the dock finds it by.
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'Linux'
+        with:
+          name: skvaller-Linux
+          path: |
+            target/release/skvaller
+            crates/skvaller/skvaller.desktop
+            crates/skvaller/skvaller.png
           if-no-files-found: error
 
       # Skvaller.app, ad hoc signed, in a disk image, which keeps the bundle's

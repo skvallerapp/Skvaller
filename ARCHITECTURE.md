@@ -175,7 +175,8 @@ The windows, in Dioxus Native (Blitz).
   Windows and Linux have no menu bar.
 - `badge`: the unread count of every account on the app icon, recounted on each cache
   or settings change and sent only when it changes: the Dock tile's badge on macOS,
-  Unity's `LauncherEntry` signal for `skvaller.desktop` on Linux, and on Windows a
+  Unity's `LauncherEntry` signal for `skvaller.desktop` on Linux (in `crates/skvaller`,
+  with its icon; `chrome` gives the Wayland window the matching app ID), and on Windows a
   red circle it draws itself, set as the taskbar button's overlay icon.
 - `spin`: when the sync icon turns and stops, as plain state.
 - `i18n`, `dates`, `fonts`, `icons`, `shortcuts`: text, date formats, font stacks,

@@ -72,9 +72,19 @@ fn frame(attributes: WindowAttributes) -> WindowAttributes {
 /// Leaves out the window's decorations: the system's title bar on X11 and on a
 /// Wayland compositor that draws them, winit's own (sctk-adwaita) on one that doesn't.
 /// The window is transparent, for its rounded corners ([`surface`]).
+///
+/// On Wayland the app ID is `skvaller`, so the dock matches the window to
+/// `skvaller.desktop`, its icon and its unread badge. X11 ignores these attributes and
+/// takes the window's class from the program's name, `skvaller` too.
 #[cfg(target_os = "linux")]
 fn frame(attributes: WindowAttributes) -> WindowAttributes {
-    attributes.with_decorations(false).with_transparent(true)
+    use dioxus_native::winit::platform::wayland::WindowAttributesWayland;
+
+    let wayland = WindowAttributesWayland::default().with_name("skvaller", "skvaller");
+    attributes
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_platform_attributes(Box::new(wayland))
 }
 
 /// Leaves out the title bar, keeping the system's drop shadow, and its resize borders

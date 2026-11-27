@@ -62,6 +62,16 @@ silicon only. It isn't notarized: on another Mac, allow the first launch in Syst
 Settings → Privacy & Security → Open Anyway. An ad hoc signature changes with every
 build, so the keychain asks for your password again after each update.
 
+On Linux, install the desktop entry and icon so the launcher lists Skvaller and the
+dock shows its icon and unread badge. `Exec=skvaller` needs the program on your `PATH`:
+
+```sh
+cargo build --release -p skvaller
+install -Dm755 target/release/skvaller ~/.local/bin/skvaller
+install -Dm644 crates/skvaller/skvaller.desktop ~/.local/share/applications/skvaller.desktop
+install -Dm644 crates/skvaller/skvaller.png ~/.local/share/icons/hicolor/512x512/apps/skvaller.png
+```
+
 ## License
 
 [GPL-3.0](LICENSE)

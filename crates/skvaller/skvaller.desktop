@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Skvaller
+GenericName=RSS Reader
+GenericName[es]=Lector de RSS
+GenericName[sv]=RSS-läsare
+Comment=Read your feeds, synced with FreshRSS and other Google Reader API services
+Comment[es]=Lee tus fuentes, sincronizadas con FreshRSS y otros servicios de la API de Google Reader
+Comment[sv]=Läs dina flöden, synkade med FreshRSS och andra tjänster med Google Readers API
+Exec=skvaller
+Icon=skvaller
+Terminal=false
+Categories=Network;News;Feed;
+Keywords=RSS;Atom;Feed;News;FreshRSS;
+StartupNotify=true
+StartupWMClass=skvaller
+SingleMainWindow=true
