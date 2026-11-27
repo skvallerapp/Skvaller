@@ -51,3 +51,14 @@ pub fn delete_token(account: &str) -> Result<()> {
         Err(e) => Err(e.into()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_keychain_service_keeps_its_name() {
+        // Changing it loses existing accounts: their tokens are saved under this name.
+        assert_eq!(KEYCHAIN_SERVICE, "io.github.skvallerapp.Skvaller");
+    }
+}

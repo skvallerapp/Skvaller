@@ -1003,6 +1003,32 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_config_and_caches_keep_their_paths() {
+        let dirs = Dirs::new(PathBuf::from("/data"), PathBuf::from("/config"));
+        // Changing these loses existing accounts: their config and caches are found here.
+        assert_eq!(dirs.config_file(), Path::new("/config/config.json"));
+        assert_eq!(dirs.accounts(), Path::new("/data/accounts"));
+        assert_eq!(
+            db_path(&dirs.accounts(), "1"),
+            Path::new("/data/accounts/1.db")
+        );
+    }
+
+    #[test]
+    fn the_system_folders_are_named_after_the_keychain_service() {
+        let dirs = Dirs::system().unwrap();
+        let name = Some(std::ffi::OsStr::new("io.github.skvallerapp.Skvaller"));
+        // Changing the folder name loses existing accounts: their config and caches are in
+        // these folders.
+        assert_eq!(dirs.data.file_name(), name);
+        assert_eq!(dirs.config.file_name(), name);
+        // Changing the parent folders loses existing accounts too. On Windows the cache is
+        // in the local data folder, not the roaming one.
+        assert_eq!(dirs.data.parent(), dirs::data_local_dir().as_deref());
+        assert_eq!(dirs.config.parent(), dirs::config_dir().as_deref());
+    }
+
+    #[test]
     fn a_first_start_makes_the_folders_and_has_no_accounts() {
         let (_tmp, dirs) = dirs();
         let app = App::load(&dirs).unwrap();

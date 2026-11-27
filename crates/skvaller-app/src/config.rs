@@ -640,6 +640,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_sync_account_s_keychain_key_is_username_at_server() {
+        let kind = AccountKind::Greader {
+            server: "https://rss.example.com/api/greader.php".to_owned(),
+            username: "me".to_owned(),
+        };
+        // Changing it loses existing accounts: their tokens are saved under this key.
+        assert_eq!(
+            kind.keychain_key().as_deref(),
+            Some("me@https://rss.example.com/api/greader.php")
+        );
+        assert_eq!(AccountKind::Local.keychain_key(), None);
+    }
+
+    #[test]
     fn fonts_default_to_inter_and_an_unknown_one_keeps_the_rest() {
         let config = Config::parse(
             br#"{ "account": { "server": "https://rss.example.com", "username": "carl" },
