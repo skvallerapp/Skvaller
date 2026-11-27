@@ -440,6 +440,170 @@ async fn failed_push_keeps_the_queue_and_the_local_state() {
     assert_eq!(fake.flags(2), Some((false, false)));
 }
 
+/// Syncs articles 1 to `count`, unread and unstarred, then mounts a write token.
+async fn synced(count: i64) -> Fake {
+    let fake = Fake::new().await;
+    let crawl = NOW - DAY;
+    let ids: Vec<i64> = (1..=count).collect();
+    let items = ids
+        .iter()
+        .map(|&id| item(id, "feed/1", crawl, false, false))
+        .collect();
+    fake.serve(NOW - 30 * DAY, items, &ids, &[]).await;
+    sync(&fake.client, &fake.db, NOW, DEFAULT_KEEP_READ_DAYS)
+        .await
+        .unwrap();
+    fake.server.reset().await;
+    fake.mount(
+        fake.get("token")
+            .respond_with(ResponseTemplate::new(200).set_body_string("wtok")),
+    )
+    .await;
+    fake
+}
+
+fn sorted_pending(db: &Db) -> Vec<(String, Flag, bool)> {
+    let mut pending = db.pending().unwrap();
+    pending.sort_by_key(|(id, flag, value)| (id.clone(), *flag == Flag::Starred, *value));
+    pending
+}
+
+#[tokio::test]
+async fn unauthorized_mid_push_keeps_the_queue() {
+    // 300 reads go in two chunks; the star change comes after them.
+    let fake = synced(300).await;
+    let ids: Vec<String> = (1..=300).map(|id| id.to_string()).collect();
+    fake.db.set_read(&ids, true).unwrap();
+    fake.db.set_starred(&["1"], true).unwrap();
+    let queued = sorted_pending(&fake.db);
+    fake.mount(
+        fake.post("edit-tag")
+            .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .expect(1),
+    )
+    .await;
+    fake.mount(
+        fake.post("edit-tag")
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1),
+    )
+    .await;
+
+    let result = sync(&fake.client, &fake.db, NOW + 900, DEFAULT_KEEP_READ_DAYS).await;
+
+    assert!(matches!(result, Err(Error::Unauthorized)));
+    // The chunk the server took is cleared; the one it refused and the star change stay.
+    let requests = fake.server.received_requests().await.unwrap();
+    let taken = requests
+        .iter()
+        .find(|r| r.url.path().ends_with("/edit-tag"))
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .unwrap();
+    let was_taken = |id: &str| {
+        let field = form_id(id.parse().unwrap());
+        taken.split('&').any(|f| f == field)
+    };
+    let unsent: Vec<_> = queued
+        .into_iter()
+        .filter(|(id, flag, _)| *flag == Flag::Starred || !was_taken(id))
+        .collect();
+    assert_eq!(unsent.len(), 51);
+    assert_eq!(sorted_pending(&fake.db), unsent);
+    assert_eq!(fake.flags(300), Some((true, false)));
+    assert_eq!(fake.flags(1), Some((true, true)));
+}
+
+#[tokio::test]
+async fn edit_tag_answer_other_than_ok_keeps_its_chunk_queued() {
+    let fake = synced(2).await;
+    fake.db.set_read(&["1"], true).unwrap();
+    fake.db.set_starred(&["2"], true).unwrap();
+    fake.serve(NOW - DAY - CRAWL_OVERLAP, vec![], &[1, 2], &[])
+        .await;
+    fake.mount(
+        fake.post("edit-tag")
+            .and(body_string_contains(
+                "a=user%2F-%2Fstate%2Fcom.google%2Fread",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string("Error")),
+    )
+    .await;
+    fake.mount(
+        fake.post("edit-tag")
+            .and(body_string_contains(
+                "a=user%2F-%2Fstate%2Fcom.google%2Fstarred",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string("OK")),
+    )
+    .await;
+
+    let result = sync(&fake.client, &fake.db, NOW + 900, DEFAULT_KEEP_READ_DAYS).await;
+
+    assert!(matches!(result, Err(Error::Protocol(_))));
+    assert_eq!(
+        fake.db.pending().unwrap(),
+        [("1".to_owned(), Flag::Read, true)]
+    );
+    assert_eq!(fake.flags(1), Some((true, false)));
+    assert_eq!(fake.flags(2), Some((false, true)));
+}
+
+#[tokio::test]
+async fn a_pushed_change_is_cleared_when_the_pull_fails() {
+    let fake = synced(1).await;
+    fake.db.set_read(&["1"], true).unwrap();
+    fake.mount(
+        fake.post("edit-tag")
+            .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
+            .expect(1),
+    )
+    .await;
+    fake.mount(
+        fake.get("subscription/list")
+            .respond_with(ResponseTemplate::new(500)),
+    )
+    .await;
+
+    sync(&fake.client, &fake.db, NOW + 900, DEFAULT_KEEP_READ_DAYS)
+        .await
+        .unwrap_err();
+
+    // Sent again, it could undo a newer change made elsewhere.
+    assert_eq!(fake.db.pending().unwrap(), []);
+    assert_eq!(fake.flags(1), Some((true, false)));
+}
+
+#[tokio::test]
+async fn a_stale_pull_does_not_revert_a_change_pushed_in_the_same_sync() {
+    let fake = synced(1).await;
+    fake.db.set_read(&["1"], true).unwrap();
+    // The server takes the change but still lists 1 as unread.
+    fake.serve(NOW - DAY - CRAWL_OVERLAP, vec![], &[1], &[])
+        .await;
+    fake.mount(
+        fake.post("edit-tag")
+            .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
+            .expect(1),
+    )
+    .await;
+
+    let report = sync(&fake.client, &fake.db, NOW + 900, DEFAULT_KEEP_READ_DAYS)
+        .await
+        .unwrap();
+
+    assert_eq!((report.pushed, report.changed), (1, 0));
+    assert_eq!(fake.db.pending().unwrap(), []);
+    assert_eq!(fake.flags(1), Some((true, false)));
+
+    // A server that still lists it unread a sync later means it.
+    sync(&fake.client, &fake.db, NOW + 1800, DEFAULT_KEEP_READ_DAYS)
+        .await
+        .unwrap();
+    assert_eq!(fake.flags(1), Some((false, false)));
+}
+
 #[tokio::test]
 async fn forbidden_outside_sign_in_is_not_unauthorized() {
     let fake = Fake::new().await;

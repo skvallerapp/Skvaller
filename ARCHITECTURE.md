@@ -45,7 +45,10 @@ server).
 - `api`: the Google Reader client. Only calls FreshRSS, Miniflux and The Old Reader
   all have; articles come by ID.
 - `sync`: two-way sync. Push queued changes, pull subscriptions, articles and flags,
-  prune old read articles.
+  prune old read articles. A change the server took stays queued until the pull is
+  done, so a server that applies edits lazily and still lists the old state can't turn
+  it back in the same sync. A later sync takes the server's state. It's cleared then
+  even if the pull failed, so it's never sent again over a newer change made elsewhere.
 - `local`: the local account. Fetches and parses feeds itself; its state lives only in
   the cache.
 - `keychain`: the access token in the OS keychain. Blocking calls.

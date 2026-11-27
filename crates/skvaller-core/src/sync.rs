@@ -15,6 +15,9 @@ const BATCH: usize = 250;
 /// Articles stored per write transaction.
 const WRITE_BATCH: usize = 50;
 
+/// A chunk of queued changes the server took: the flag, its value and the article IDs.
+type Sent = (Flag, bool, Vec<String>);
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SyncReport {
     /// Queued local changes sent to the server.
@@ -51,14 +54,35 @@ impl SyncReport {
 ///
 /// Returns `Error::Unauthorized` when the token is no longer accepted, `Error::Http`
 /// or `Error::Protocol` when the server fails or answers unexpectedly, and `Error::Db`
-/// if the cache can't be written. Changes not sent stay queued for the next sync.
+/// if the cache can't be written. Changes not sent stay queued for the next sync. Changes
+/// the server took are cleared from the queue once the pull is done, even if it failed.
 pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Result<SyncReport> {
+    let mut sent = Vec::new();
     // A push the server refuses doesn't hold back the pull, since queued changes are kept
     // and win anyway. Its error is returned once the pull is done.
-    let pushed = match push(client, db).await {
-        Err(Error::Unauthorized) => return Err(Error::Unauthorized),
-        pushed => pushed,
+    let pushed = push(client, db, &mut sent).await;
+    let pulled = match pushed {
+        Err(Error::Unauthorized) => Err(Error::Unauthorized),
+        _ => pull(client, db, now, keep_read_days).await,
     };
+    // Only after the pull, so a server that applies edits lazily and still lists the old
+    // state can't turn a change back in this sync; a later sync takes the server's state.
+    // But whatever the pull did, so an old change is never sent again over a newer one
+    // made elsewhere.
+    for (flag, value, ids) in &sent {
+        db.clear_pending(*flag, *value, ids)?;
+    }
+    let report = pulled?;
+    pushed?;
+    db.set_last_sync(now * 1000)?;
+    Ok(SyncReport {
+        pushed: sent.iter().map(|(.., ids)| ids.len()).sum(),
+        ..report
+    })
+}
+
+/// Pulls feeds, folders, articles and flags, and prunes. Its report has nothing pushed.
+async fn pull(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Result<SyncReport> {
     let keep_read_since = now - i64::from(keep_read_days) * DAY;
     let prune_before = keep_read_since * 1000;
 
@@ -107,10 +131,8 @@ pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Re
     db.optimize()?;
     let server: Vec<_> = client.api_url().into_iter().collect();
     icons::fetch(db, |url| client.resolve(url), &server, None).await?;
-    let pushed = pushed?;
-    db.set_last_sync(now * 1000)?;
     Ok(SyncReport {
-        pushed,
+        pushed: 0,
         fetched,
         changed,
         pruned,
@@ -118,12 +140,13 @@ pub async fn sync(client: &Client, db: &Db, now: i64, keep_read_days: u32) -> Re
     })
 }
 
-/// Sends queued changes, a chunk at a time. A chunk the server refuses stays queued and
-/// the rest still go; the first such error is returned at the end.
-async fn push(client: &Client, db: &Db) -> Result<usize> {
+/// Sends queued changes, a chunk at a time, and adds the chunks the server took to
+/// `sent`. They stay queued for the caller to clear. A chunk the server refuses stays
+/// queued and the rest still go; the first such error is returned at the end.
+async fn push(client: &Client, db: &Db, sent: &mut Vec<Sent>) -> Result<()> {
     let pending = db.pending()?;
     if pending.is_empty() {
-        return Ok(0);
+        return Ok(());
     }
     let token = client.write_token().await?;
     let mut failed = None;
@@ -136,7 +159,7 @@ async fn push(client: &Client, db: &Db) -> Result<usize> {
                 .collect();
             for chunk in ids.chunks(BATCH) {
                 match client.edit_tag(&token, chunk, flag.tag(), value).await {
-                    Ok(()) => db.clear_pending(flag, value, chunk)?,
+                    Ok(()) => sent.push((flag, value, chunk.to_vec())),
                     Err(Error::Unauthorized) => return Err(Error::Unauthorized),
                     Err(e) => {
                         failed.get_or_insert(e);
@@ -145,7 +168,7 @@ async fn push(client: &Client, db: &Db) -> Result<usize> {
             }
         }
     }
-    failed.map_or(Ok(pending.len()), Err)
+    failed.map_or(Ok(()), Err)
 }
 
 /// Skvaller shows each feed in one folder: the first one the server lists.
