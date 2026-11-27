@@ -1,9 +1,10 @@
 //! Untrusted article HTML, readied for showing in an isolated reader document.
 //!
-//! The article still renders without scripts; this only makes what it loads and links
-//! to behave: resources and links are made absolute against the article's own URL
-//! (the reader document's base is the app's, not the article's), resources are asked
-//! for over https, media waits to be asked for, and forms can't be sent.
+//! The renderer runs no scripts, and the reader doesn't rely on it: scripts, event
+//! handlers, and script URLs in `href`, `src`, `poster` and `srcset` go. The rest makes what the article loads and links to
+//! behave: resources and links are made absolute against the article's own URL (the
+//! reader document's base is the app's, not the article's), resources are asked for
+//! over https, media waits to be asked for, and forms can't be sent.
 
 use std::collections::HashSet;
 use std::fmt::Write;
@@ -18,13 +19,17 @@ use crate::thumbnail::youtube_video;
 
 /// `html` readied for the reader, with relative URLs resolved against `base`.
 ///
+/// - [`ACTIVE`] elements go with their contents, `object` is unwrapped, and every `on…`
+///   event handler goes: they would run, or steer the frame, in a renderer that ran
+///   scripts.
 /// - Web addresses written out in the text become links, outside links already.
 /// - Links to other pages become absolute and get `target="_blank"`, so they leave the
 ///   reader's frame for the browser; one that can't be made absolute loses its `href`,
 ///   so it can't resolve against the app. Links within the article (`#…`) stay in it.
 ///   Only http, https and mailto links are kept: no other scheme should leave the frame.
-/// - `src`, `poster` and `srcset` URLs become absolute, and `http:` becomes `https:`:
-///   most hosts serve https too.
+/// - `src`, `poster` and `srcset` URLs, and other elements' `href` (SVG's, also as
+///   `xlink:href`), become absolute, and `http:` becomes `https:`: most hosts serve
+///   https too. Only web URLs, `data:` images and `#…` are kept.
 /// - Audio and video don't autoplay or preload, and show their controls: without
 ///   scripts, controls are the only way to play.
 /// - Forms are unwrapped, their fields kept: sending one would load any page into the
@@ -46,6 +51,7 @@ pub fn ready_article(html: &str, base: &str) -> String {
         return String::new();
     };
     drop_flips(&doc);
+    drop_active(&doc);
     let base = Url::parse(base).ok();
     let texts: Vec<_> = doc
         .root()
@@ -64,21 +70,7 @@ pub fn ready_article(html: &str, base: &str) -> String {
             node.replace_with_html(html);
         }
     }
-    for link in doc.select("a[href], area[href]").nodes() {
-        let href = link.attr("href").unwrap_or_default();
-        let href = href.trim();
-        if href.starts_with('#') {
-            link.remove_attr("target");
-            continue;
-        }
-        match absolute(base.as_ref(), href).filter(leaves_frame) {
-            Some(url) => {
-                link.set_attr("href", url.as_str());
-                link.set_attr("target", "_blank");
-            }
-            None => link.remove_attr("href"),
-        }
-    }
+    ready_links(&doc, base.as_ref());
     doc.root().strip_elements(&["form"]);
     let mut stills: HashSet<String> = HashSet::new();
     // A Short's still has no black bars to crop.
@@ -130,11 +122,17 @@ pub fn ready_article(html: &str, base: &str) -> String {
     for el in doc.select("[src], [poster], [srcset]").nodes() {
         for name in ["src", "poster"] {
             if let Some(value) = el.attr(name).filter(|v| !v.trim().is_empty()) {
-                el.set_attr(name, &resource(&value, base.as_ref()));
+                match resource(&value, base.as_ref()) {
+                    Some(url) => el.set_attr(name, &url),
+                    None => el.remove_attr(name),
+                }
             }
         }
         if let Some(srcset) = el.attr("srcset") {
-            el.set_attr("srcset", &ready_srcset(&srcset, base.as_ref()));
+            match ready_srcset(&srcset, base.as_ref()) {
+                Some(srcset) => el.set_attr("srcset", &srcset),
+                None => el.remove_attr("srcset"),
+            }
         }
     }
     let head = doc.select("head").inner_html();
@@ -190,6 +188,78 @@ fn link_embeds(doc: &Document, base: Option<&Url>) {
         embeds.insert(url);
     }
 }
+
+/// Each `href` readied: see [`ready_article`].
+fn ready_links(doc: &Document, base: Option<&Url>) {
+    // By its local name, so SVG's `xlink:href` too.
+    let refs: Vec<_> = doc
+        .root()
+        .descendants_it()
+        .filter(|el| el.attr("href").is_some())
+        .collect();
+    for el in refs {
+        // The first, as the renderer reads it. Any other, such as an `xlink:href`
+        // beside an `href`, goes with it.
+        let href = el.attr("href").unwrap_or_default();
+        let href = href.trim();
+        el.remove_attr("href");
+        let is_link = el.has_name("a") || el.has_name("area");
+        if href.starts_with('#') {
+            el.set_attr("href", href);
+            if is_link {
+                el.remove_attr("target");
+            }
+        } else if is_link {
+            if let Some(url) = absolute(base, href).filter(leaves_frame) {
+                el.set_attr("href", url.as_str());
+                el.set_attr("target", "_blank");
+            }
+        } else if let Some(url) = resource(href, base) {
+            // What SVG's `image` and `use` load.
+            el.set_attr("href", &url);
+        }
+    }
+}
+
+/// `doc` without its [`ACTIVE`] elements and event handlers. An `object` is unwrapped,
+/// its fallback kept.
+fn drop_active(doc: &Document) {
+    doc.select(&ACTIVE.join(", ")).remove();
+    doc.root().strip_elements(&["object"]);
+    for el in doc.root().descendants() {
+        let handlers: Vec<String> = el
+            .attrs()
+            .iter()
+            .map(|a| a.name.local.to_string())
+            .filter(|name| {
+                name.get(..2)
+                    .is_some_and(|on| on.eq_ignore_ascii_case("on"))
+            })
+            .collect();
+        if !handlers.is_empty() {
+            el.remove_attrs(&handlers.iter().map(String::as_str).collect::<Vec<_>>());
+        }
+    }
+}
+
+/// Elements that run code, load a plugin, or change how the frame loads or resolves:
+/// `meta` can refresh it to another page, `base` and `link` change what it resolves and
+/// loads, and SVG's animations can set an `href` the reader never sees. A `template`'s
+/// contents are out of the reader's reach, and never shown. Styles stay, in `style`
+/// elements and attributes.
+const ACTIVE: [&str; 11] = [
+    "animate",
+    "animateMotion",
+    "animateTransform",
+    "base",
+    "embed",
+    "link",
+    "meta",
+    "param",
+    "script",
+    "set",
+    "template",
+];
 
 /// Elements that can parse differently once written out, when inside `math` or `svg`:
 /// those whose contents are raw text in HTML, which is markup there, and the two that
@@ -341,22 +411,29 @@ fn leaves_frame(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https" | "mailto")
 }
 
-/// `url` made absolute against `base`, and asked for over https. Left as it is when it
-/// can't be made absolute: there's no better guess.
-fn resource(url: &str, base: Option<&Url>) -> String {
-    let Some(mut url) = absolute(base, url) else {
-        return url.trim().to_owned();
-    };
-    if url.scheme() == "http" {
+/// `url` made absolute against `base`, and asked for over https; or `None` unless it is
+/// a web URL or a `data:` image. One that can't be made absolute would resolve against
+/// the app.
+fn resource(url: &str, base: Option<&Url>) -> Option<String> {
+    let mut url = absolute(base, url)?;
+    match url.scheme() {
         // Infallible between two special schemes.
-        let _ = url.set_scheme("https");
+        "http" => _ = url.set_scheme("https"),
+        "https" => {}
+        "data"
+            if url
+                .path()
+                .get(..6)
+                .is_some_and(|t| t.eq_ignore_ascii_case("image/")) => {}
+        _ => return None,
     }
-    url.into()
+    Some(url.into())
 }
 
 /// A `srcset` with each candidate's URL readied by [`resource`]. As in HTML, a URL runs
 /// to the next whitespace, less trailing commas, and its descriptors to the next comma.
-fn ready_srcset(srcset: &str, base: Option<&Url>) -> String {
+/// `None` when no candidate is left.
+fn ready_srcset(srcset: &str, base: Option<&Url>) -> Option<String> {
     let mut candidates = Vec::new();
     let mut rest = srcset;
     loop {
@@ -374,14 +451,16 @@ fn ready_srcset(srcset: &str, base: Option<&Url>) -> String {
             descriptors = after[..stop].trim();
             rest = &after[stop..];
         }
-        let url = resource(url, base);
+        let Some(url) = resource(url, base) else {
+            continue;
+        };
         candidates.push(if descriptors.is_empty() {
             url
         } else {
             format!("{url} {descriptors}")
         });
     }
-    candidates.join(", ")
+    (!candidates.is_empty()).then(|| candidates.join(", "))
 }
 
 #[cfg(test)]
@@ -645,7 +724,7 @@ mod tests {
     #[test]
     fn a_srcset_url_with_commas_keeps_them() {
         assert_eq!(
-            ready_srcset("a.png?w=1,2 1x,b.png", Url::parse(BASE).ok().as_ref()),
+            ready_srcset("a.png?w=1,2 1x,b.png", Url::parse(BASE).ok().as_ref()).unwrap(),
             "https://example.com/posts/a.png?w=1,2 1x, https://example.com/posts/b.png"
         );
     }
@@ -667,6 +746,163 @@ mod tests {
             BASE,
         );
         assert_eq!(html, r#"<input name="q"><button>Go</button>"#);
+    }
+
+    #[test]
+    fn scripts_handlers_and_page_controls_go() {
+        // Each article, and what must not be left of it once readied and parsed again.
+        let cases: &[(&str, &[&str])] = &[
+            ("<script>alert(1)</script><p>x</p>", &["script", "alert"]),
+            (
+                "<p>x<script src=https://evil.example/a.js></script></p>",
+                &["script", "evil"],
+            ),
+            ("<svg><script>alert(1)</script></svg>", &["script", "alert"]),
+            (
+                r#"<meta http-equiv="refresh" content="0;url=https://evil.example/">"#,
+                &["meta", "evil"],
+            ),
+            (
+                r#"<base href="https://evil.example/"><a href="a">a</a>"#,
+                &["base", "evil"],
+            ),
+            (
+                r#"<link rel="stylesheet" href="https://evil.example/a.css">"#,
+                &["link", "evil"],
+            ),
+            (
+                r#"<object data="file:///etc/passwd"><p>fallback</p></object>"#,
+                &["object", "passwd"],
+            ),
+            (
+                r#"<embed src="https://evil.example/a.swf">"#,
+                &["embed", "evil"],
+            ),
+            (
+                r#"<p onclick="alert(1)" OnMouseOver="alert(2)">x</p>"#,
+                &["onclick", "onmouseover", "alert"],
+            ),
+            (
+                r#"<svg onload="alert(1)"><circle onclick="alert(2)"/></svg>"#,
+                &["onload", "onclick", "alert"],
+            ),
+            (
+                r#"<body onload="alert(1)"><p>x</p></body>"#,
+                &["onload", "alert"],
+            ),
+        ];
+        for (html, gone) in cases {
+            let readied = ready_article(html, BASE);
+            let again = parse(&readied).unwrap().html().to_lowercase();
+            for word in *gone {
+                assert!(!again.contains(word), "{word} left in {again} from {html}");
+            }
+        }
+    }
+
+    #[test]
+    fn script_and_other_scheme_urls_go_however_written() {
+        let urls = [
+            "javascript:alert(1)",
+            "JaVaScRiPt:alert(1)",
+            " \tjavascript:alert(1)",
+            "java\tscript:alert(1)",
+            "&#106;avascript:alert(1)",
+            "&#x6A;ava&#x09;script:alert(1)",
+            "vbscript:msgbox(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "DATA:text/html;base64,PHNjcmlwdD4=",
+            "file:///etc/passwd",
+        ];
+        for url in urls {
+            let html = format!(
+                r#"<img src="{url}" srcset="{url} 2x"><video poster="{url}" src="{url}"></video><a href="{url}">a</a><svg><a xlink:href="{url}"><text>t</text></a><image href="{url}"/><use xlink:href="{url}"/></svg>"#
+            );
+            let readied = ready_article(&html, BASE);
+            let again = parse(&readied).unwrap().html().to_lowercase();
+            // A srcset URL ends at whitespace: `java\tscript:` is the URL `java`.
+            for word in ["javascript:", "vbscript:", "data:", "file:"] {
+                assert!(!again.contains(word), "{word} left in {again} from {url}");
+            }
+            for name in [" src=", "poster=", "href="] {
+                assert!(!again.contains(name), "{name} left in {again} from {url}");
+            }
+        }
+    }
+
+    #[test]
+    fn data_images_web_urls_and_fragments_stay() {
+        let html = ready_article(
+            r##"<img src="data:image/png;base64,iVBORw0KGgo=" srcset="javascript:x 1x, a.png 2x"><svg><use href="#icon"/><image xlink:href="i.png"/></svg>"##,
+            BASE,
+        );
+        assert!(
+            html.contains(r#"src="data:image/png;base64,iVBORw0KGgo=""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"srcset="https://example.com/posts/a.png 2x""#),
+            "{html}"
+        );
+        assert!(html.contains(r##"href="#icon""##), "{html}");
+        assert!(
+            html.contains(r#"href="https://example.com/posts/i.png""#),
+            "{html}"
+        );
+        assert!(!html.contains("target"), "{html}");
+    }
+
+    #[test]
+    fn templates_and_svg_animations_go() {
+        let html = ready_article(
+            r#"<template><script>alert(1)</script><a href="javascript:alert(1)">t</a></template><svg><set attributeName="href" to="javascript:alert(1)"/><animate attributeName="xlink:href" values="javascript:alert(1)"/><animateMotion/><animateTransform/><circle/></svg>"#,
+            BASE,
+        );
+        assert_eq!(html, "<svg><circle></circle></svg>");
+    }
+
+    #[test]
+    fn an_svg_link_keeps_one_readied_href() {
+        for html in [
+            r#"<svg><a href="https://ok.example/" xlink:href="javascript:alert(1)"><text>t</text></a></svg>"#,
+            r#"<svg><a xlink:href="https://ok.example/" href="javascript:alert(1)"><text>t</text></a></svg>"#,
+        ] {
+            let readied = ready_article(html, BASE);
+            assert_eq!(
+                readied,
+                r#"<svg><a href="https://ok.example/" target="_blank"><text>t</text></a></svg>"#
+            );
+        }
+    }
+
+    #[test]
+    fn svg_resources_are_readied_as_resources() {
+        let html = ready_article(
+            r#"<svg><image href="data:image/png;base64,iVBORw0KGgo="/><image xlink:href="http://cdn.example/a.png"/><use href="mailto:a@example.com"/></svg>"#,
+            BASE,
+        );
+        assert_eq!(
+            html,
+            r#"<svg><image href="data:image/png;base64,iVBORw0KGgo="></image><image href="https://cdn.example/a.png"></image><use></use></svg>"#
+        );
+    }
+
+    #[test]
+    fn an_objects_fallback_stays() {
+        let html = ready_article(
+            r#"<object data="a.swf"><param name="movie" value="a.swf"><embed src="a.swf"><img src="a.png" alt="chart"></object>"#,
+            BASE,
+        );
+        assert_eq!(
+            html,
+            r#"<img src="https://example.com/posts/a.png" alt="chart">"#
+        );
+    }
+
+    #[test]
+    fn resources_that_cant_be_made_absolute_go() {
+        let html = ready_article(r#"<img src="a.png" alt="a">"#, "");
+        assert_eq!(html, r#"<img alt="a">"#);
     }
 
     #[test]

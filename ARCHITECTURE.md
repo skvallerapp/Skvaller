@@ -207,7 +207,10 @@ The windows, in Dioxus Native (Blitz).
   its value is still the one the server accepted.
 - **Article HTML is untrusted.**
   - It renders in an `<iframe srcdoc>`, so its styles stay out of the app's document.
-    Blitz runs no scripts.
+    Blitz runs no scripts, and `reader` doesn't rely on that: it removes `script`,
+    `meta`, `base`, `link`, `embed`, `template` and SVG's animations, unwraps `object`,
+    and removes every `on…` handler. An `href`, `src`, `poster` or `srcset` keeps only a
+    web URL, except a `data:` image, a `mailto:` link and an in-page `#…`.
   - `reader` makes its URLs absolute and https, links written-out addresses, and holds
     media until asked for.
   - Every request from any document passes `main`'s request filter: only public
