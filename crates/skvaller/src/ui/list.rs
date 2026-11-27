@@ -109,7 +109,7 @@ pub(super) fn ArticleList() -> Element {
                         title: t("list.markAll"),
                         "aria-haspopup": "dialog",
                         "aria-expanded": "{confirming}",
-                        disabled: unread == 0,
+                        disabled: unread == 0 && !reading.mark_all_moves_on(),
                         onclick: move |_| {
                             // Not `CloseOverlay`, which moves the focus off this button.
                             let overlay = reading.overlay.peek().after_click();

@@ -848,10 +848,23 @@ impl Reading {
         }
     }
 
+    /// Whether mark-all-read moves on to the next row: in Unread, from a feed or
+    /// folder, outside a search.
+    fn mark_all_moves_on(&self) -> bool {
+        let selection = self.selection.read();
+        selection.view == View::Unread
+            && selection.scope != Scope::All
+            && self.search.read().active().is_none()
+    }
+
     /// Marks all as read, asking first when the settings say so. The question doesn't
-    /// open while Add Feed is busy, which it can't replace.
+    /// open while Add Feed is busy, which it can't replace. With nothing unread, it
+    /// only moves on, without asking.
     fn request_mark_all(self, app: &App) {
         if self.unread_count() == 0 {
+            if self.mark_all_moves_on() {
+                self.mark_all_read(app);
+            }
             return;
         }
         if app.settings().confirm_mark_all_read {
@@ -886,18 +899,19 @@ impl Reading {
         let Some(account) = self.account.peek().clone() else {
             return;
         };
-        self.mark_generation += 1;
-        self.mark(&ids, Some(true), None);
-        // `App` tells the window, which then loads the list again without the rows read
-        // here: in Unread it empties.
-        if let Err(e) = app.mark_all_read(&account, &ids) {
-            tracing::error!("marking all read failed: {e}");
+        if !ids.is_empty() {
+            self.mark_generation += 1;
+            self.mark(&ids, Some(true), None);
+            // `App` tells the window, which then loads the list again without the rows
+            // read here: in Unread it empties.
+            if let Err(e) = app.mark_all_read(&account, &ids) {
+                tracing::error!("marking all read failed: {e}");
+            }
         }
-        let Selection { view, scope } = self.selection.peek().clone();
-        // Search results don't move on to another feed.
-        if view != View::Unread || self.search.peek().active().is_some() {
+        if !self.mark_all_moves_on() {
             return;
         }
+        let Selection { view, scope } = self.selection.peek().clone();
         let pinned = (self.pinned)();
         let sort = app.settings().sort_subscriptions;
         // From the cache, not `library`: that loads again only once `App`'s change
