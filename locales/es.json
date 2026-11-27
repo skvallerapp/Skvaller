@@ -212,6 +212,7 @@
   "settings.dateFormat": "Formato de fecha",
   "settings.dateFormats.system": "Sistema",
 
+  "settings.appIcon": "Icono de la app",
   "settings.badge": "Contador de no leídos",
   "settings.badgeNote": "Los artículos no leídos de todas las cuentas.",
 

@@ -209,6 +209,7 @@
   "settings.dateFormat": "Date format",
   "settings.dateFormats.system": "System",
 
+  "settings.appIcon": "App Icon",
   "settings.badge": "Unread count badge",
   "settings.badgeNote": "The unread articles of every account.",
 

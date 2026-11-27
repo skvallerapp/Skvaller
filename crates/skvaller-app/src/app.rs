@@ -484,7 +484,7 @@ impl App {
         Ok(out)
     }
 
-    /// The account's unread articles, for the account switcher.
+    /// The account's unread articles, for the account switcher and the app icon's badge.
     ///
     /// # Errors
     ///

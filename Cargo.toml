@@ -34,6 +34,9 @@ jiff = "1.0.0"
 mimalloc = "0.1.48"
 # The macOS menu bar: Dioxus Native has none of its own.
 muda = { version = "0.20.0", default-features = false }
+# The Dock's unread badge (badge.rs): already in the tree through muda and winit.
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSResponder"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString"] }
 parley = { version = "0.12.0", default-features = false, features = ["std"] }
 rfd = "0.17.2"
 serde = { version = "1.0.229", default-features = false }
@@ -60,6 +63,9 @@ x11rb = "0.14.0"
 # The Windows version and accent color, from the registry (top_border.rs): already in the
 # tree through winit.
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Registry"] }
+# The taskbar's unread overlay (badge.rs), a COM interface windows-sys lacks: already in
+# the tree through accesskit and skia.
+windows = { version = "0.62.2", features = ["Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 # The guideline set (M-STATIC-VERIFICATION).
 [workspace.lints.rust]

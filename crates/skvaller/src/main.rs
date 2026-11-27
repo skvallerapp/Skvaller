@@ -10,6 +10,7 @@
 mod add_account;
 mod appearance;
 mod article;
+mod badge;
 mod chrome;
 mod dates;
 mod dropdown;

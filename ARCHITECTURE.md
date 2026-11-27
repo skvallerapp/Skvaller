@@ -173,6 +173,10 @@ The windows, in Dioxus Native (Blitz).
   `shortcuts::ACCOUNT_KEYS`, as the window's are. `build.rs` embeds `Info.plist` so the menu bar names the app Skvaller;
   `scripts/macos-bundle.sh` puts the same file in `Skvaller.app`.
   Windows and Linux have no menu bar.
+- `badge`: the unread count of every account on the app icon, recounted on each cache
+  or settings change and sent only when it changes: the Dock tile's badge on macOS,
+  Unity's `LauncherEntry` signal for `skvaller.desktop` on Linux, and on Windows a
+  red circle it draws itself, set as the taskbar button's overlay icon.
 - `spin`: when the sync icon turns and stops, as plain state.
 - `i18n`, `dates`, `fonts`, `icons`, `shortcuts`: text, date formats, font stacks,
   icons and keys: the bindings, the app's chords, the system's chords a shortcut
@@ -189,7 +193,9 @@ The windows, in Dioxus Native (Blitz).
   frame on a single-threaded Tokio runtime of its own, plus the executor thread zbus
   starts for its connection. `main` starts it
   before loading the app, and the first window waits up to 300 ms for its first
-  answers, two local calls, not the network. On KDE under X11, each window's shadow keeps
+  answers, two local calls, not the network. A `badge` thread sends the unread badge
+  on a blocking session-bus connection of its own, plus its zbus executor thread,
+  started with the first non-zero count. On KDE under X11, each window's shadow keeps
   a connection of its own to the X server.
 - **One copy of the app at a time.** `main` locks `skvaller.lock` in the data folder
   before loading: a second copy would save its own config over the first's and sync

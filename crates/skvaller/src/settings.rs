@@ -516,6 +516,17 @@ fn AppearancePane(settings: Settings, feedback: Feedback) -> Element {
             p { class: "note", {t("settings.thumbnailsNote")} }
         }
         section {
+            h2 { {t("settings.appIcon")} }
+            div { class: "group",
+                SwitchRow {
+                    label: t("settings.badge"),
+                    on: settings.unread_badge,
+                    onchange: move |on: bool| set.call(Box::new(move |s| s.unread_badge = on)),
+                }
+            }
+            p { class: "note", {t("settings.badgeNote")} }
+        }
+        section {
             h2 { {t("settings.motion")} }
             div { class: "group",
                 SwitchRow {

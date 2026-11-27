@@ -209,6 +209,7 @@
   "settings.dateFormat": "Datumformat",
   "settings.dateFormats.system": "System",
 
+  "settings.appIcon": "Appikon",
   "settings.badge": "Märke med antal olästa",
   "settings.badgeNote": "Olästa artiklar i alla konton.",
 

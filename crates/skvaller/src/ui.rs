@@ -1472,6 +1472,7 @@ pub fn Root() -> Element {
     });
     let windows = use_windows();
     let settings = use_context_provider(SettingsWindow::default);
+    crate::badge::use_unread_badge(&app, &live);
     #[cfg(target_os = "macos")]
     crate::menu::use_menu_bar(&app, reading.account, live.revision, {
         let app = Arc::clone(&app);
