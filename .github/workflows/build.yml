@@ -61,6 +61,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # Broken or private doc links, which Clippy doesn't check. The same on every OS.
+      - name: Docs
+        if: runner.os == 'Linux'
+        run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
       # In release, so the build below reuses its dependencies instead of compiling
       # them all again.
       - name: Test
