@@ -10,7 +10,8 @@ use keyring::{Entry, Error as KeyringError};
 
 use crate::Result;
 
-/// The app's bundle identifier. Keep it unchanged: saved tokens are stored under it.
+/// The app's bundle identifier. Keep it unchanged: saved tokens are stored under it. The
+/// folders are named `Skvaller` instead (`Dirs::system` in `skvaller-app`).
 pub const KEYCHAIN_SERVICE: &str = "io.github.skvallerapp.Skvaller";
 
 /// Saves the access token in the OS keychain.

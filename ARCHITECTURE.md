@@ -237,8 +237,7 @@ The windows, in Dioxus Native (Blitz).
     subscribed feeds are the user's choice and aren't filtered.
   - `html` bounds nesting depth, so a crafted page can't stall the parser.
 - **The password is never stored.** Sign-in trades it for a token, which `keychain`
-  saves under `KEYCHAIN_SERVICE`. That name also names the config and data folders
-  (`Dirs::system`), so changing it loses both the tokens and the caches.
+  saves under `KEYCHAIN_SERVICE`, so changing it loses the tokens.
 - **A bad `config.json` doesn't stop the app.** `config` reads unknown or broken values
   as defaults and leaves out accounts it can't read.
 - **5,000+ items scroll smoothly.** The list renders only the visible rows plus some
@@ -259,7 +258,8 @@ The windows, in Dioxus Native (Blitz).
 ## On disk
 
 ```
-<config dir>/<KEYCHAIN_SERVICE>/config.json      settings, accounts and window layout, no tokens
-<local data dir>/<KEYCHAIN_SERVICE>/accounts/<id>.db   one SQLite cache per account
+<config dir>/Skvaller/config.json         settings, accounts and window layout, no tokens
+<local data dir>/Skvaller/accounts/<id>.db   one SQLite cache per account
+                                             (the folders are skvaller on Linux)
 OS keychain, service KEYCHAIN_SERVICE            one access token per account
 ```

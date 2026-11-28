@@ -15,7 +15,7 @@ use skvaller_core::{
 use tokio::sync::{Notify, broadcast, watch};
 use tracing::Level;
 
-use crate::config::{Account, AccountKind, Config, FIRST_ACCOUNT_ID, SyncSchedule};
+use crate::config::{Account, AccountKind, Config, SyncSchedule};
 use crate::error::{Error, Result, io};
 use crate::gate::Gate;
 use crate::sync::SyncStatus;
@@ -39,7 +39,8 @@ impl Dirs {
         Self { data, config }
     }
 
-    /// The system's folders for Skvaller, named after its bundle identifier.
+    /// The system's folders for Skvaller: `Skvaller` in the data and settings folders,
+    /// `skvaller` on Linux.
     ///
     /// The cache is in the local data folder, not the roaming one on Windows: it has no
     /// business following the user between machines.
@@ -48,10 +49,9 @@ impl Dirs {
     ///
     /// [`Error::NoFolder`] when the system has no such folder, as without a home folder.
     pub fn system() -> Result<Self> {
-        let id = skvaller_core::KEYCHAIN_SERVICE;
         let data = dirs::data_local_dir().ok_or(Error::NoFolder("data"))?;
         let config = dirs::config_dir().ok_or(Error::NoFolder("settings"))?;
-        Ok(Self::new(data.join(id), config.join(id)))
+        Ok(Self::new(data.join(FOLDER_NAME), config.join(FOLDER_NAME)))
     }
 
     fn accounts(&self) -> PathBuf {
@@ -62,6 +62,13 @@ impl Dirs {
         self.config.join("config.json")
     }
 }
+
+/// The name of the app's folder in the system's data and settings folders: the app's
+/// name, lowercase outside macOS and Windows, as XDG apps' folders are.
+#[cfg(any(target_os = "macos", windows))]
+const FOLDER_NAME: &str = "Skvaller";
+#[cfg(not(any(target_os = "macos", windows)))]
+const FOLDER_NAME: &str = "skvaller";
 
 /// What the user is told about a `config.json` that couldn't be fully read. The window
 /// words it; `backup` is where the old file is kept.
@@ -281,7 +288,6 @@ impl App {
                 account.description = default_description(&account.kind);
             }
         }
-        move_old_cache(&dirs.data, &accounts_dir, &config)?;
         let removed = std::mem::take(&mut config.removed);
         config.removed = removed
             .into_iter()
@@ -880,21 +886,6 @@ fn back_up(config_path: &Path) -> Result<PathBuf> {
     Ok(backup)
 }
 
-/// Moves a single-account `cache.db` from the data folder to the first account's place.
-fn move_old_cache(data_dir: &Path, accounts_dir: &Path, config: &Config) -> Result<()> {
-    let old = data_dir.join("cache.db");
-    let first = db_path(accounts_dir, FIRST_ACCOUNT_ID);
-    if config.account(FIRST_ACCOUNT_ID).is_none() || !old.exists() || first.exists() {
-        return Ok(());
-    }
-    for (from, to) in db_files(&old).iter().zip(&db_files(&first)) {
-        if from.exists() {
-            std::fs::rename(from, to).map_err(io("Moving", from))?;
-        }
-    }
-    Ok(())
-}
-
 /// The name an account gets until the user changes it: `FreshRSS`, `The Old Reader`, the
 /// server's host name, or `Local`.
 pub(crate) fn default_description(kind: &AccountKind) -> String {
@@ -1015,9 +1006,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_system_folders_are_named_after_the_keychain_service() {
+    fn the_system_folders_keep_their_names() {
         let dirs = Dirs::system().unwrap();
-        let name = Some(std::ffi::OsStr::new("io.github.skvallerapp.Skvaller"));
+        let name = if cfg!(any(target_os = "macos", windows)) {
+            "Skvaller"
+        } else {
+            "skvaller"
+        };
+        let name = Some(std::ffi::OsStr::new(name));
         // Changing the folder name loses existing accounts: their config and caches are in
         // these folders.
         assert_eq!(dirs.data.file_name(), name);

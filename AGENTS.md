@@ -14,7 +14,7 @@ commit to it unless asked.
 - `skvaller-core`: a Rust crate for sync, storage (SQLite via `rusqlite`) and the
   Google Reader API client. It contains no UI code.
 - `skvaller-app`: config.json, the accounts' caches and the background sync, without a
-  UI. Same files and folders as the Tauri version, so its accounts carry over.
+  UI.
 - `skvaller`: the window, in Dioxus Native (Blitz). The article renders in an
   `<iframe srcdoc>`, its own document. `--import-opml <file>` adds test feeds to a
   local account; `--seed-test <count>` adds synthetic articles.
