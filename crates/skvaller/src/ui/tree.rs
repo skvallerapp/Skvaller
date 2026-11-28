@@ -13,8 +13,9 @@ pub(super) fn counts_by_feed(counts: &Counts, view: View) -> &HashMap<String, i6
     }
 }
 
-/// What the account, view and selection were, and when the last sync finished.
-pub(super) type PinnedKey = (Option<String>, Selection, Option<i64>);
+/// What the account, view and selection were, when the last sync finished, and in All
+/// Unread, the mark-all-reads heard, as [`Cached::cleared`] counts them.
+pub(super) type PinnedKey = (Option<String>, Selection, Option<i64>, Option<u64>);
 
 /// The shown account's cache changes, as [`App::changes`] told them, counted by what
 /// loads again for them.
@@ -25,7 +26,8 @@ pub(super) struct Cached {
     /// Every change but a read or star change, which the list shows through its marks:
     /// the list loads again, keeping what was read or unstarred here meanwhile.
     pub(super) list: u64,
-    /// Every mark-all-read: the list loads again, and Unread keeps none of those.
+    /// Every mark-all-read: the list loads again, and Unread keeps none of those; in All
+    /// Unread, the sidebar's pins are taken again.
     pub(super) cleared: u64,
 }
 
@@ -175,8 +177,8 @@ pub(super) fn row_scope(lib: &Library, scope: &Scope, collapsed: &HashSet<String
     }
 }
 
-/// The next row below `scope` with articles in `view`, else All.
-/// `None` when `scope` has no row: All, or a feed in a collapsed folder.
+/// The next row below `scope` with articles in `view`, else All; All for All.
+/// `None` when `scope` has no row: a feed in a collapsed folder, or one gone.
 pub(super) fn next_with_articles(
     lib: &Library,
     view: View,
@@ -186,7 +188,7 @@ pub(super) fn next_with_articles(
     sort: SortSubscriptions,
 ) -> Option<Scope> {
     if *scope == Scope::All {
-        return None;
+        return Some(Scope::All);
     }
     let counts = counts_by_feed(&lib.counts, view);
     let entries = sidebar_tree(lib, view, pinned, scope, sort);
@@ -230,8 +232,8 @@ pub(super) struct Leaving {
 impl Leaving {
     /// The rows the sidebar shows from `shown` with `from` selected that it has none for
     /// once `to` is selected, given `after`'s counts: the cache's after the mark. The
-    /// selection then pins only the feeds with articles, so a feed read to zero earlier
-    /// goes too. The row selected next stays, even with no articles; a folder goes
+    /// pins, taken again, then hold only the feeds with articles, so a feed read to
+    /// zero earlier goes too. The row selected next stays, even with no articles; a folder goes
     /// with its last feed unless it is selected next, and a selected folder's emptied
     /// feeds go.
     #[expect(
@@ -474,12 +476,12 @@ mod tests {
 
     #[test]
     fn pinned_feeds_are_taken_again_only_when_the_key_changes() {
-        let key = |view, last_sync| {
+        let key = |view, last_sync, cleared| {
             let selection = Selection {
                 view,
                 scope: Scope::All,
             };
-            (Some("1".to_owned()), selection, last_sync)
+            (Some("1".to_owned()), selection, last_sync, cleared)
         };
         let ids = |set: Rc<HashSet<String>>| {
             let mut ids: Vec<_> = set.iter().cloned().collect();
@@ -489,21 +491,25 @@ mod tests {
         let mut pinned = Pinned::default();
         let mut counts = HashMap::from([("a".to_owned(), 2), ("b".to_owned(), 1)]);
         assert_eq!(
-            ids(pinned.update(key(View::Unread, None), &counts)),
+            ids(pinned.update(key(View::Unread, None, None), &counts)),
             ["a", "b"]
         );
         // Read to zero, "b" stays while the key is the same.
         counts.remove("b");
         assert_eq!(
-            ids(pinned.update(key(View::Unread, None), &counts)),
+            ids(pinned.update(key(View::Unread, None, None), &counts)),
             ["a", "b"]
         );
         // A finished sync takes them again, as a new view or selection does.
         assert_eq!(
-            ids(pinned.update(key(View::Unread, Some(5)), &counts)),
+            ids(pinned.update(key(View::Unread, Some(5), None), &counts)),
             ["a"]
         );
-        let starred = ids(pinned.update(key(View::Starred, Some(5)), &HashMap::new()));
+        // So does a mark-all-read.
+        counts.remove("a");
+        let cleared = key(View::Unread, Some(5), Some(1));
+        assert_eq!(ids(pinned.update(cleared, &counts)), Vec::<String>::new());
+        let starred = ids(pinned.update(key(View::Starred, Some(5), None), &HashMap::new()));
         assert_eq!(starred, Vec::<String>::new());
     }
 
@@ -553,7 +559,7 @@ mod tests {
     /// "e1", and loose "c", "x" and "y". Before the mark, "a", "b", "e1" and "y" had
     /// unread articles; after it, "a" and "e1" have none. "x" was read to zero earlier and
     /// is still pinned; "c" had no row.
-    fn leaving_rows(to: &Scope) -> Leaving {
+    fn leaving_rows(from: &Scope, to: &Scope) -> Leaving {
         let before = Library {
             folders: vec![folder("d"), folder("e")],
             feeds: vec![
@@ -580,7 +586,7 @@ mod tests {
             "1",
             View::Unread,
             &pinned,
-            &feed_scope("a"),
+            from,
             to,
             SortSubscriptions::FoldersFirst,
         )
@@ -588,7 +594,7 @@ mod tests {
 
     #[test]
     fn mark_all_read_lets_go_of_the_rows_it_emptied() {
-        let leaving = leaving_rows(&feed_scope("b"));
+        let leaving = leaving_rows(&feed_scope("a"), &feed_scope("b"));
         // "b" and "y" keep their rows, and so does "d" with "b" in it.
         assert_eq!(
             leaving.feeds,
@@ -601,15 +607,25 @@ mod tests {
     #[test]
     fn mark_all_read_keeps_the_row_it_moves_to() {
         // A feed with no articles left.
-        let leaving = leaving_rows(&feed_scope("x"));
+        let leaving = leaving_rows(&feed_scope("a"), &feed_scope("x"));
         assert_eq!(leaving.feeds, HashSet::from(["a", "e1"].map(String::from)));
         // A folder whose feeds all go: they close, but it stays.
-        let leaving = leaving_rows(&folder_scope("e"));
+        let leaving = leaving_rows(&feed_scope("a"), &folder_scope("e"));
         assert_eq!(
             leaving.feeds,
             HashSet::from(["a", "e1", "x"].map(String::from))
         );
         assert!(leaving.folders.is_empty());
+    }
+
+    #[test]
+    fn mark_all_read_in_all_lets_go_of_every_emptied_row() {
+        let leaving = leaving_rows(&Scope::All, &Scope::All);
+        assert_eq!(
+            leaving.feeds,
+            HashSet::from(["a", "e1", "x"].map(String::from))
+        );
+        assert_eq!(leaving.folders, HashSet::from(["e".to_owned()]));
     }
 
     #[test]
@@ -648,8 +664,9 @@ mod tests {
         // None left below: All.
         assert_eq!(next(&none, &feed_scope("y")), Some(Scope::All));
         let collapsed = HashSet::from(["d".to_owned()]);
+        // All stays.
+        assert_eq!(next(&none, &Scope::All), Some(Scope::All));
         // No row to move on from.
-        assert_eq!(next(&none, &Scope::All), None);
         assert_eq!(next(&collapsed, &feed_scope("a")), None);
         // A collapsed folder's feeds have no rows: the folder below is next.
         assert_eq!(

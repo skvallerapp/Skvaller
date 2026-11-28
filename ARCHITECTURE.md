@@ -89,9 +89,10 @@ The windows, in Dioxus Native (Blitz).
 - `ui`: the main window, its state (`Reading`) and layout. It counts the shown
   account's `Change`s in `Cached`: every one reloads the library, every one but a read
   or star change reloads the list, and a mark-all-read also empties Unread of the rows
-  it kept. `canvas_css` gives each window's html the theme's background, except on
-  Linux while framed, where the window is transparent. Blitz paints it where its layout
-  rounding leaves an edge uncovered; it repeats app.css's `--reader-bg`. Its parts:
+  it kept and, in All Unread, takes the sidebar's pinned rows again. `canvas_css` gives
+  each window's html the theme's background, except on Linux while framed, where the
+  window is transparent. Blitz paints it where its layout rounding leaves an edge
+  uncovered; it repeats app.css's `--reader-bg`. Its parts:
   - `ui/sidebar`: the view and account switchers, feeds and folders. `ui/tree`: the
     sidebar's rows as a tree and how the selection steps through them, as plain
     functions.

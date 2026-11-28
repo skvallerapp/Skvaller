@@ -878,7 +878,8 @@ impl Reading {
     ///
     /// In Unread, the next row with unread articles is then selected, or All Unread,
     /// and the open article closes. With All Unread already selected, the list empties
-    /// at once, except for the article being read.
+    /// at once, except for the article being read, and the sidebar's emptied feeds and
+    /// folders go.
     fn mark_all_read(mut self, app: &App) {
         if *self.overlay.peek() == Overlay::MarkAll {
             self.overlay.set(Overlay::None);
@@ -908,10 +909,13 @@ impl Reading {
                 tracing::error!("marking all read failed: {e}");
             }
         }
-        if !self.mark_all_moves_on() {
+        let Selection { view, scope } = self.selection.peek().clone();
+        // All Unread stays selected, and its emptied rows go once the pins are taken
+        // again, as the mark's change arrives: with nothing marked, none does.
+        let stays = scope == Scope::All && view == View::Unread && !ids.is_empty();
+        if !stays && !self.mark_all_moves_on() {
             return;
         }
-        let Selection { view, scope } = self.selection.peek().clone();
         let pinned = (self.pinned)();
         let sort = app.settings().sort_subscriptions;
         // From the cache, not `library`: that loads again only once `App`'s change
@@ -919,8 +923,8 @@ impl Reading {
         let lib = app.library(&account).unwrap_or_default();
         let collapsed = self.collapsed_folders();
         let next = next_with_articles(&lib, view, &pinned, &collapsed, &scope, sort);
-        // With no next row, as with All selected, the selection stays, and so do the
-        // emptied rows: they are pinned until it changes.
+        // With no next row, as for a feed in a collapsed folder, the selection stays, and
+        // so do the emptied rows: they are pinned until it changes.
         if let Some(next) = next {
             let list = list_key(&self);
             let animate = app.settings().animations;
@@ -929,9 +933,11 @@ impl Reading {
                 let shown = self.library.peek();
                 Leaving::after_mark(&shown, &lib, &account, view, &pinned, &scope, &next, sort)
             });
-            self.select(Selection { view, scope: next });
-            if animate {
-                self.slide_away(list);
+            if next != scope {
+                self.select(Selection { view, scope: next });
+                if animate {
+                    self.slide_away(list);
+                }
             }
             if let Some(leaving) = leaving.filter(|l| !l.feeds.is_empty()) {
                 self.leave(leaving);
@@ -1403,16 +1409,19 @@ fn use_reading(app: &Arc<App>) -> Reading {
         }
     });
     // A feed read to zero keeps its row until the account, view or selection changes
-    // or a sync finishes, so rows don't jump while you read.
+    // or a sync finishes, so rows don't jump while you read; in All Unread, also until
+    // all is marked read.
     let pinned_state = use_hook(|| Rc::new(RefCell::new(Pinned::default())));
     let pinned = use_memo(move || {
         let selection = selection();
         let last_sync = status.read().as_ref().and_then(|s| s.last_sync);
+        let all_unread = selection.view == View::Unread && selection.scope == Scope::All;
+        let cleared = all_unread.then(|| cache.read().cleared);
         let lib = library.read();
         let counts = counts_by_feed(&lib.counts, selection.view);
         pinned_state
             .borrow_mut()
-            .update((account(), selection, last_sync), counts)
+            .update((account(), selection, last_sync, cleared), counts)
     });
     let articles = use_articles(app, account, selection, article, cache, marks, search);
     let window = use_window();
