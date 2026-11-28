@@ -83,7 +83,7 @@ impl App {
             let app = Arc::clone(self);
             runtime.spawn(async move {
                 drop(rt.gate.stop().await);
-                app.run_sync(&rt).await
+                app.run_sync(&rt, false).await
             });
         }
     }
@@ -131,7 +131,7 @@ impl App {
             .sync_runtime
             .get()
             .expect("start_sync runs before any sync")
-            .spawn(async move { app.run_sync(&running).await });
+            .spawn(async move { app.run_sync(&running, false).await });
         Ok(async move {
             // A shutdown cancels the sync, and nothing is left to wait for.
             if matches!(sync.await, Ok(Ran::Busy)) {
@@ -146,22 +146,35 @@ impl App {
     async fn sync_loop(&self, rt: &Runtime) {
         let mut history = History::default();
         while let Some(account) = self.account(&rt.id) {
-            if rt.woke.swap(false, Ordering::Relaxed) {
+            // A wake seen twice, by the timer below and the watcher, keeps its tries.
+            if rt.woke.swap(false, Ordering::Relaxed) && history.wake_sync.is_none() {
                 history.wake_sync = after_wake(&account, &history, SystemTime::now());
             }
             // Sync on wake turned off meanwhile: the sync after waking it asked for stops.
             if !account.sync_on_wake {
                 history.wake_sync = history.wake_sync.filter(|w| !w.asked);
             }
+            let (started, started_at) = (Instant::now(), SystemTime::now());
             let wait = async {
                 match due(account.sync, &history, SystemTime::now()) {
-                    Some(due) => sleep_until(Instant::now() + due).await,
+                    Some(due) => sleep_until(started + due).await,
                     None => std::future::pending().await,
                 }
             };
             tokio::select! {
                 () = wait => {
-                    let ran = self.run_sync(rt).await;
+                    // A timer counts only time awake, on macOS and Linux though not
+                    // Windows: one set before a sleep can go off just after waking,
+                    // before the watcher notices and before the network is back. Handle
+                    // it as the watcher's wake.
+                    if slept(started_at, SystemTime::now(), started.elapsed()) {
+                        rt.woke.store(true, Ordering::Relaxed);
+                        continue;
+                    }
+                    // A failure with a try left after waking is likely the network not
+                    // back yet: not worth showing.
+                    let quiet = history.wake_sync.is_some_and(|w| !w.last_try());
+                    let ran = self.run_sync(rt, quiet).await;
                     // Another sync running: a sync after waking waits for its turn.
                     if ran == Ran::Busy && history.wake_sync.is_some() {
                         continue;
@@ -173,8 +186,9 @@ impl App {
         }
     }
 
-    /// One sync of the account, reported to the listeners.
-    async fn run_sync(&self, rt: &Runtime) -> Ran {
+    /// One sync of the account, reported to the listeners. `quiet`: a failure that may be
+    /// the network keeps the last error shown, as it will be tried again.
+    async fn run_sync(&self, rt: &Runtime, quiet: bool) -> Ran {
         let work = async {
             let account = self.account(&rt.id)?;
             let syncing = || {
@@ -189,7 +203,7 @@ impl App {
                     let client = match self.client(rt).await {
                         Ok(Some(client)) => client,
                         Ok(None) => return None,
-                        Err(e) => return Some(self.finish(rt, &Err(e), false)),
+                        Err(e) => return Some(self.finish(rt, &Err(e), false, quiet)),
                     };
                     syncing();
                     sync(&client, &rt.db, now, keep_read).await
@@ -209,7 +223,7 @@ impl App {
             let changed = synced
                 .as_ref()
                 .map_or(true, skvaller_core::SyncReport::changed_articles);
-            Some(self.finish(rt, &synced.map(drop), changed))
+            Some(self.finish(rt, &synced.map(drop), changed, quiet))
         };
         match rt.gate.run(work).await {
             Outcome::Done(Some(ran)) => {
@@ -224,10 +238,37 @@ impl App {
         }
     }
 
-    /// Records how the sync went, logs a new error once, and tells the listeners.
-    fn finish(&self, rt: &Runtime, result: &Result<(), CoreError>, changed: bool) -> Ran {
+    /// Records how the sync went, logs a new error once, and tells the listeners. A
+    /// `quiet` failure worth retrying is neither recorded nor logged.
+    fn finish(
+        &self,
+        rt: &Runtime,
+        result: &Result<(), CoreError>,
+        changed: bool,
+        quiet: bool,
+    ) -> Ran {
+        let ran = match result {
+            Ok(()) => Ran::Synced,
+            Err(e) => Ran::Failed {
+                retry: !matches!(e, CoreError::Unauthorized) && !e.is_corrupt(),
+            },
+        };
         let error = result.as_ref().err().map(ToString::to_string);
-        if let Err(e) = result {
+        let hidden = quiet && ran == Ran::Failed { retry: true };
+        if let Err(e) = result
+            && hidden
+        {
+            tracing::event!(
+                name: "sync.run.quiet_failure",
+                Level::DEBUG,
+                account.id = %rt.id,
+                error.message = %e,
+                "syncing account {{account.id}} after waking failed, will retry: {{error.message}}",
+            );
+        }
+        if let Err(e) = result
+            && !hidden
+        {
             if e.is_corrupt() {
                 rt.corrupt.store(true, Ordering::Relaxed);
             }
@@ -246,7 +287,9 @@ impl App {
                 );
             }
         }
-        lock(&rt.last_error).clone_from(&error);
+        if !hidden {
+            lock(&rt.last_error).clone_from(&error);
+        }
         if changed {
             self.cache_changed(&rt.id, Changed::Articles);
         }
@@ -255,12 +298,7 @@ impl App {
             syncing: false,
             ..rt.status()
         });
-        match result {
-            Ok(()) => Ran::Synced,
-            Err(e) => Ran::Failed {
-                retry: !matches!(e, CoreError::Unauthorized) && !e.is_corrupt(),
-            },
-        }
+        ran
     }
 
     pub(crate) fn emit(&self, status: SyncStatus) {
@@ -326,10 +364,14 @@ const WAKE_CHECK: Duration = Duration::from_secs(30);
 /// stalled process, as under App Nap, or a clock set forward isn't taken for a sleep;
 /// a sleep shorter than this needs no sync anyway.
 const WAKE_SLACK: Duration = Duration::from_mins(5);
-/// The network takes a moment to come back after a wake.
-const WAKE_DELAY: Duration = Duration::from_secs(15);
-/// Retries of a sync after waking that failed, likely before the network was back.
-const WAKE_RETRIES: u32 = 2;
+/// The waits before each try of a sync after waking: the network takes a moment to
+/// come back, and a failed try was likely before it was, so the next waits longer.
+const WAKE_DELAYS: [Duration; 4] = [
+    Duration::from_secs(15),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+    Duration::from_secs(120),
+];
 
 /// Whether the wall clock moved on so much more than a wait of `waited` that the
 /// computer must have slept.
@@ -351,10 +393,17 @@ struct History {
 /// A sync after waking.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct WakeSync {
-    /// Retries left if it fails.
-    retries: u32,
+    /// Tries made, each failed: the next waits `WAKE_DELAYS[tries]`.
+    tries: usize,
     /// Only the account's sync on wake asked for it, not a schedule the sleep held up.
     asked: bool,
+}
+
+impl WakeSync {
+    /// The next try is the last: its failure is shown.
+    fn last_try(self) -> bool {
+        self.tries + 1 >= WAKE_DELAYS.len()
+    }
 }
 
 impl History {
@@ -367,8 +416,8 @@ impl History {
             }
             // Likely the network, not back yet after waking: again in a moment.
             Ran::Failed { retry: true } => self.wake_sync.and_then(|w| {
-                Some(WakeSync {
-                    retries: w.retries.checked_sub(1)?,
+                (!w.last_try()).then_some(WakeSync {
+                    tries: w.tries + 1,
                     ..w
                 })
             }),
@@ -378,8 +427,8 @@ impl History {
 }
 
 /// The sync to make after waking, if any: when the account's sync on wake asks for it
-/// and none worked lately, or when the sleep held up the schedule, or its own sync ran
-/// on waking and failed, before the network was back.
+/// and none worked lately, or when the sleep held up the schedule, or its own sync
+/// failed just as it woke, as one the sleep cut off.
 fn after_wake(account: &Account, history: &History, now: SystemTime) -> Option<WakeSync> {
     // A time ahead of now, after the clock was set back, counts as long ago.
     let ago = |t: SystemTime| now.duration_since(t).unwrap_or(Duration::MAX);
@@ -395,15 +444,15 @@ fn after_wake(account: &Account, history: &History, now: SystemTime) -> Option<W
     let asked = account.sync_on_wake && !synced_lately;
     let held_up = overdue || failed_lately;
     (asked || held_up).then_some(WakeSync {
-        retries: WAKE_RETRIES,
+        tries: 0,
         asked: !held_up,
     })
 }
 
 /// How long until the next sync, or `None` when none is due until something changes.
 fn due(schedule: SyncSchedule, history: &History, now: SystemTime) -> Option<Duration> {
-    if history.wake_sync.is_some() {
-        return Some(WAKE_DELAY);
+    if let Some(w) = history.wake_sync {
+        return Some(WAKE_DELAYS[w.tries]);
     }
     match (schedule, history.last) {
         (SyncSchedule::Manual, _) | (SyncSchedule::OnStart, Some(_)) => None,
@@ -462,7 +511,7 @@ mod tests {
         assert_eq!(
             wake(&asked, &history(hour_ago, hour_ago, now)),
             Some(WakeSync {
-                retries: WAKE_RETRIES,
+                tries: 0,
                 asked: true
             })
         );
@@ -474,7 +523,7 @@ mod tests {
         // Held up by the sleep: not the sync on wake's, so turning that off keeps it.
         assert!(wake(&every_15, &history(hour_ago, hour_ago, now)).is_some_and(|w| !w.asked));
         assert_eq!(wake(&every_15, &history(moment, moment, now)), None);
-        // The schedule's own sync ran on waking and failed.
+        // The schedule's own sync failed just as it woke, as one the sleep cut off.
         assert!(wake(&every_15, &history(moment, hour_ago, now)).is_some());
 
         assert_eq!(
@@ -495,19 +544,26 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_sync_after_waking_retries_twice_then_gives_up() {
+    fn a_failed_sync_after_waking_retries_ever_later_then_gives_up() {
         let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
         let mut h = History {
             wake_sync: Some(WakeSync {
-                retries: WAKE_RETRIES,
+                tries: 0,
                 asked: true,
             }),
             ..History::default()
         };
-        assert_eq!(due(SyncSchedule::Manual, &h, now), Some(WAKE_DELAY));
+        let secs = |s| Some(Duration::from_secs(s));
+        assert_eq!(due(SyncSchedule::Manual, &h, now), secs(15));
+        // Every try's failure but the last is quiet.
+        let quiet = |h: &History| h.wake_sync.is_some_and(|w| !w.last_try());
+        assert!(quiet(&h));
+        h.ran(Ran::Failed { retry: true }, now);
+        assert_eq!(due(SyncSchedule::Manual, &h, now), secs(30));
         h.ran(Ran::Failed { retry: true }, now);
         h.ran(Ran::Failed { retry: true }, now);
-        assert!(h.wake_sync.is_some());
+        assert_eq!(due(SyncSchedule::Manual, &h, now), secs(120));
+        assert!(!quiet(&h));
         h.ran(Ran::Failed { retry: true }, now);
         assert_eq!(h.wake_sync, None);
         assert_eq!(due(SyncSchedule::Manual, &h, now), None);
@@ -553,6 +609,25 @@ mod tests {
         let ended = events.try_recv().unwrap();
         assert!(!ended.syncing && ended.error.is_some(), "{ended:?}");
         assert!(!app.status(&id).unwrap().syncing);
+    }
+
+    #[tokio::test]
+    async fn a_quiet_failure_keeps_the_error_shown() {
+        let (_tmp, app, id) = local_app().await;
+        let rt = app.runtime(&id).unwrap();
+        *lock(&rt.last_error) = Some("before".into());
+        let mut events = app.subscribe();
+
+        assert_eq!(app.run_sync(&rt, true).await, Ran::Failed { retry: true });
+        assert_eq!(app.status(&id).unwrap().error.as_deref(), Some("before"));
+        let ended = std::iter::from_fn(|| events.try_recv().ok())
+            .last()
+            .unwrap();
+        assert!(!ended.syncing, "{ended:?}");
+
+        app.run_sync(&rt, false).await;
+        let error = app.status(&id).unwrap().error;
+        assert!(error.is_some_and(|e| e != "before"));
     }
 
     #[tokio::test]
