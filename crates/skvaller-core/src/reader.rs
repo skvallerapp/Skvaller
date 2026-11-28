@@ -19,9 +19,10 @@ use crate::thumbnail::youtube_video;
 
 /// `html` readied for the reader, with relative URLs resolved against `base`.
 ///
-/// - [`ACTIVE`] elements go with their contents, `object` is unwrapped, and every `on…`
-///   event handler goes: they would run, or steer the frame, in a renderer that ran
-///   scripts.
+/// - Elements that run code or change how the frame loads, such as `script`, `meta`,
+///   `base`, `embed` and SVG's animations, go with their contents, `object` is
+///   unwrapped, and every `on…` event handler goes: they would run, or steer the frame,
+///   in a renderer that ran scripts.
 /// - Web addresses written out in the text become links, outside links already.
 /// - Links to other pages become absolute and get `target="_blank"`, so they leave the
 ///   reader's frame for the browser; one that can't be made absolute loses its `href`,
